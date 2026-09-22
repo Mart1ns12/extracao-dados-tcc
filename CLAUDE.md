@@ -1,0 +1,235 @@
+# CLAUDE.md — Pipeline de Coleta do Dataset 1.0
+
+Sistema de web scraping que produz um dataset diário de **notícias + mercado B3** para a etapa
+seguinte do TCC (análise/interpretação — **fora deste escopo**).
+
+---
+
+## 1. O que este projeto entrega
+
+Uma linha por `(data, ticker)` com as **14 colunas** de `docs/Dataset1.0.xlsx`:
+
+| Coluna | Origem |
+|---|---|
+| `data` | Pregão (calendário do `^BVSP`) |
+| `ticker` | Componente do IBOV (~85 ativos) |
+| `quant_noticias` | Notícias únicas nas 24 h anteriores |
+| `positivo` / `neutro` / `negativo` | Média das probabilidades do FinBERT |
+| `score_finbert` | `positivo − negativo` |
+| `retorno_1d` / `retorno_5d` / `retorno_20d` | `adj_close` acumulado |
+| `volatilidade_20d` | Desvio padrão dos retornos de 20 pregões |
+| `volume_relativo` | Volume do dia ÷ média de 20 pregões |
+| `retorno_ibovespa` | Variação do `^BVSP` |
+| `target` | `1` se a ação superar o Ibov em **t+1**, senão `0` |
+
+**Restrição dominante do projeto: custo financeiro zero.** Nenhuma dependência de API paga.
+Qualquer proposta que exija cartão de crédito ou plano pago deve ser rejeitada.
+
+---
+
+## 2. Fontes — decisões já tomadas (NÃO reabrir sem motivo novo)
+
+Estas conclusões vieram de **testes com chamadas reais**, não de documentação. Não reintroduza
+uma fonte rejeitada sem antes provar, com uma chamada real, que a limitação mudou.
+
+### Aprovadas
+
+| Fonte | Papel | Por quê |
+|---|---|---|
+| **Yahoo Finance chart API** | Preço **primário** | 5 anos com `adjclose`, sem chave. Cobre ações `.SA`, `^BVSP`, `BZ=F` (Brent), `USDBRL=X` |
+| **Google News RSS** | Notícias **históricas** | Único caminho grátis para 2 anos de histórico. Aceita `after:`/`before:` |
+| **RSS nativos dos veículos** | Notícias **correntes** | InfoMoney/MoneyTimes expõem `content:encoded` = corpo completo do artigo |
+| **BCB SGS série 432** | Selic | Oficial, sem chave, sem limite |
+| **BCB PTAX** | Dólar | Oficial, sem chave. Usar `cotacaoVenda` |
+| **Brapi** | *Fallback* de preço | Funciona sem token; free = 15.000 req/mês. Só 1 ano de histórico |
+
+### Rejeitadas — e o motivo
+
+| Fonte | Motivo da rejeição |
+|---|---|
+| **Marketaux** | Free = 100 req/dia × **3 artigos por request** e **sem histórico**. Impossível cobrir 85 ativos × 2 anos |
+| **GDELT DOC 2.0 API** | Rate-limitado em 100% das tentativas de teste ("one request every 5 seconds") |
+| **GDELT arquivos brutos** | Funcionam, mas 2 anos ≈ **300 GB** de download. Inviável localmente |
+| **FRED** | Exige chave e o Yahoo já entrega Brent (`BZ=F`) sem chave |
+
+### Limites operacionais que moldam o código
+
+1. **Google News RSS satura em 100 itens por query.** Janela semanal não satura (~52 itens);
+   mensal satura. Por isso a coleta é **semanal** e subdivide a janela ao bater 100.
+2. **O link do Google News é um ID opaco** — não é URL. Não tente `curl -L` (fica em
+   news.google.com) nem decodificar o base64 (não contém URL). A resolução é feita pelo
+   endpoint interno `batchexecute`, em `enrich/link_resolver.py` — **medido em 42/42 = 100%**
+   sobre links reais de 3 janelas temporais distintas. Como o endpoint não é documentado,
+   `resolve()` devolve `None` em vez de levantar: o pipeline degrada para manchete-apenas.
+3. **Nunca** coletar sem throttle. Toda requisição externa passa por `collectors/base.py`.
+4. **Carteira do IBOV validada** contra o Yahoo: 88/88 tickers. 15 códigos estavam
+   desatualizados por reestruturação societária e já foram corrigidos em `config.py`
+   (ex.: Embraer `EMBR3→EMBJ3`, Eletrobras `ELET3→AXIA3`). Ao mexer na lista, rode
+   `tcc-scraper validate-tickers`.
+
+### Achados do piloto (2026-09-07) — já corrigidos
+
+**1. Nomes ambíguos saturavam a busca.** `("Vale" OR VALE3)` devolveu **100 itens** (o teto),
+cheios de panorama de mercado e do verbo "valer". Saturar significa que notícia real também
+foi cortada. Com contexto setorial: 48 itens, zero panoramas. VALE3 caiu de 2.764 → 357
+artigos/mês, agora proporcional ao ITUB4 (289). Ver `SEARCH_QUALIFIERS` em `config.py` —
+só para nomes que são palavra comum; qualificar um nome distintivo reduziria a cobertura.
+
+**2. Séries macro viravam linhas do dataset.** `assemble_dataset` inferia os ativos por
+exclusão ("tudo menos o benchmark"), então Brent (`BZ=F`) e dólar (`USDBRL=X`) apareciam
+como se fossem ações — e o dólar, sem volume por ser câmbio, inflava os nulos de
+`volume_relativo` de 4% para 21%. Agora o universo é **explícito** (`universe=`).
+
+**3. Limitação conhecida, não corrigida:** panoramas de mercado ("Ibovespa recua com Vale e
+Petrobras") continuam entrando. O Google News não distingue "notícia sobre X" de "notícia
+que menciona X". É defensável (menção em panorama é sinal de co-movimento), mas precisa
+constar como limitação no TCC.
+
+---
+
+## 3. Protocolo de descoberta de código (OBRIGATÓRIO)
+
+Este projeto usa **codebase-memory-mcp**. Para explorar código, use o grafo **antes** de Grep/Glob —
+retorna resultados estruturados em ~500 tokens contra ~80k de um grep amplo.
+
+**Ordem obrigatória ao procurar código:**
+
+1. `search_graph(name_pattern=".*Collector.*", label="Class")` — localizar símbolos por padrão
+2. `trace_path(function_name="build_dataset", direction="both", depth=3)` — **antes de editar**,
+   para saber quem chama e o que é chamado
+3. `get_code_snippet(qualified_name="tcc_scraper.features.dataset.build_dataset")` — ler o símbolo exato
+4. `get_architecture()` — visão de estrutura ao entrar em uma área nova
+5. `search_code(pattern=...)` — busca textual aumentada pelo grafo
+
+**Grep / Glob / Read continuam livres** (e preferíveis) para: `.env`, `docker-compose.yml`,
+`pyproject.toml`, migrations SQL, Markdown, fixtures de teste e qualquer arquivo não-Python.
+
+**Sempre `Read` um arquivo antes de editá-lo** — o grafo diz onde está, não substitui a leitura.
+
+---
+
+## 4. Protocolo de ATUALIZAÇÃO da memória (OBRIGATÓRIO)
+
+O grafo só é útil se estiver atualizado. Estas são as regras de manutenção:
+
+| Quando | Ação |
+|---|---|
+| Projeto ainda não indexado (`list_projects` não mostra) | `index_repository` — **antes** de qualquer exploração |
+| Criou/renomeou/moveu **módulo ou pacote** | `index_repository` novamente |
+| Antes de commitar | `detect_changes()` — mapeia o diff para os símbolos afetados |
+| Em dúvida se o índice envelheceu | `index_status` |
+| Tomou uma **decisão arquitetural** | `manage_adr` — registra o *porquê* no grafo |
+
+**Editar o corpo de uma função existente NÃO exige reindexar.** Só mudanças estruturais
+(novos arquivos, novos símbolos, imports novos) invalidam o grafo.
+
+### ARMADILHA VERIFICADA: `index_repository` apaga o ADR
+
+Confirmado por teste nesta sessão: depois de reindexar, `manage_adr(mode="get")` passou a
+retornar `no_adr`. O grafo é reconstruído do zero e leva o ADR junto.
+
+**Regra:** toda vez que rodar `index_repository`, **regrave o ADR logo em seguida** com
+`manage_adr(mode="update")` e confirme com `manage_adr(mode="get")`. A cópia de referência
+fica versionada em `docs/ADR.md` — restaure a partir dela.
+
+### O que registrar como ADR (`manage_adr`)
+
+Decisões cujo *motivo* se perde se ficar só no código:
+
+- Rejeição de uma fonte de dados e o limite concreto que a inviabilizou
+- Resultado do spike de resolução de link do Google News (a taxa medida e a rota escolhida)
+- Escolha de PostgreSQL sobre SQLite
+- Qualquer mudança na regra do `target` ou na definição de uma feature
+
+Um ADR bem escrito responde: **qual era o problema, quais opções existiam, o que foi escolhido e
+o que se perdeu com isso.**
+
+---
+
+## 5. Convenções de código
+
+- **Todo coletor herda de `collectors/base.Collector`.** Ele já resolve throttle por domínio,
+  retry exponencial e checkpoint. Nunca chamar `requests`/`httpx` cru em um coletor.
+- **Persistência sempre por `db/upsert.bulk_upsert`.** Nunca `pg_insert`/`mysql_insert`
+  direto, e nunca um `execute` por linha dentro de laço — foi assim que o `_persist` do
+  Google News chegou a ~450 mil idas ao banco na carga completa (hoje: ~8,6 mil).
+- **Tipo de ponto flutuante é `Double`, nunca `Float`.** `sa.Float()` vira 4 bytes no
+  MySQL e truncaria as probabilidades do FinBERT em ~7 dígitos, mudando o dataset
+  conforme o banco. Há teste de regressão.
+- **Timestamps usam `UTCDateTime`**, não `DateTime(timezone=True)`: o MySQL não guarda
+  fuso e o valor voltaria naive, deslocando a agregação diária.
+- **A camada `raw` é imutável e append-only.** Reprocessamento sempre parte dela — nunca da rede.
+- **Deduplicação por `url_hash`**, nunca pela URL crua (querystrings de tracking variam).
+- **Toda alteração de schema passa por Alembic.** Nada de `CREATE TABLE` solto.
+- **Segredos só em `.env`** (nunca commitado). `.env.example` documenta as chaves.
+- **Vazamento temporal é bug de corretude**, não detalhe: features em `t` só usam dados com
+  timestamp `<= t`. O `target` é o único campo que olha `t+1`. Há teste dedicado para isso.
+- Timestamps sempre em **UTC** no banco; conversão para `America/Sao_Paulo` só na agregação diária.
+
+---
+
+## 6. Comandos
+
+```bash
+# Postgres local (instalado via conda em D:, NAO e servico do Windows --
+# nao sobe sozinho no boot):
+powershell scripts\pg-start.ps1           # sobe    | pg-stop.ps1 para
+alembic upgrade head                      # aplica migrations
+python -m tcc_scraper.cli db-info         # confere dialeto e tabelas
+
+python -m tcc_scraper.cli collect-prices  # Fase 2: Yahoo + BCB
+python -m tcc_scraper.cli collect-news    # Fase 3: Google News (retomável)
+python -m tcc_scraper.cli enrich          # Fase 4: corpo dos artigos
+python -m tcc_scraper.cli score           # Fase 5: FinBERT pt/en
+python -m tcc_scraper.cli build-dataset   # Fase 6: 14 colunas
+python -m tcc_scraper.cli export          # Parquet + CSV
+
+pytest                                    # testes (sem rede — usam fixtures)
+```
+
+A coleta de notícias leva **~10 h** na primeira execução (17.700 requisições). É **retomável**:
+se interromper, rodar o mesmo comando continua de onde parou.
+
+---
+
+## 7. Configuração do codebase-memory-mcp
+
+O servidor está registrado **globalmente** em `~/.claude.json` desta máquina
+(`C:/Users/consu/.local/bin/codebase-memory-mcp.exe`), por isso o `.mcp.json` do projeto
+fica vazio: um caminho absoluto de Windows commitado no repositório quebraria em qualquer
+outra máquina e entraria em conflito com a configuração global que já funciona.
+
+**Para usar em outra máquina**, instale o servidor e registre-o no escopo do usuário:
+
+```bash
+claude mcp add --scope user codebase-memory-mcp <caminho-do-executavel>
+```
+
+Confirme com `claude mcp list` e, dentro do projeto, com `list_projects`.
+Se o projeto não aparecer, rode `index_repository` antes de qualquer exploração.
+
+---
+
+## 8. Bancos suportados — PostgreSQL e MySQL 8
+
+O projeto roda nos dois e o **dataset sai bit a bit idêntico** (verificado por teste de
+paridade que monta o dataset a partir de cada banco e compara).
+
+Três decisões tornam isso possível, e nenhuma é cosmética:
+
+| Ponto | Por quê |
+|---|---|
+| **Camadas viram prefixo** (`raw_articles`), não schema | MySQL não tem schemas — lá "schema" e "database" são a mesma coisa |
+| **`Double`, nunca `Float`** | `sa.Float()` vira 4 bytes no MySQL: `0.7766114473342896` voltava `0.776611` |
+| **`UTCDateTime`** em vez de `DateTime(timezone=True)` | MySQL não guarda fuso; sem isso, matéria das 22h cairia em dias diferentes conforme o banco |
+
+E o `RETURNING` **não existe no MySQL** — por isso `google_news._persist` grava em lote,
+relê os ids pelo `url_hash` e só então grava os vínculos: três queries por janela,
+independentemente do número de matérias.
+
+Roteiro completo de migração: **[docs/MIGRACAO-MYSQL.md](docs/MIGRACAO-MYSQL.md)**.
+Script de cópia de dados: `scripts/migrar_dados.py` (idempotente, com conferência).
+
+**Pegadinha do MySQL:** a collation `utf8mb4_0900_ai_ci` ignora acentos em `LIKE` —
+`LIKE '%ã%'` deu 584 linhas no Postgres e 2.078 no MySQL sobre os mesmos dados. Não
+afeta o pipeline (nenhuma query dele usa `LIKE`), mas afeta consultas de análise.

@@ -1,0 +1,154 @@
+"""Coleta de precos diarios via Yahoo Finance chart API.
+
+Fonte primaria de preco. Escolhida sobre a Brapi por medicao (2026-09-07): entrega
+5 anos com adjclose sem chave, contra 1 ano da Brapi no plano gratuito. Cobre no
+mesmo endpoint acoes .SA, o indice ^BVSP, Brent (BZ=F) e USD/BRL (USDBRL=X).
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import logging
+import urllib.parse
+from collections.abc import Iterable
+from dataclasses import dataclass
+
+from tcc_scraper.collectors.base import Collector, UnitResult, WorkUnit
+from tcc_scraper.config import (
+    BENCHMARK_TICKER,
+    IBOV_TICKERS,
+    MACRO_YAHOO,
+    get_settings,
+    yahoo_symbol,
+)
+from tcc_scraper.db.models import Price
+from tcc_scraper.db.session import session_scope
+from tcc_scraper.db.upsert import bulk_upsert
+
+logger = logging.getLogger(__name__)
+
+CHART_ENDPOINT = "https://query1.finance.yahoo.com/v8/finance/chart"
+
+
+@dataclass(frozen=True)
+class PriceRow:
+    ticker: str
+    date: dt.date
+    open: float | None
+    high: float | None
+    low: float | None
+    close: float | None
+    adj_close: float | None
+    volume: int | None
+
+
+def parse_chart(payload: dict, ticker: str) -> list[PriceRow]:
+    """Converte a resposta do chart API em linhas diarias.
+
+    O Yahoo devolve arrays paralelos (timestamp, open, high, ...) com null nos dias
+    sem negocio. Linhas sem close sao descartadas: nao representam pregao e
+    contaminariam o calculo de retornos.
+    """
+    try:
+        result = payload["chart"]["result"][0]
+        timestamps = result["timestamp"]
+        quote = result["indicators"]["quote"][0]
+    except (KeyError, IndexError, TypeError):
+        logger.warning("resposta do Yahoo sem dados para %s", ticker)
+        return []
+
+    adj = result.get("indicators", {}).get("adjclose", [{}])[0].get("adjclose")
+
+    rows: list[PriceRow] = []
+    for i, ts in enumerate(timestamps):
+        close = _at(quote.get("close"), i)
+        if close is None:
+            continue
+        volume = _at(quote.get("volume"), i)
+        rows.append(
+            PriceRow(
+                ticker=ticker,
+                # utcfromtimestamp: o timestamp do Yahoo marca a abertura do pregao;
+                # so a data importa para o join diario.
+                date=dt.datetime.fromtimestamp(ts, tz=dt.UTC).date(),
+                open=_at(quote.get("open"), i),
+                high=_at(quote.get("high"), i),
+                low=_at(quote.get("low"), i),
+                close=close,
+                # Sem adjclose, o proprio close: preferivel a perder a linha.
+                adj_close=_at(adj, i) if adj is not None else close,
+                volume=int(volume) if volume is not None else None,
+            )
+        )
+    rows.sort(key=lambda r: r.date)
+    return rows
+
+
+def _at(seq: list | None, index: int) -> float | None:
+    if not seq or index >= len(seq):
+        return None
+    return seq[index]
+
+
+class YahooPriceCollector(Collector):
+    """Coleta OHLCV de acoes, benchmark e series macro do Yahoo."""
+
+    name = "prices_yahoo"
+
+    def __init__(self, tickers: Iterable[str] | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        if tickers is None:
+            tickers = [*IBOV_TICKERS, BENCHMARK_TICKER, *MACRO_YAHOO.values()]
+        self.tickers = list(tickers)
+        self.default_delay = self.settings.throttle_yahoo
+        self.throttle.configure("query1.finance.yahoo.com", self.settings.throttle_yahoo)
+
+    def work_units(self) -> Iterable[WorkUnit]:
+        # Uma unidade por ticker: o Yahoo entrega o periodo inteiro numa requisicao,
+        # entao nao ha ganho em fatiar por data.
+        for ticker in self.tickers:
+            yield WorkUnit(key=ticker, payload={"ticker": ticker})
+
+    def process(self, unit: WorkUnit) -> UnitResult:
+        ticker = unit.payload["ticker"]
+        settings = get_settings()
+        symbol = yahoo_symbol(ticker)
+
+        params = {
+            "period1": int(
+                dt.datetime.combine(settings.data_start, dt.time.min, tzinfo=dt.UTC).timestamp()
+            ),
+            "period2": int(
+                dt.datetime.combine(settings.data_end, dt.time.max, tzinfo=dt.UTC).timestamp()
+            ),
+            "interval": "1d",
+            "events": "div,split",
+        }
+        url = f"{CHART_ENDPOINT}/{urllib.parse.quote(symbol)}?{urllib.parse.urlencode(params)}"
+        rows = parse_chart(self.fetch(url).json(), ticker=ticker)
+
+        self._persist(rows)
+        return UnitResult(items_found=len(rows))
+
+    def _persist(self, rows: list[PriceRow]) -> None:
+        """Upsert por (ticker, date) em lote: recoletar corrige o dado sem duplicar."""
+        if not rows:
+            return
+        payload = [
+            {
+                "ticker": r.ticker, "date": r.date, "open": r.open, "high": r.high,
+                "low": r.low, "close": r.close, "adj_close": r.adj_close,
+                "volume": r.volume, "source": "yahoo",
+            }
+            for r in rows
+        ]
+        with session_scope() as session:
+            bulk_upsert(
+                session,
+                Price.__table__,
+                payload,
+                index_elements=["ticker", "date"],
+                update_columns=[
+                    "open", "high", "low", "close", "adj_close", "volume", "source"
+                ],
+            )

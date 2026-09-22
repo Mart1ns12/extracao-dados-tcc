@@ -1,0 +1,59 @@
+---
+description: Protocolo obrigatório de uso e atualização do codebase-memory-mcp
+alwaysApply: true
+---
+
+# Memória de código — codebase-memory-mcp
+
+Este projeto mantém um **grafo de conhecimento do código**. Ele só funciona se for consultado
+antes da busca textual e atualizado após mudanças estruturais.
+
+## Descoberta: grafo ANTES de grep
+
+Ao procurar qualquer símbolo Python (função, classe, método), use nesta ordem:
+
+1. `search_graph(name_pattern=".*Collector.*", label="Class")` — localizar por padrão de nome
+2. `trace_path(function_name="build_dataset", direction="both", depth=3)` — **antes de editar**,
+   para descobrir quem chama e o que é chamado
+3. `get_code_snippet(qualified_name="tcc_scraper.features.dataset.build_dataset")` — ler o símbolo
+4. `get_architecture()` — ao entrar em uma área desconhecida do projeto
+5. `search_code(pattern=...)` — busca textual aumentada pelo grafo
+
+Um `search_graph` retorna ~500 tokens onde um grep amplo retornaria ~80k.
+
+**Use grep/glob livremente** para arquivos não-Python: `.env`, `docker-compose.yml`,
+`pyproject.toml`, `alembic/`, `*.sql`, `*.md`, fixtures de teste.
+
+**Sempre leia o arquivo antes de editá-lo.** O grafo aponta onde está; não dispensa a leitura.
+
+## Atualização: quando reindexar
+
+| Situação | Ação |
+|---|---|
+| `list_projects` não mostra este projeto | `index_repository` antes de qualquer coisa |
+| Criou, renomeou ou moveu módulo/pacote | `index_repository` |
+| Antes de commitar | `detect_changes()` para mapear o impacto do diff |
+| Suspeita de índice velho | `index_status` |
+| Decisão arquitetural tomada | `manage_adr` |
+
+Editar o **corpo** de uma função existente não exige reindexar. Apenas mudanças **estruturais**
+(arquivos, símbolos, imports) invalidam o grafo.
+
+## ARMADILHA: reindexar apaga o ADR
+
+Verificado por teste: após `index_repository`, `manage_adr(mode="get")` retorna `no_adr`.
+
+**Sempre que reindexar, regrave o ADR em seguida** com `manage_adr(mode="update")` e
+confirme com `manage_adr(mode="get")`. A cópia de referência está em `docs/ADR.md`.
+
+## O que vira ADR
+
+Registre via `manage_adr` toda decisão cujo motivo se perderia se ficasse só no código:
+
+- Rejeição de fonte de dados **com o limite concreto** que a inviabilizou
+  (ex.: Marketaux = 3 artigos por request, sem histórico)
+- Resultado do spike de resolução de link do Google News (taxa medida, rota escolhida)
+- Escolha de PostgreSQL sobre SQLite
+- Mudanças na regra do `target` ou na definição de qualquer feature
+
+Um ADR responde: **problema, opções, escolha, custo da escolha.**

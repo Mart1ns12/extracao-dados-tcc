@@ -1,0 +1,36 @@
+---
+description: Convenções de código do pipeline de coleta do Dataset 1.0
+globs: src/**/*.py,tests/**/*.py
+alwaysApply: false
+---
+
+# Convenções — pipeline Dataset 1.0
+
+## Restrição inegociável
+**Custo financeiro zero.** Nenhuma API paga, nenhuma dependência que exija cartão.
+Fontes rejeitadas e o motivo estão em `CLAUDE.md` seção 2 — não reintroduza sem provar,
+com chamada real, que o limite mudou.
+
+## Coleta
+- Todo coletor herda de `collectors/base.Collector`, que resolve throttle por domínio,
+  retry exponencial e checkpoint. **Nunca** chamar `requests`/`httpx` cru dentro de um coletor.
+- Google News RSS satura em **100 itens por query** — a janela é semanal e deve subdividir
+  automaticamente ao bater o teto, senão há perda silenciosa de notícias.
+- O link do Google News é um **ID opaco**, não uma URL. Não tente `curl -L` nem base64.
+
+## Dados
+- A camada `raw` é **imutável e append-only**. Reprocessamento parte dela, nunca da rede.
+- Dedup por `url_hash` (SHA-256 da URL canonicalizada), nunca pela URL crua.
+- Toda mudança de schema via **Alembic**. Nada de `CREATE TABLE` solto.
+- Timestamps em **UTC** no banco. Conversão para `America/Sao_Paulo` só na agregação diária.
+
+## Corretude
+**Vazamento temporal é bug, não detalhe.** Features em `t` usam apenas dados com timestamp `<= t`.
+O `target` é o único campo que olha `t+1`. Existe teste dedicado — não o contorne.
+
+## Testes
+- `pytest` roda **sem rede**. Parsers são testados contra fixtures salvas em `tests/fixtures/`.
+- Ao mudar um parser, atualize a fixture com uma resposta real capturada, não inventada.
+
+## Segredos
+Só em `.env` (nunca commitado). `.env.example` documenta as chaves sem valores.
