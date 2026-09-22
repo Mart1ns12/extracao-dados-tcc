@@ -22,9 +22,9 @@ def get_engine() -> Engine:
     """
     settings = get_settings()
     kwargs: dict = {"pool_pre_ping": True, "future": True}
-    if settings.database_url.startswith(("mysql", "mariadb")):
+    if settings.effective_url.startswith(("mysql", "mariadb")):
         kwargs["pool_recycle"] = 3600
-    return create_engine(settings.database_url, **kwargs)
+    return create_engine(settings.effective_url, **kwargs)
 
 
 @lru_cache
