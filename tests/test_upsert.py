@@ -12,6 +12,7 @@ apontando para os servidores locais de desenvolvimento.
 from __future__ import annotations
 
 import os
+from functools import cache
 
 import pytest
 from sqlalchemy import (
@@ -36,14 +37,35 @@ MYSQL_URL = os.environ.get(
 )
 
 
-def _engine_or_skip(url: str, label: str):
+# Timeout curto e resultado em cache, de proposito. Com o timeout padrao do driver
+# (30 s+) e uma tentativa por teste, a suite travava por dez minutos so para concluir
+# que um banco opcional nao estava no ar -- foi o que aconteceu apos um reinicio da
+# maquina. Com cache, a conclusao e tirada UMA vez por URL.
+_CONNECT_TIMEOUT = 2
+
+
+@cache
+def _tentar_engine(url: str):
+    """Devolve (engine, None) se conectou, ou (None, motivo). Avaliado uma vez por URL."""
+    args = (
+        {"connect_timeout": _CONNECT_TIMEOUT}
+        if url.startswith(("mysql", "postgresql"))
+        else {}
+    )
     try:
-        engine = create_engine(url, pool_pre_ping=True)
+        engine = create_engine(url, pool_pre_ping=True, connect_args=args)
         with engine.connect():
             pass
-        return engine
+        return engine, None
     except Exception as exc:
-        pytest.skip(f"{label} indisponivel: {str(exc)[:80]}")
+        return None, str(exc)[:80]
+
+
+def _engine_or_skip(url: str, label: str):
+    engine, motivo = _tentar_engine(url)
+    if engine is None:
+        pytest.skip(f"{label} indisponivel: {motivo}")
+    return engine
 
 
 @pytest.fixture(params=["postgresql", "mysql"])

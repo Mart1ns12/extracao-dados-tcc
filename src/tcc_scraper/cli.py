@@ -16,6 +16,14 @@ import pandas as pd
 import typer
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
 from rich.table import Table
 from sqlalchemy import select
 
@@ -56,6 +64,39 @@ def _report(titulo: str, stats: dict[str, int]) -> None:
     for k, v in stats.items():
         table.add_row(k, str(v))
     console.print(table)
+
+
+# Artigos pontuados e gravados por vez. Grande o bastante para o upsert render,
+# pequeno o bastante para uma queda custar pouco trabalho refeito.
+SCORE_CHUNK = 2_000
+
+
+def _blocos(itens: list, tamanho: int):
+    """Fatia a lista em blocos de `tamanho` (o ultimo pode ser menor)."""
+    for inicio in range(0, len(itens), tamanho):
+        yield itens[inicio : inicio + tamanho]
+
+
+def _linhas_sentimento(rows: list, resultados: list, quando: dt.datetime) -> list[dict]:
+    """Monta as linhas de staging_article_sentiment a partir da saida do router.
+
+    `rows` sao tuplas (id, titulo, lang, corpo); `resultados`, pares (score, modelo)
+    na MESMA ordem -- o router garante isso mesmo agrupando por idioma.
+    """
+    return [
+        {
+            "article_id": row[0],
+            "model": modelo,
+            "prob_pos": score.prob_pos,
+            "prob_neu": score.prob_neu,
+            "prob_neg": score.prob_neg,
+            # Registra se o score saiu do corpo ou so da manchete: sem isso nao da
+            # para avaliar depois se o enriquecimento melhorou o sinal.
+            "text_source": "body" if row[3] else "title",
+            "scored_at": quando,
+        }
+        for row, (score, modelo) in zip(rows, resultados, strict=True)
+    ]
 
 
 @app.command("db-info")
@@ -166,32 +207,54 @@ def score(
         console.print("[yellow]nenhum artigo pendente de scoring[/yellow]")
         return
 
-    textos = [(r[3] or r[1]) for r in rows]
-    fontes = ["body" if r[3] else "title" for r in rows]
-    langs = [r[2] for r in rows]
-
     router = SentimentRouter()
     router.scorers = {
         k: type(v)(v.model_name, v.lang, batch_size) for k, v in router.scorers.items()
     }
-    resultados = router.score_texts(textos, langs=langs)
 
-    now = dt.datetime.now(dt.UTC)
-    with session_scope() as session:
-        for (row, (sc, model), fonte) in zip(rows, resultados, fontes, strict=True):
-            session.merge(
-                ArticleSentiment(
-                    article_id=row[0], model=model, prob_pos=sc.prob_pos,
-                    prob_neu=sc.prob_neu, prob_neg=sc.prob_neg,
-                    text_source=fonte, scored_at=now,
-                )
+    total = len(rows)
+    com_corpo = sum(1 for r in rows if r[3])
+    console.print(
+        f"pontuando {total} artigos "
+        f"({com_corpo} com corpo, {total - com_corpo} so manchete)"
+    )
+
+    gravados = 0
+    with Progress(
+        SpinnerColumn(), TextColumn("[cyan]FinBERT"), BarColumn(),
+        TaskProgressColumn(), TimeRemainingColumn(), console=console,
+    ) as progresso:
+        tarefa = progresso.add_task("scoring", total=total)
+
+        # Grava a cada bloco em vez de so no fim. Com ~88 mil artigos a inferencia
+        # leva ~30 min: pontuar tudo antes de gravar significaria perder o trabalho
+        # inteiro numa queda aos 25 min. Como a consulta de pendentes exclui quem ja
+        # tem sentimento, gravar em blocos torna a etapa retomavel de graca.
+        for bloco in _blocos(rows, SCORE_CHUNK):
+            resultados = router.score_texts(
+                [(r[3] or r[1]) for r in bloco], langs=[r[2] for r in bloco]
             )
+            linhas = _linhas_sentimento(bloco, resultados, dt.datetime.now(dt.UTC))
+            with session_scope() as session:
+                bulk_upsert(
+                    session,
+                    ArticleSentiment.__table__,
+                    linhas,
+                    index_elements=["article_id", "model"],
+                    update_columns=[
+                        "prob_pos", "prob_neu", "prob_neg", "text_source", "scored_at"
+                    ],
+                )
+            gravados += len(linhas)
+            progresso.update(tarefa, advance=len(bloco))
+
     _report(
         "sentimento",
         {
-            "artigos": len(rows),
-            "com corpo": fontes.count("body"),
-            "so manchete": fontes.count("title"),
+            "artigos": total,
+            "gravados": gravados,
+            "com corpo": com_corpo,
+            "so manchete": total - com_corpo,
         },
     )
 
