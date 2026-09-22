@@ -135,6 +135,33 @@ Parquet/CSV e a tabela ficava vazia. Agora grava com upsert por `(data, ticker)`
 remontar com outra regra de feature sobrescreve as linhas em vez de acumular. `NaN` vira
 `NULL` — gravar 0 afirmaria "sentimento neutro medido", que é diferente de "não medido".
 
+**Enriquecimento paralelo, com a fila intercalada por veículo.** O `enrich` baixava
+um artigo por vez. Paralelizar é seguro porque o `DomainThrottle` é por domínio e tem
+lock: os workers se serializam sozinhos no `news.google.com` e correm em paralelo nos
+veículos.
+
+Só que paralelizar sozinho **piorou** o tempo (38 s contra 32 s numa amostra de 24
+artigos reais). A causa: os artigos chegavam agrupados por veículo — 17 dos 24 eram do
+mesmo domínio — e os 6 workers ficavam todos na mesma fila do throttle, pagando só o
+custo das threads. Com a fila intercalada (round-robin por domínio), o paralelo passou a
+ganhar. Medições da mesma amostra:
+
+| | 24 artigos | 11 mil |
+|---|---|---|
+| sequencial, fila agrupada | 32,2 s | 4,1 h |
+| paralelo, fila agrupada | 38,2 s | 4,9 h |
+| sequencial, fila intercalada | 23,5 s | 3,0 h |
+| paralelo, fila intercalada | 19,5 s | 2,5 h |
+
+O gargalo então **mudou de lugar**: passou a ser o resolve, que serializa no Google.
+Com `THROTTLE_LINK_RESOLVE=0.05` o tempo cai para 1,1 h (24/24 de sucesso na amostra),
+mas o padrão fica em 0,4 s — um bloqueio no meio de uma execução de horas custa mais que
+as 2 h economizadas. Fica configurável, com a medição documentada no `.env.example`.
+
+Dois bugs corrigidos no caminho: o `resolve()` chamava o cliente HTTP cru, sem throttle
+nenhum; e `self.default_delay = ...` era atribuído DEPOIS do `super().__init__()`, que já
+havia criado o `DomainThrottle` — o `throttle_article_fetch` do `.env` nunca era aplicado.
+
 ## PHILOSOPHY
 
 **Validar com chamada real, nunca com documentação.** Toda decisão de fonte acima veio de
@@ -153,6 +180,10 @@ propósito e ver o teste passar mesmo assim. Corrigido para 60 pontos com asser�
 **Um teste só vale se já falhou.** O teste de precisão foi verificado trocando `Double`
 por `Float`: falhou no MySQL e passou no PostgreSQL — reproduzindo exatamente o bug
 original. O de vazamento temporal passou pelo mesmo crivo.
+
+**Otimização sem medição é chute.** A paralelização do enrich parecia obviamente
+vantajosa e, na primeira versão, deixou o pipeline MAIS LENTO. Só a medição com dados
+reais revelou que a fila vinha agrupada por domínio.
 
 **Perda silenciosa é pior que erro.** O teto de 100 itens e o `hit_cap` existem porque
 uma janela saturada não gera erro — só devolve menos notícias.

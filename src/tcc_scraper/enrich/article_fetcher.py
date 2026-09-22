@@ -16,8 +16,11 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import re
+from collections import defaultdict
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from itertools import zip_longest
 
 from sqlalchemy import select
 
@@ -75,15 +78,51 @@ def extract_with_trafilatura(html: str) -> str | None:
     )
 
 
+def intercalar_por_dominio(
+    pendentes: list[tuple[int, str, str | None]],
+) -> list[tuple[int, str, str | None]]:
+    """Reordena a fila alternando entre veiculos (round-robin).
+
+    Sem isto a paralelizacao nao rende: os artigos chegam agrupados por veiculo, e
+    medindo com dados reais um lote de 24 trazia 17 do mesmo dominio. Como o
+    throttle e por dominio, os 6 workers ficavam todos na mesma fila -- o paralelo
+    saiu MAIS LENTO que o sequencial (38 s contra 32 s), pagando so o custo das
+    threads.
+
+    Alternando, os primeiros N artigos cobrem N veiculos distintos e os workers
+    baixam de verdade em paralelo. O piso passa a ser o veiculo mais frequente:
+    nenhuma reordenacao faz o mesmo host aceitar mais que 1 requisicao por
+    intervalo.
+    """
+    por_dominio: dict[str | None, list] = defaultdict(list)
+    for artigo in pendentes:
+        por_dominio[artigo[2]].append(artigo)
+
+    return [
+        artigo
+        for rodada in zip_longest(*por_dominio.values())
+        for artigo in rodada
+        if artigo is not None
+    ]
+
+
 class ArticleBodyCollector(Collector):
     """Baixa e extrai o corpo dos artigos elegiveis."""
 
     name = "article_bodies"
 
-    def __init__(self, batch_size: int = 200, **kwargs) -> None:
+    def __init__(
+        self, batch_size: int = 200, workers: int | None = None, **kwargs
+    ) -> None:
         super().__init__(**kwargs)
         self.batch_size = batch_size
-        self.default_delay = self.settings.throttle_article_fetch
+        self.workers = workers if workers is not None else self.settings.enrich_workers
+
+        # Os throttles sao configurados AQUI, depois do super(). Atribuir
+        # `self.default_delay` nao adiantava: o DomainThrottle ja havia sido criado
+        # com o valor de classe, e o throttle_article_fetch do .env era ignorado.
+        self.throttle.set_default(self.settings.throttle_article_fetch)
+        self.throttle.configure("news.google.com", self.settings.throttle_link_resolve)
 
     def _pending(self) -> list[tuple[int, str, str | None]]:
         """Artigos da allowlist que ainda nao tem corpo.
@@ -100,30 +139,58 @@ class ArticleBodyCollector(Collector):
         return [(r[0], r[1], r[2]) for r in rows if is_allowed(r[2])]
 
     def work_units(self) -> Iterable[WorkUnit]:
-        pendentes = self._pending()
+        pendentes = intercalar_por_dominio(self._pending())
         logger.info("%d artigos elegiveis sem corpo", len(pendentes))
         for start in range(0, len(pendentes), self.batch_size):
             lote = pendentes[start : start + self.batch_size]
             yield WorkUnit(key=f"lote|{lote[0][0]}|{lote[-1][0]}", payload={"artigos": lote})
 
-    def process(self, unit: WorkUnit) -> UnitResult:
-        extraidos: list[ExtractedBody] = []
-        for article_id, google_url, domain in unit.payload["artigos"]:
-            real_url = resolve(self._client, google_url)
+    def _extrair_um(self, artigo: tuple[int, str, str | None]) -> ExtractedBody | None:
+        """Resolve o link, baixa a pagina e extrai o texto de UM artigo.
+
+        Devolve None em qualquer falha: com 200 artigos por lote, um veiculo fora
+        do ar nao pode custar os outros 199.
+        """
+        article_id, google_url, domain = artigo
+
+        # O try abrange TODA a funcao de proposito. `pool.map` propaga a excecao do
+        # primeiro item que falhar e aborta a iteracao -- um erro inesperado em um
+        # artigo levaria junto os outros 199 do lote, depois de ja ter gasto o
+        # tempo de rede deles.
+        try:
+            real_url = resolve(self._client, google_url, throttle=self.throttle)
             if not real_url:
                 logger.debug("link nao resolvido para o artigo %s (%s)", article_id, domain)
-                continue
-            try:
-                html = self.fetch(real_url).text
-            except Exception as exc:
-                logger.debug("falha ao baixar %s: %s", real_url, exc)
-                continue
+                return None
+
+            html = self.fetch(real_url).text
 
             texto = extract_with_trafilatura(html)
-            if texto:
-                extraidos.append(
-                    ExtractedBody(article_id, texto, "trafilatura", real_url)
-                )
+            if not texto:
+                return None
+            return ExtractedBody(article_id, texto, "trafilatura", real_url)
+        except Exception as exc:
+            logger.debug("artigo %s (%s) falhou: %s", article_id, domain, exc)
+            return None
+
+    def process(self, unit: WorkUnit) -> UnitResult:
+        """Processa o lote em paralelo.
+
+        A paralelizacao e segura porque o DomainThrottle e por dominio e tem lock:
+        os workers se serializam sozinhos no news.google.com (por onde TODO artigo
+        passa) e correm em paralelo nos veiculos, que sao varios. O ganho vem de
+        sobrepor o download de um veiculo com o resolve do proximo artigo.
+
+        httpx.Client e thread-safe, entao um unico cliente atende todos os workers
+        e o pool de conexoes e reaproveitado.
+        """
+        artigos = unit.payload["artigos"]
+        extraidos: list[ExtractedBody] = []
+
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            for resultado in pool.map(self._extrair_um, artigos):
+                if resultado is not None:
+                    extraidos.append(resultado)
 
         self._persist(extraidos)
         return UnitResult(items_found=len(extraidos))

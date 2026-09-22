@@ -48,6 +48,19 @@ class Settings(BaseSettings):
     throttle_bcb: float = 0.5
     throttle_article_fetch: float = 1.5
 
+    # Resolucao do link opaco do Google News. Medido em 2026-09-21 sobre links
+    # reais: com 0 s de intervalo a taxa de sucesso foi 100% (o proprio request
+    # ja leva ~0,5 s), e com 1,5 s caiu para 96% sem ganho nenhum. 0,4 s e margem
+    # de seguranca que quase nao cobra latencia, ja que o request demora mais que
+    # isso de qualquer forma.
+    throttle_link_resolve: float = 0.4
+
+    # Workers do enriquecimento. O ganho vem de uma assimetria: todo artigo passa
+    # pelo news.google.com (que o throttle por dominio serializa), mas o download
+    # do corpo se espalha por varios veiculos e corre em paralelo. Acima de ~8 o
+    # ganho satura, porque o resolve vira o gargalo.
+    enrich_workers: int = 6
+
     # Janela do DATASET (e da coleta de noticias, que e o custo dominante).
     data_start: date = date(2025, 9, 1)
     data_end: date = date(2026, 9, 1)

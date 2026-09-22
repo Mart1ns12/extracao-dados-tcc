@@ -43,6 +43,15 @@ class DomainThrottle:
     def configure(self, domain: str, delay: float) -> None:
         self._delays[domain] = delay
 
+    def set_default(self, delay: float) -> None:
+        """Ajusta o intervalo dos dominios sem configuracao propria.
+
+        Existe porque subclasses so conhecem o valor certo depois do __init__ da
+        base, que ja criou o throttle -- atribuir `self.default_delay` depois disso
+        nao surtia efeito nenhum.
+        """
+        self._default = delay
+
     def wait(self, url: str) -> None:
         domain = urlsplit(url).netloc.lower()
         delay = self._delays.get(domain, self._default)

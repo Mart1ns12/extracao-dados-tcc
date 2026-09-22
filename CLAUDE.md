@@ -70,7 +70,9 @@ uma fonte rejeitada sem antes provar, com uma chamada real, que a limitação mu
    endpoint interno `batchexecute`, em `enrich/link_resolver.py` — **medido em 42/42 = 100%**
    sobre links reais de 3 janelas temporais distintas. Como o endpoint não é documentado,
    `resolve()` devolve `None` em vez de levantar: o pipeline degrada para manchete-apenas.
-3. **Nunca** coletar sem throttle. Toda requisição externa passa por `collectors/base.py`.
+3. **Nunca** coletar sem throttle. Toda requisição externa passa por `collectors/base.py`
+   — inclusive o `resolve()`, que antes chamava o cliente HTTP cru e martelava o
+   `news.google.com` sem limite (passava despercebido com 60 artigos; com 11 mil, não).
 4. **Carteira do IBOV validada** contra o Yahoo: 88/88 tickers. 15 códigos estavam
    desatualizados por reestruturação societária e já foram corrigidos em `config.py`
    (ex.: Embraer `EMBR3→EMBJ3`, Eletrobras `ELET3→AXIA3`). Ao mexer na lista, rode
@@ -188,7 +190,7 @@ python -m tcc_scraper.cli db-info         # confere dialeto e tabelas
 
 python -m tcc_scraper.cli collect-prices  # Fase 2: Yahoo + BCB
 python -m tcc_scraper.cli collect-news    # Fase 3: Google News (retomável)
-python -m tcc_scraper.cli enrich          # Fase 4: corpo dos artigos
+python -m tcc_scraper.cli enrich          # Fase 4: corpo dos artigos (paralelo)
 python -m tcc_scraper.cli score           # Fase 5: FinBERT pt/en
 python -m tcc_scraper.cli build-dataset   # Fase 6: 14 colunas -> banco + Parquet
 python -m tcc_scraper.cli export          # Parquet + CSV

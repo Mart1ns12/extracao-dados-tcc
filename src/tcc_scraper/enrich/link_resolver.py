@@ -18,8 +18,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+from typing import TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:  # evita ciclo de import em runtime
+    from tcc_scraper.collectors.base import DomainThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -47,14 +51,31 @@ def extract_google_id(google_url: str) -> str:
     return google_url.rstrip("/").split("/")[-1].split("?")[0]
 
 
-def resolve(client: httpx.Client, google_url: str) -> str | None:
+def resolve(
+    client: httpx.Client,
+    google_url: str,
+    throttle: DomainThrottle | None = None,
+) -> str | None:
     """Devolve a URL real do artigo, ou None se nao for possivel resolver.
+
+    `throttle` espaca as duas chamadas ao news.google.com. E opcional na assinatura
+    mas obrigatorio na pratica: sao duas requisicoes por artigo e, numa carga de
+    ~11 mil artigos elegiveis, sao ~22 mil requisicoes ao mesmo host. Chamar sem
+    throttle (como esta funcao fazia antes) passou despercebido no piloto de 60
+    artigos e seria um pedido de bloqueio na carga completa.
 
     Nunca levanta: uma falha aqui significa apenas que o artigo entra no dataset
     com a manchete, nao que a coleta deve parar.
     """
+
+    def _esperar(url: str) -> None:
+        if throttle is not None:
+            throttle.wait(url)
+
     try:
         article_id = extract_google_id(google_url)
+
+        _esperar(google_url)
         page = client.get(google_url).text
 
         signature = _SIGNATURE_RE.search(page)
@@ -68,6 +89,7 @@ def resolve(client: httpx.Client, google_url: str) -> str | None:
         )
         payload = json.dumps([[["Fbv4je", inner, None, "generic"]]])
 
+        _esperar(BATCHEXECUTE_URL)
         response = client.post(
             BATCHEXECUTE_URL,
             data={"f.req": payload},
