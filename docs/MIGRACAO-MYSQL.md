@@ -9,6 +9,20 @@ e o dataset gerado sai **bit a bit idêntico** (há teste automatizado para isso
 
 ---
 
+## Já executado (2026-09-21)
+
+O banco do servidor **já está pronto**: database `tcc_scraper` criado com `utf8mb4`,
+as 8 tabelas migradas e os 10.646 registros do piloto copiados e conferidos. O dataset
+gerado a partir dele saiu idêntico ao do PostgreSQL local.
+
+Servidor: MySQL 8.0.46 (Ubuntu 24.04), `system_time_zone = -03`, `max_allowed_packet`
+64 MB, `wait_timeout` 8 h.
+
+As seções abaixo servem para refazer o processo em outro servidor, ou para conferir o
+que foi feito.
+
+---
+
 ## Antes de começar
 
 No servidor, confirme a versão:
@@ -73,12 +87,25 @@ cp .env.example .env
 E no `.env`:
 
 ```ini
-DATABASE_URL=mysql+pymysql://tcc:SUA_SENHA@127.0.0.1:3306/tcc_scraper?charset=utf8mb4
+DB_TARGET=mysql
 
-DATA_START=2024-09-01
+IP_BANCO=127.0.0.1
+USER_BANCO=tcc
+SENHA_BANCO=SUA_SENHA
+PORTA_BANCO=3306
+NOME_BANCO=tcc_scraper
+
+DATA_START=2025-09-01
 DATA_END=2026-09-01
+PRICE_WARMUP_DAYS=45
 HF_CACHE_DIR=/caminho/com/espaco/hf-cache
 ```
+
+Com `DB_TARGET=mysql`, o `config.py` monta a URL a partir dessas variáveis — a senha
+fica em um lugar só, em vez de repetida dentro de uma URL. Ela passa por `quote_plus`,
+então caracteres como `@` e `/` na senha não quebram a conexão.
+
+Para voltar ao PostgreSQL local, basta `DB_TARGET=postgres`.
 
 Use `127.0.0.1`, não `localhost`: em algumas configurações do MySQL, `localhost` força
 conexão por socket Unix e ignora a porta.
@@ -128,13 +155,23 @@ Começar do zero no servidor é perfeitamente razoável.
 
 ## 6. Rodar o pipeline
 
+Tudo de uma vez, com log por etapa:
+
+```bash
+chmod +x scripts/coleta-completa.sh
+nohup ./scripts/coleta-completa.sh > logs/coleta.log 2>&1 &
+tail -f logs/coleta.log
+```
+
+Ou etapa a etapa:
+
 ```bash
 python -m tcc_scraper.cli collect-prices    # ~2 min, 88 séries
 python -m tcc_scraper.cli collect-macro     # ~1 min, Selic + PTAX
-python -m tcc_scraper.cli collect-news      # ~10 h, retomável
+python -m tcc_scraper.cli collect-news      # 6-9 h, retomável
 python -m tcc_scraper.cli enrich            # corpo dos artigos da allowlist
 python -m tcc_scraper.cli score             # FinBERT pt + en
-python -m tcc_scraper.cli build-dataset     # 14 colunas -> Parquet + CSV
+python -m tcc_scraper.cli build-dataset     # 14 colunas -> banco + Parquet + CSV
 ```
 
 A coleta de notícias é **retomável**: se cair na hora 7, rodar o mesmo comando continua

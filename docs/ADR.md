@@ -123,6 +123,18 @@ coleta quebraria no PostgreSQL e produziria resultado dependente do banco.
 Medido com dados reais: uma janela de 52 matérias custava 156 statements, hoje custa 3
 (52× menos). Na carga completa: ~450 mil → ~8,6 mil idas ao banco.
 
+**Janela de 1 ano com aquecimento de preço.** O escopo caiu de 2 para 1 ano, o que
+reduz a coleta de notícias de ~17.850 para 9.010 janelas (de 13–18 h para 6–9 h). O
+recorte é aplicado DEPOIS do cálculo das features: o preço anterior a `data_start` vira
+aquecimento das janelas de 20 pregões. Efeito medido: `retorno_20d`, `volatilidade_20d`
+e `volume_relativo` passaram de 4% de nulos para **0%**. Como os preços de 2 anos já
+estavam coletados, o aquecimento saiu de graça.
+
+**Dataset materializado em `features_dataset_v1`.** Antes o `build-dataset` só exportava
+Parquet/CSV e a tabela ficava vazia. Agora grava com upsert por `(data, ticker)`:
+remontar com outra regra de feature sobrescreve as linhas em vez de acumular. `NaN` vira
+`NULL` — gravar 0 afirmaria "sentimento neutro medido", que é diferente de "não medido".
+
 ## PHILOSOPHY
 
 **Validar com chamada real, nunca com documentação.** Toda decisão de fonte acima veio de
