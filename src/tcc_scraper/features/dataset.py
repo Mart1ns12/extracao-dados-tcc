@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from collections.abc import Iterable
 
@@ -45,18 +46,28 @@ def assemble_dataset(
     articles: pd.DataFrame,
     benchmark: str = "^BVSP",
     universe: Iterable[str] | None = None,
+    start: dt.date | None = None,
+    end: dt.date | None = None,
 ) -> pd.DataFrame:
     """Produz o dataset final.
 
     prices: ticker, date, adj_close, volume -- acoes, benchmark E series macro juntos.
     articles: article_id, ticker, published_at, prob_pos, prob_neu, prob_neg.
     universe: quais tickers viram linha. Se omitido, aceita todo simbolo de acao.
+    start/end: recorte das LINHAS do dataset. As features continuam sendo calculadas
+        sobre todo o historico recebido.
 
     Sobre o universo: a versao anterior inferia os ativos por exclusao ("tudo menos o
     benchmark"), e no piloto isso fez Brent (BZ=F) e dolar (USDBRL=X) virarem linhas do
     dataset -- inclusive inflando os nulos de volume_relativo, ja que cambio nao tem
-    volume. Inferir por exclusao e fragil: qualquer serie nova em raw.prices viraria
+    volume. Inferir por exclusao e fragil: qualquer serie nova em raw_prices viraria
     uma "acao". Agora a inclusao e explicita.
+
+    Sobre a janela: o recorte e aplicado NO FIM, depois das features. O preco anterior
+    a `start` vira aquecimento -- sem ele, os 20 primeiros pregoes do dataset sairiam
+    sem retorno_20d, volatilidade_20d e volume_relativo, porque a janela de 20 pregoes
+    nao teria historico. Como ha 2 anos de preco coletados e o dataset cobre 1 ano, o
+    excedente cobre o aquecimento sem custo nenhum.
     """
     features = compute_price_features(prices)
 
@@ -86,6 +97,13 @@ def assemble_dataset(
     faltando = [c for c in DATASET_COLUMNS if c not in out.columns]
     if faltando:
         raise ValueError(f"colunas ausentes na montagem: {faltando}")
+
+    # Recorte por ultimo: tudo antes de `start` ja cumpriu seu papel de aquecimento
+    # nas janelas de 20 pregoes.
+    if start is not None:
+        out = out[out["data"] >= start]
+    if end is not None:
+        out = out[out["data"] <= end]
 
     return out[DATASET_COLUMNS].sort_values(["data", "ticker"]).reset_index(drop=True)
 

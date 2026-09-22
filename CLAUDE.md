@@ -12,7 +12,7 @@ Uma linha por `(data, ticker)` com as **14 colunas** de `docs/Dataset1.0.xlsx`:
 | Coluna | Origem |
 |---|---|
 | `data` | Pregão (calendário do `^BVSP`) |
-| `ticker` | Componente do IBOV (~85 ativos) |
+| `ticker` | Componente do IBOV (85 ativos) |
 | `quant_noticias` | Notícias únicas nas 24 h anteriores |
 | `positivo` / `neutro` / `negativo` | Média das probabilidades do FinBERT |
 | `score_finbert` | `positivo − negativo` |
@@ -21,6 +21,15 @@ Uma linha por `(data, ticker)` com as **14 colunas** de `docs/Dataset1.0.xlsx`:
 | `volume_relativo` | Volume do dia ÷ média de 20 pregões |
 | `retorno_ibovespa` | Variação do `^BVSP` |
 | `target` | `1` se a ação superar o Ibov em **t+1**, senão `0` |
+
+**Janela: 1 ano** (`DATA_START` a `DATA_END` no `.env`). Os preços são coletados
+`PRICE_WARMUP_DAYS` (45 dias) ANTES de `DATA_START`, para aquecer as janelas de 20
+pregões — sem isso, os 20 primeiros dias do dataset sairiam sem `retorno_20d`,
+`volatilidade_20d` e `volume_relativo`. Medido: com aquecimento, essas colunas saem com
+**0% de nulos** (antes: 4%).
+
+**O dataset é materializado em `features_dataset_v1`** pelo `build-dataset`, além de
+exportado em Parquet/CSV. Upsert por `(data, ticker)`: remontar sobrescreve, não duplica.
 
 **Restrição dominante do projeto: custo financeiro zero.** Nenhuma dependência de API paga.
 Qualquer proposta que exija cartão de crédito ou plano pago deve ser rejeitada.
@@ -181,14 +190,17 @@ python -m tcc_scraper.cli collect-prices  # Fase 2: Yahoo + BCB
 python -m tcc_scraper.cli collect-news    # Fase 3: Google News (retomável)
 python -m tcc_scraper.cli enrich          # Fase 4: corpo dos artigos
 python -m tcc_scraper.cli score           # Fase 5: FinBERT pt/en
-python -m tcc_scraper.cli build-dataset   # Fase 6: 14 colunas
+python -m tcc_scraper.cli build-dataset   # Fase 6: 14 colunas -> banco + Parquet
 python -m tcc_scraper.cli export          # Parquet + CSV
 
 pytest                                    # testes (sem rede — usam fixtures)
 ```
 
-A coleta de notícias leva **~10 h** na primeira execução (17.700 requisições). É **retomável**:
-se interromper, rodar o mesmo comando continua de onde parou.
+A coleta de notícias leva **6–9 h** na primeira execução (9.010 janelas + subdivisões).
+É **retomável**: se interromper, rodar o mesmo comando continua de onde parou.
+
+Para rodar tudo em sequência no servidor: `./scripts/coleta-completa.sh` (ver
+[docs/MIGRACAO-MYSQL.md](docs/MIGRACAO-MYSQL.md)).
 
 ---
 

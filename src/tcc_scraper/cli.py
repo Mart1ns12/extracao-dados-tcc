@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 
+import numpy as np
 import pandas as pd
 import typer
 from rich.console import Console
@@ -19,10 +20,18 @@ from rich.table import Table
 from sqlalchemy import select
 
 from tcc_scraper.config import BENCHMARK_TICKER, IBOV_TICKERS, get_settings
-from tcc_scraper.db.models import Article, ArticleBody, ArticleSentiment, ArticleTicker, Price
+from tcc_scraper.db.models import (
+    Article,
+    ArticleBody,
+    ArticleSentiment,
+    ArticleTicker,
+    DatasetV1,
+    Price,
+)
 from tcc_scraper.db.session import dialect_name, session_scope
+from tcc_scraper.db.upsert import bulk_upsert
 from tcc_scraper.export.writers import summarize, write_dataset
-from tcc_scraper.features.dataset import assemble_dataset, drop_unlabeled
+from tcc_scraper.features.dataset import DATASET_COLUMNS, assemble_dataset, drop_unlabeled
 
 app = typer.Typer(
     help="Pipeline de coleta do Dataset 1.0 (noticias + mercado B3)",
@@ -190,9 +199,10 @@ def score(
 @app.command("build-dataset")
 def build_dataset(
     export: bool = typer.Option(True, help="Grava Parquet e CSV ao final"),
+    persist: bool = typer.Option(True, help="Grava em features_dataset_v1 no banco"),
     keep_unlabeled: bool = typer.Option(False, help="Mantem o ultimo pregao, sem target"),
 ) -> None:
-    """Fase 6: monta as 14 colunas e exporta."""
+    """Fase 6: monta as 14 colunas, grava no banco e exporta."""
     _setup_logging()
     settings = get_settings()
 
@@ -220,10 +230,19 @@ def build_dataset(
         console.print("[red]sem precos no banco -- rode collect-prices antes[/red]")
         raise typer.Exit(1)
 
-    # Universo explicito: raw.prices tambem guarda o benchmark e as series macro
+    # Universo explicito: raw_prices tambem guarda o benchmark e as series macro
     # (Brent, dolar), que nao sao observacoes do dataset.
+    #
+    # start=data_start recorta as linhas a janela do dataset; o preco anterior
+    # (coletado a partir de price_start) fica so como aquecimento das janelas de
+    # 20 pregoes, para que a primeira linha ja saia com retorno_20d preenchido.
     dataset = assemble_dataset(
-        precos, artigos, benchmark=BENCHMARK_TICKER, universe=IBOV_TICKERS.keys()
+        precos,
+        artigos,
+        benchmark=BENCHMARK_TICKER,
+        universe=IBOV_TICKERS.keys(),
+        start=settings.data_start,
+        end=settings.data_end,
     )
     if not keep_unlabeled:
         dataset = drop_unlabeled(dataset)
@@ -246,9 +265,40 @@ def build_dataset(
         tabela.add_row(r["coluna"], str(r["nulos"]), f"{r['pct_nulos']}%")
     console.print(tabela)
 
+    if persist:
+        n = _persist_dataset(dataset)
+        console.print(f"[green]banco[/green]: {n} linhas em features_dataset_v1")
+
     if export:
         for kind, path in write_dataset(dataset, settings.export_dir).items():
             console.print(f"[green]{kind}[/green]: {path}")
+
+
+def _persist_dataset(dataset: pd.DataFrame) -> int:
+    """Materializa o dataset em features_dataset_v1.
+
+    Upsert por (data, ticker): remontar o dataset com outra regra de feature
+    sobrescreve as linhas em vez de duplicar, e a tabela reflete sempre a versao
+    mais recente. Linhas de uma execucao anterior que nao aparecem mais (por exemplo,
+    ao encurtar a janela) NAO sao removidas -- use `--no-persist` e limpe a tabela a
+    mao se quiser um recorte exato.
+
+    NaN do pandas vira NULL no banco: `positivo` nulo significa "nao medido", e
+    gravar 0 afirmaria sentimento neutro observado.
+    """
+    if dataset.empty:
+        return 0
+
+    linhas = dataset.replace({np.nan: None}).to_dict("records")
+    atualizaveis = [c for c in DATASET_COLUMNS if c not in ("data", "ticker")]
+    with session_scope() as session:
+        return bulk_upsert(
+            session,
+            DatasetV1.__table__,
+            linhas,
+            index_elements=["data", "ticker"],
+            update_columns=atualizaveis,
+        )
 
 
 @app.command("validate-tickers")

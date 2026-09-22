@@ -115,8 +115,10 @@ class YahooPriceCollector(Collector):
         symbol = yahoo_symbol(ticker)
 
         params = {
+            # price_start, nao data_start: precisa do historico anterior a janela do
+            # dataset para as medias de 20 pregoes ja saírem preenchidas na 1a linha.
             "period1": int(
-                dt.datetime.combine(settings.data_start, dt.time.min, tzinfo=dt.UTC).timestamp()
+                dt.datetime.combine(settings.price_start, dt.time.min, tzinfo=dt.UTC).timestamp()
             ),
             "period2": int(
                 dt.datetime.combine(settings.data_end, dt.time.max, tzinfo=dt.UTC).timestamp()

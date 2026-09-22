@@ -285,3 +285,88 @@ def test_universo_explicito_restringe_os_ativos() -> None:
     out = assemble_dataset(precos, artigos, benchmark="^BVSP", universe=["PETR4"])
 
     assert set(out["ticker"]) == {"PETR4"}
+
+
+# --------------------------------------------------------------------------------------
+# Janela do dataset com aquecimento
+# --------------------------------------------------------------------------------------
+def test_janela_filtra_linhas_mas_usa_o_historico_anterior_nas_features() -> None:
+    """Preco anterior a janela serve de aquecimento, nao vira linha.
+
+    Sem isso, os 20 primeiros pregoes do dataset sairiam sem retorno_20d,
+    volatilidade_20d e volume_relativo -- a janela de 20 pregoes nao teria
+    historico. Como ja temos 2 anos de preco coletados e o dataset passou a
+    cobrir 1 ano, o excedente vira aquecimento de graca.
+    """
+    n = 60
+    datas = pd.bdate_range("2024-01-01", periods=n)
+    precos = pd.concat(
+        [
+            pd.DataFrame({"ticker": "PETR4", "date": datas.date,
+                          "adj_close": [100.0 + i for i in range(n)],
+                          "volume": [1000 + i for i in range(n)]}),
+            pd.DataFrame({"ticker": "^BVSP", "date": datas.date,
+                          "adj_close": [50.0 + i * 0.5 for i in range(n)],
+                          "volume": [2000] * n}),
+        ],
+        ignore_index=True,
+    )
+    artigos = pd.DataFrame(
+        columns=["article_id", "ticker", "published_at", "prob_pos", "prob_neu", "prob_neg"]
+    )
+    # janela cobre so os 10 ultimos pregoes
+    inicio = datas.date[50]
+
+    out = assemble_dataset(precos, artigos, benchmark="^BVSP",
+                           universe=["PETR4"], start=inicio)
+
+    assert len(out) == 10, "so os pregoes dentro da janela viram linha"
+    assert out["data"].min() == inicio
+    # O ganho: a PRIMEIRA linha ja tem as features de 20 pregoes preenchidas.
+    primeira = out.iloc[0]
+    for col in ("retorno_20d", "volatilidade_20d", "volume_relativo"):
+        assert pd.notna(primeira[col]), f"{col} nulo -- o aquecimento nao foi usado"
+
+
+def test_sem_janela_o_comportamento_nao_muda() -> None:
+    """start/end sao opcionais: omiti-los mantem o dataset inteiro."""
+    datas = pd.bdate_range("2024-01-01", periods=5)
+    precos = pd.concat(
+        [
+            pd.DataFrame({"ticker": "PETR4", "date": datas.date,
+                          "adj_close": [100.0, 101, 102, 103, 104], "volume": [1000] * 5}),
+            pd.DataFrame({"ticker": "^BVSP", "date": datas.date,
+                          "adj_close": [50.0, 50.2, 50.4, 50.6, 50.8], "volume": [2000] * 5}),
+        ],
+        ignore_index=True,
+    )
+    artigos = pd.DataFrame(
+        columns=["article_id", "ticker", "published_at", "prob_pos", "prob_neu", "prob_neg"]
+    )
+
+    assert len(assemble_dataset(precos, artigos, benchmark="^BVSP", universe=["PETR4"])) == 5
+
+
+def test_janela_com_fim_deixa_o_ultimo_dia_com_target() -> None:
+    """Havendo pregao depois do fim da janela, a ultima linha tem t+1 e ganha target."""
+    n = 30
+    datas = pd.bdate_range("2024-01-01", periods=n)
+    precos = pd.concat(
+        [
+            pd.DataFrame({"ticker": "PETR4", "date": datas.date,
+                          "adj_close": [100.0 + i for i in range(n)], "volume": [1000] * n}),
+            pd.DataFrame({"ticker": "^BVSP", "date": datas.date,
+                          "adj_close": [50.0 + i * 0.1 for i in range(n)], "volume": [2000] * n}),
+        ],
+        ignore_index=True,
+    )
+    artigos = pd.DataFrame(
+        columns=["article_id", "ticker", "published_at", "prob_pos", "prob_neu", "prob_neg"]
+    )
+    fim = datas.date[20]
+
+    out = assemble_dataset(precos, artigos, benchmark="^BVSP",
+                           universe=["PETR4"], end=fim)
+
+    assert out["data"].max() == fim
+    assert pd.notna(out.iloc[-1]["target"]), "ha pregao apos o fim da janela: deve ter target"

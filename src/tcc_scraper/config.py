@@ -8,9 +8,10 @@ IBOV_TICKERS e rode `tcc-scraper validate-tickers` para confirmar que todos resp
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import quote_plus
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -25,7 +26,18 @@ class Settings(BaseSettings):
         env_file=PROJECT_ROOT / ".env", env_file_encoding="utf-8", extra="ignore"
     )
 
+    # Alvo do banco. "postgres" usa database_url; "mysql" monta a URL a partir de
+    # ip_banco/user_banco/senha_banco -- assim a senha do servidor fica em um lugar
+    # so no .env, em vez de repetida dentro de uma URL.
+    db_target: str = "postgres"
+
     database_url: str = "postgresql+psycopg://tcc:tcc_local_dev@localhost:5433/tcc_scraper"
+
+    ip_banco: str = ""
+    user_banco: str = ""
+    senha_banco: str = ""
+    porta_banco: int = 3306
+    nome_banco: str = "tcc_scraper"
 
     user_agent: str = "TCC-Scraper/1.0 (pesquisa academica)"
 
@@ -36,13 +48,57 @@ class Settings(BaseSettings):
     throttle_bcb: float = 0.5
     throttle_article_fetch: float = 1.5
 
-    data_start: date = date(2024, 9, 1)
+    # Janela do DATASET (e da coleta de noticias, que e o custo dominante).
+    data_start: date = date(2025, 9, 1)
     data_end: date = date(2026, 9, 1)
+
+    # Os precos sao coletados ANTES de data_start por esta margem, para aquecer as
+    # janelas de 20 pregoes. Sem ela, os 20 primeiros dias do dataset sairiam sem
+    # retorno_20d, volatilidade_20d e volume_relativo. 45 dias corridos dao ~31
+    # pregoes -- folga confortavel sobre os 20 necessarios, inclusive com feriados.
+    price_warmup_days: int = 45
 
     brapi_token: str = ""
 
     hf_cache_dir: Path = Field(default=PROJECT_ROOT / ".hf_cache")
     export_dir: Path = Field(default=PROJECT_ROOT / "exports")
+
+
+    @property
+    def price_start(self) -> date:
+        """Data inicial da coleta de precos: data_start menos o aquecimento."""
+        return self.data_start - timedelta(days=self.price_warmup_days)
+
+    @property
+    def effective_url(self) -> str:
+        """URL que o SQLAlchemy realmente usa.
+
+        Com db_target=mysql, monta a partir das credenciais separadas. A senha passa
+        por quote_plus porque caracteres como @ e / a quebrariam dentro da URL.
+        charset=utf8mb4 nao e opcional: o `utf8` do MySQL guarda 3 bytes por
+        caractere e corrompe emoji e parte dos acentos das manchetes.
+        """
+        if self.db_target.lower() != "mysql":
+            return self.database_url
+
+        faltando = [
+            nome for nome, valor in (
+                ("IP_BANCO", self.ip_banco),
+                ("USER_BANCO", self.user_banco),
+                ("SENHA_BANCO", self.senha_banco),
+            )
+            if not valor
+        ]
+        if faltando:
+            raise ValueError(
+                f"DB_TARGET=mysql exige {', '.join(faltando)} no .env"
+            )
+
+        senha = quote_plus(self.senha_banco)
+        return (
+            f"mysql+pymysql://{self.user_banco}:{senha}"
+            f"@{self.ip_banco}:{self.porta_banco}/{self.nome_banco}?charset=utf8mb4"
+        )
 
 
 @lru_cache
