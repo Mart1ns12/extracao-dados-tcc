@@ -149,3 +149,85 @@ def test_todas_as_tabelas_tem_prefixo_de_camada() -> None:
     for tabela in Base.metadata.sorted_tables:
         assert tabela.name.startswith(("raw_", "staging_", "features_")), tabela.name
         assert tabela.schema is None, f"{tabela.name} ainda declara schema (quebra no MySQL)"
+
+
+# --------------------------------------------------------------------------------------
+# Persistencia do dataset em features_dataset_v1
+# --------------------------------------------------------------------------------------
+@pytest.fixture
+def limpa_dataset(engine):
+    """Remove so as linhas de teste, preservando o dataset real da tabela."""
+    from tcc_scraper.db.models import DatasetV1
+
+    def _limpar():
+        with Session(engine) as s:
+            s.execute(DatasetV1.__table__.delete().where(DatasetV1.ticker == "ZZZZ9"))
+            s.commit()
+    _limpar()
+    yield
+    _limpar()
+
+
+def _linhas_dataset(n_noticias: int, positivo):
+    import datetime as d
+    return [
+        {
+            "data": d.date(2025, 9, 1) + d.timedelta(days=i), "ticker": "ZZZZ9",
+            "quant_noticias": n_noticias, "positivo": positivo, "neutro": positivo,
+            "negativo": positivo, "score_finbert": 0.0 if positivo is not None else None,
+            "retorno_1d": 0.01, "retorno_5d": 0.02, "retorno_20d": 0.03,
+            "volatilidade_20d": 0.015, "volume_relativo": 1.2,
+            "retorno_ibovespa": 0.005, "target": i % 2,
+        }
+        for i in range(3)
+    ]
+
+
+def test_dataset_e_gravado_no_banco(engine, limpa_dataset) -> None:
+    """O build-dataset precisa materializar em features_dataset_v1, nao so exportar."""
+    from tcc_scraper.db.models import DatasetV1
+
+    with Session(engine) as s:
+        bulk_upsert(s, DatasetV1.__table__, _linhas_dataset(5, 0.7),
+                    index_elements=["data", "ticker"], update_columns=["quant_noticias"])
+        s.commit()
+        n = s.execute(
+            select(DatasetV1.data).where(DatasetV1.ticker == "ZZZZ9")
+        ).scalars().all()
+    assert len(n) == 3
+
+
+def test_regravar_atualiza_em_vez_de_duplicar(engine, limpa_dataset) -> None:
+    """Remontar o dataset com outra regra sobrescreve as linhas, nao acumula."""
+    from tcc_scraper.db.models import DatasetV1
+
+    cols = ["quant_noticias", "positivo", "neutro", "negativo", "score_finbert"]
+    with Session(engine) as s:
+        bulk_upsert(s, DatasetV1.__table__, _linhas_dataset(5, 0.7),
+                    index_elements=["data", "ticker"], update_columns=cols)
+        s.commit()
+        bulk_upsert(s, DatasetV1.__table__, _linhas_dataset(99, 0.1),
+                    index_elements=["data", "ticker"], update_columns=cols)
+        s.commit()
+
+        linhas = s.execute(
+            select(DatasetV1.quant_noticias).where(DatasetV1.ticker == "ZZZZ9")
+        ).scalars().all()
+
+    assert len(linhas) == 3, "upsert duplicou linhas"
+    assert set(linhas) == {99}, "os valores nao foram atualizados"
+
+
+def test_sentimento_ausente_vira_null_no_banco(engine, limpa_dataset) -> None:
+    """Dia sem noticia grava NULL; gravar 0 afirmaria sentimento neutro medido."""
+    from tcc_scraper.db.models import DatasetV1
+
+    with Session(engine) as s:
+        bulk_upsert(s, DatasetV1.__table__, _linhas_dataset(0, None),
+                    index_elements=["data", "ticker"], update_columns=["positivo"])
+        s.commit()
+        vals = s.execute(
+            select(DatasetV1.positivo).where(DatasetV1.ticker == "ZZZZ9")
+        ).scalars().all()
+
+    assert all(v is None for v in vals), f"esperado NULL, veio {vals}"
