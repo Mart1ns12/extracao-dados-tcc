@@ -73,6 +73,16 @@ class Settings(BaseSettings):
 
     brapi_token: str = ""
 
+    # Analise diaria por LLM (comando analyze-llm). A chave NAO e validada aqui:
+    # o scraper local roda sem ela; so o job exige e falha com mensagem clara.
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.8-flash"
+    llm_timeout_s: int = 180
+    llm_max_attempts: int = 3
+    # Fuso da data de referencia. O cron do Railway e UTC; 22:00 UTC = 19:00 em
+    # Brasilia (o Brasil nao tem horario de verao desde 2019).
+    llm_tz: str = "America/Sao_Paulo"
+
     hf_cache_dir: Path = Field(default=PROJECT_ROOT / ".hf_cache")
     export_dir: Path = Field(default=PROJECT_ROOT / "exports")
 
@@ -240,6 +250,96 @@ SEARCH_QUALIFIERS: dict[str, str] = {
     "GMAT3": "varejo OR supermercado OR atacarejo",  # "Mateus" e nome proprio comum
     "AURE3": "energia OR eletrica OR geracao",
     "SLCE3": "agricola OR agronegocio OR soja",
+}
+
+# Setor de cada ticker do IBOV, usado no prompt da analise por LLM. Os valores sao
+# as strings do enum llm.schema.Setor; config NAO importa de llm (evita ciclo).
+IBOV_SECTORS: dict[str, str] = {
+    "ABEV3": "alimentos_agro",  # bebidas
+    "ALOS3": "construcao_imobiliario",  # shoppings
+    "ASAI3": "varejo_consumo",
+    "AUAU3": "varejo_consumo",  # Petz, pet shops
+    "AURE3": "energia_eletrica",
+    "AXIA3": "energia_eletrica",  # ex-Eletrobras
+    "AZUL3": "transporte_logistica",
+    "AZZA3": "varejo_consumo",  # moda
+    "B3SA3": "bancos_financeiro",  # bolsa B3, financeiro
+    "BBAS3": "bancos_financeiro",
+    "BBDC3": "bancos_financeiro",
+    "BBDC4": "bancos_financeiro",
+    "BBSE3": "seguros",
+    "BEEF3": "alimentos_agro",
+    "BPAC11": "bancos_financeiro",
+    "BRAP4": "mineracao_siderurgia",  # holding da Vale
+    "BRAV3": "petroleo_gas",  # Brava Energia, oleo e gas
+    "BRKM5": "petroleo_gas",  # Braskem, petroquimica
+    "CMIG4": "energia_eletrica",
+    "CMIN3": "mineracao_siderurgia",
+    "COGN3": "educacao",
+    "CPFE3": "energia_eletrica",
+    "CPLE3": "energia_eletrica",
+    "CSAN3": "petroleo_gas",  # Cosan, combustiveis
+    "CSNA3": "mineracao_siderurgia",
+    "CVCB3": "varejo_consumo",  # turismo
+    "CYRE3": "construcao_imobiliario",
+    "DIRR3": "construcao_imobiliario",
+    "EGIE3": "energia_eletrica",
+    "EMBJ3": "bens_industriais",  # Embraer
+    "ENEV3": "energia_eletrica",
+    "ENGI11": "energia_eletrica",
+    "EQTL3": "energia_eletrica",
+    "FLRY3": "saude",
+    "GGBR4": "mineracao_siderurgia",
+    "GMAT3": "varejo_consumo",  # Grupo Mateus
+    "GOAU4": "mineracao_siderurgia",
+    "HAPV3": "saude",
+    "HYPE3": "saude",  # Hypera, farmaceutica
+    "IGTI11": "construcao_imobiliario",  # shoppings
+    "IRBR3": "seguros",  # IRB Brasil RE, resseguro
+    "ISAE4": "energia_eletrica",
+    "ITSA4": "bancos_financeiro",
+    "ITUB4": "bancos_financeiro",
+    "JBSS32": "alimentos_agro",  # JBS, proteina
+    "KLBN11": "papel_celulose",
+    "LREN3": "varejo_consumo",
+    "LWSA3": "telecom_tecnologia",  # Locaweb, software
+    "MBRF3": "alimentos_agro",  # ex-Marfrig/BRF
+    "MGLU3": "varejo_consumo",
+    "MOTV3": "transporte_logistica",  # Motiva, rodovias
+    "MRVE3": "construcao_imobiliario",
+    "MULT3": "construcao_imobiliario",  # shoppings
+    "NATU3": "varejo_consumo",  # Natura, cosmeticos
+    "PCAR3": "varejo_consumo",  # Pao de Acucar
+    "PETR3": "petroleo_gas",
+    "PETR4": "petroleo_gas",
+    "POMO4": "bens_industriais",  # Marcopolo, onibus
+    "PRIO3": "petroleo_gas",
+    "PSSA3": "seguros",  # Porto Seguro
+    "RADL3": "saude",  # Raia Drogasil
+    "RAIL3": "transporte_logistica",  # Rumo, ferrovias
+    "RAIZ4": "petroleo_gas",  # Raizen, combustiveis
+    "RAPT4": "bens_industriais",  # Randon
+    "RDOR3": "saude",
+    "RECV3": "petroleo_gas",
+    "RENT3": "transporte_logistica",  # Localiza, locacao
+    "SANB11": "bancos_financeiro",
+    "SAUD3": "saude",
+    "SBSP3": "saneamento",
+    "SLCE3": "alimentos_agro",
+    "SMTO3": "alimentos_agro",  # Sao Martinho, acucar e etanol
+    "SUZB3": "papel_celulose",
+    "TAEE11": "energia_eletrica",
+    "TIMS3": "telecom_tecnologia",
+    "TOTS3": "telecom_tecnologia",  # Totvs, software
+    "UGPA3": "petroleo_gas",  # Ultrapar, combustiveis
+    "USIM5": "mineracao_siderurgia",
+    "VALE3": "mineracao_siderurgia",
+    "VAMO3": "transporte_logistica",  # Vamos, locacao de caminhoes
+    "VBBR3": "petroleo_gas",  # Vibra, distribuicao
+    "VIVA3": "varejo_consumo",  # Vivara, joias
+    "VIVT3": "telecom_tecnologia",
+    "WEGE3": "bens_industriais",
+    "YDUQ3": "educacao",
 }
 
 BENCHMARK_TICKER = "^BVSP"

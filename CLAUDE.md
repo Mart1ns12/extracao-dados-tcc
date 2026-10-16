@@ -31,8 +31,9 @@ pregões — sem isso, os 20 primeiros dias do dataset sairiam sem `retorno_20d`
 **O dataset é materializado em `features_dataset_v1`** pelo `build-dataset`, além de
 exportado em Parquet/CSV. Upsert por `(data, ticker)`: remontar sobrescreve, não duplica.
 
-**Restrição dominante do projeto: custo financeiro zero.** Nenhuma dependência de API paga.
-Qualquer proposta que exija cartão de crédito ou plano pago deve ser rejeitada.
+**Restrição dominante do projeto: custo zero, exceto a LLM do Google (teto US$ 5/mês).**
+A análise diária por LLM (Gemini) é a única dependência paga, com teto aprovado de US$ 5/mês.
+Qualquer outra proposta que exija API paga, cartão de crédito ou plano pago deve ser rejeitada.
 
 ---
 
@@ -194,6 +195,7 @@ python -m tcc_scraper.cli enrich          # Fase 4: corpo dos artigos (paralelo)
 python -m tcc_scraper.cli score           # Fase 5: FinBERT pt/en
 python -m tcc_scraper.cli build-dataset   # Fase 6: 14 colunas -> banco + Parquet
 python -m tcc_scraper.cli export          # Parquet + CSV
+python -m tcc_scraper.cli analyze-llm [--data YYYY-MM-DD] [--dry-run] [--modelo X]  # Analise diaria por LLM (cron no Railway)
 
 pytest                                    # testes (sem rede — usam fixtures)
 ```
@@ -247,3 +249,24 @@ Script de cópia de dados: `scripts/migrar_dados.py` (idempotente, com conferên
 **Pegadinha do MySQL:** a collation `utf8mb4_0900_ai_ci` ignora acentos em `LIKE` —
 `LIKE '%ã%'` deu 584 linhas no Postgres e 2.078 no MySQL sobre os mesmos dados. Não
 afeta o pipeline (nenhuma query dele usa `LIKE`), mas afeta consultas de análise.
+
+---
+
+## 9. Análise diária por LLM (Gemini)
+
+Camada **independente do scraper**: 1 chamada/dia ao Gemini com grounding do Google Search e
+JSON schema **na mesma chamada** (só Gemini 3+ aceita os dois juntos). Modelo em
+`GEMINI_MODEL` (padrão `gemini-3.8-flash`). Tabelas: `raw_llm_prompts` (prompt versionado),
+`raw_llm_runs` (append-only, uma linha por tentativa, mesmo em erro) e `staging_llm_*`
+(substituídas por dia). O `features_dataset_v1` **fica intacto**.
+
+**Exceção aprovada à regra de custo:** é a única dependência paga do projeto, com teto de
+US$ 5/mês (~30 chamadas). Roda como cron no Railway (`0 22 * * *`, UTC = 19:00 de Brasília).
+
+**Citações:** o prompt exige `fonte` e `url` dentro de cada item do JSON. As anotações
+`url_citation` da API vão para `citacoes_json` só como auditoria, nunca como fonte de dados.
+
+**Mudou o template → sobe `VERSAO` em `llm/prompt.py`** e cria `analise_diaria_v2.txt`;
+nunca edite a versão antiga no lugar.
+
+Roteiro de deploy, variáveis e custo: [docs/LLM-ANALISE.md](docs/LLM-ANALISE.md).

@@ -28,6 +28,11 @@ mysql = [
     "pymysql>=1.1",
     "cryptography>=42",  # exigido pelo caching_sha2_password, padrao do MySQL 8
 ]
+# Analise diaria por Gemini (analyze-llm / cron do Railway). Extra separado: o scraper
+# local nao precisa, e a imagem do Railway NUNCA instala `sentiment` (torch ~2 GB).
+llm = [
+    "google-genai>=2.0",
+]
 sentiment = [
     "transformers>=4.44",
     "torch>=2.3",

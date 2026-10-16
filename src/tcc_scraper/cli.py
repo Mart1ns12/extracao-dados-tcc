@@ -364,6 +364,42 @@ def _persist_dataset(dataset: pd.DataFrame) -> int:
         )
 
 
+@app.command("analyze-llm")
+def analyze_llm(
+    data: str = typer.Option(None, "--data", help="YYYY-MM-DD (padrao: hoje em LLM_TZ)"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Imprime o prompt; nao chama a API nem grava"
+    ),
+    modelo: str = typer.Option(None, "--modelo", help="Sobrescreve GEMINI_MODEL"),
+) -> None:
+    """Analise diaria por LLM (Gemini + Google Search): grava raw_llm_runs e staging_llm_*."""
+    _setup_logging()
+    from tcc_scraper.llm.job import run_daily_analysis
+
+    ref = dt.date.fromisoformat(data) if data else None
+    try:
+        r = run_daily_analysis(ref, dry_run=dry_run, modelo=modelo)
+    except ImportError as exc:  # extra `llm` nao instalado
+        # markup=False: "[llm]" e mensagens da API nao podem ser lidas como tags do rich
+        console.print(f"{exc} -- instale com: pip install -e '.[llm]'", style="red",
+                      markup=False)
+        raise typer.Exit(1) from exc
+    except ValueError as exc:   # GEMINI_API_KEY ausente, data invalida
+        console.print(str(exc), style="red", markup=False)
+        raise typer.Exit(1) from exc
+
+    if r.status == "dry_run":
+        console.print(r.prompt, markup=False, highlight=False)
+        return
+    _report("analise LLM", {
+        "status": r.status, "run_id": r.run_id, "data": str(r.data_referencia),
+        "pregao": str(r.pregao_referencia), **r.linhas, **r.tokens,
+    })
+    if r.status != "ok":
+        console.print(r.erro, style="red", markup=False)
+        raise typer.Exit(1)
+
+
 @app.command("validate-tickers")
 def validate_tickers() -> None:
     """Confere se todos os tickers de IBOV_TICKERS respondem no Yahoo."""

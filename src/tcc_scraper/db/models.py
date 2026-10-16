@@ -15,6 +15,7 @@ import hashlib
 from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     CheckConstraint,
@@ -301,3 +302,131 @@ class DatasetV1(Base):
 
     # Unico campo que olha t+1. Nulo na ultima data disponivel, que e descartada no export.
     target: Mapped[int | None] = mapped_column(SmallInteger)
+
+
+# --------------------------------------------------------------------------------------
+# llm -- analise diaria por Gemini. raw_ = o que veio da rede (prompt e resposta);
+# staging_ = o JSON normalizado em linhas. Nada aqui alimenta features_dataset_v1.
+# --------------------------------------------------------------------------------------
+# `Text` e TEXT de 64 KB no MySQL: uma resposta de ~15 mil tokens passa de 60 KB e seria
+# truncada (ou rejeitada em modo estrito). LONGTEXT onde o tamanho e imprevisivel.
+LongText = Text().with_variant(mysql.LONGTEXT, "mysql")
+
+
+class LlmPrompt(Base):
+    """Template versionado. Imutavel: mudou o texto, sobe a versao."""
+    __tablename__ = "raw_llm_prompts"
+    __table_args__ = (UniqueConstraint("nome", "versao", name="uq_llm_prompts_nome_versao"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    nome: Mapped[str] = mapped_column(String(64), nullable=False)
+    versao: Mapped[int] = mapped_column(Integer, nullable=False)
+    texto_template: Mapped[str] = mapped_column(LongText, nullable=False)
+    schema_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    criado_em: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+
+
+class LlmRun(Base):
+    """Uma linha por tentativa, inclusive as que falharam. Append-only."""
+    __tablename__ = "raw_llm_runs"
+    __table_args__ = (Index("ix_llm_runs_data_referencia", "data_referencia"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("raw_llm_prompts.id"), nullable=False)
+    data_referencia: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    # Ultimo pregao <= data_referencia pelo ^BVSP em raw_prices; NULL se nao ha preco.
+    pregao_referencia: Mapped[dt.date | None] = mapped_column(Date)
+    modelo: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_renderizado: Mapped[str] = mapped_column(LongText, nullable=False)
+    resposta_bruta: Mapped[str | None] = mapped_column(LongText)
+    # Parseado e validado; NULL quando status != ok. JSON nativo nos dois bancos.
+    resposta_json: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
+    resumo_geral: Mapped[str | None] = mapped_column(Text)
+    # Auditoria do grounding: queries executadas e {url, title} das anotacoes.
+    buscas_json: Mapped[list | None] = mapped_column(JSON(none_as_null=True))
+    citacoes_json: Mapped[list | None] = mapped_column(JSON(none_as_null=True))
+    tokens_entrada: Mapped[int | None] = mapped_column(Integer)
+    tokens_saida: Mapped[int | None] = mapped_column(Integer)
+    tokens_pensamento: Mapped[int | None] = mapped_column(Integer)
+    latencia_ms: Mapped[int | None] = mapped_column(Integer)
+    # ok | erro_api | erro_json | erro_validacao | erro_gravacao
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    erro: Mapped[str | None] = mapped_column(Text)
+    iniciado_em: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+    finalizado_em: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+
+
+class LlmNoticiaEmpresa(Base):
+    """Noticia por ticker. PK natural: reexecutar o dia substitui, nao duplica."""
+    __tablename__ = "staging_llm_noticias_empresas"
+    __table_args__ = (Index("ix_llm_noticias_empresas_ticker", "ticker"),)
+
+    data_referencia: Mapped[dt.date] = mapped_column(Date, primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(12), primary_key=True)
+    # url_hash da URL canonicalizada; sem URL, sha256 do titulo normalizado.
+    item_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("raw_llm_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    pregao_referencia: Mapped[dt.date | None] = mapped_column(Date)
+    titulo: Mapped[str] = mapped_column(Text, nullable=False)
+    resumo: Mapped[str] = mapped_column(Text, nullable=False)
+    fonte: Mapped[str | None] = mapped_column(String(255))
+    url: Mapped[str | None] = mapped_column(Text)
+    publicado_em: Mapped[dt.date | None] = mapped_column(Date)
+    setor: Mapped[str] = mapped_column(String(32), nullable=False)
+    sentimento: Mapped[str] = mapped_column(String(16), nullable=False)
+    relevancia: Mapped[float] = mapped_column(Double, nullable=False)
+
+
+class LlmNoticiaMacro(Base):
+    __tablename__ = "staging_llm_noticias_macro"
+
+    data_referencia: Mapped[dt.date] = mapped_column(Date, primary_key=True)
+    item_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("raw_llm_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    pregao_referencia: Mapped[dt.date | None] = mapped_column(Date)
+    escopo: Mapped[str] = mapped_column(String(8), nullable=False)       # global | brasil
+    titulo: Mapped[str] = mapped_column(Text, nullable=False)
+    resumo: Mapped[str] = mapped_column(Text, nullable=False)
+    fonte: Mapped[str | None] = mapped_column(String(255))
+    url: Mapped[str | None] = mapped_column(Text)
+    publicado_em: Mapped[dt.date | None] = mapped_column(Date)
+    # Listas do enum como JSON: sem tabela N:N (YAGNI).
+    commodities_afetadas: Mapped[list] = mapped_column(JSON, nullable=False)
+    direcao_commodity: Mapped[str] = mapped_column(String(16), nullable=False)
+    setores_afetados: Mapped[list] = mapped_column(JSON, nullable=False)
+
+
+class LlmAcaoSinal(Base):
+    __tablename__ = "staging_llm_acoes_sinais"
+    __table_args__ = (Index("ix_llm_acoes_sinais_ticker", "ticker"),)
+
+    data_referencia: Mapped[dt.date] = mapped_column(Date, primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(12), primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("raw_llm_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    pregao_referencia: Mapped[dt.date | None] = mapped_column(Date)
+    direcao_esperada: Mapped[str] = mapped_column(String(8), nullable=False)   # alta|baixa|neutra
+    confianca: Mapped[float] = mapped_column(Double, nullable=False)
+    motivo: Mapped[str] = mapped_column(Text, nullable=False)
+    setor: Mapped[str] = mapped_column(String(32), nullable=False)
+    noticias_relacionadas: Mapped[list] = mapped_column(JSON, nullable=False)
+
+
+class LlmMercado(Base):
+    __tablename__ = "staging_llm_mercados"
+
+    data_referencia: Mapped[dt.date] = mapped_column(Date, primary_key=True)
+    nome: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("raw_llm_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    pregao_referencia: Mapped[dt.date | None] = mapped_column(Date)
+    tipo: Mapped[str] = mapped_column(String(16), nullable=False)   # indice|commodity|moeda|setor
+    variacao_pct: Mapped[float | None] = mapped_column(Double)
+    motivo: Mapped[str] = mapped_column(Text, nullable=False)

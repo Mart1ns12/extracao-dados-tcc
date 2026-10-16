@@ -18,13 +18,13 @@ por (data, ticker) com 14 colunas — contagem de notícias, sentimento FinBERT
 Ibovespa e um target binário (1 se a ação superar o Ibov em t+1).
 
 Cobre os 85 ativos do IBOV, ~2 anos de histórico, notícias em pt e en. Restrição
-dominante: **custo financeiro zero**. A etapa de análise/modelagem está fora deste escopo.
+dominante: **custo financeiro zero**. Exceção única e aprovada: a análise diária por LLM do Google, com teto de US$ 5/mês. A etapa de análise/modelagem está fora deste escopo.
 
 ## STACK
 
 Python 3.11+ · PostgreSQL 16 (schemas raw/staging/features) · SQLAlchemy 2.0 + Alembic ·
 httpx · lxml · trafilatura · pandas + pyarrow · transformers/torch (extra opcional) ·
-typer + rich · pytest + ruff.
+typer + rich · pytest + ruff · google-genai (extra opcional llm).
 
 ## ARCHITECTURE
 
@@ -161,6 +161,28 @@ as 2 h economizadas. Fica configurável, com a medição documentada no `.env.ex
 Dois bugs corrigidos no caminho: o `resolve()` chamava o cliente HTTP cru, sem throttle
 nenhum; e `self.default_delay = ...` era atribuído DEPOIS do `super().__init__()`, que já
 havia criado o `DomainThrottle` — o `throttle_article_fetch` do `.env` nunca era aplicado.
+
+> **Análise diária por Gemini com grounding, 1 chamada/dia.** Problema: leitura qualitativa diária
+> sem reabrir o scraping. Opções: (a) Gemini 3 Flash com `google_search` + JSON schema na mesma
+> chamada; (b) 2 chamadas nos 2.5; (c) LLM sobre `raw_articles`. Escolhido (a): spike de
+> 2026-10-15 confirmou que a Interactions API aceita tools + `response_format` juntos no
+> `gemini-3.8-flash` (prompt v3: ~3,2 mil tokens de entrada, ~8,5 mil de saída, ~13,7 mil de
+> raciocínio, 14 buscas, 85-133 s, ~US$ 0,086 por chamada). Dois achados do teste real: o
+> schema enviado precisa marcar TODOS os campos como obrigatórios (senão o modelo omite seções
+> inteiras), e as URLs vêm como redirect do Google que expira e às vezes aponta para imagem. Custo: única dependência paga — exceção explícita à
+> regra de custo zero, **teto US$ 5/mês**. Perde-se reprodutibilidade (a busca muda; por isso JSON
+> bruto, prompt renderizado, queries e citações ficam em `raw_llm_runs`), e a chamada não passa
+> por `collectors/base.Collector` (não é scraping).
+>
+> **raw + staging para o LLM.** `raw_llm_runs` append-only (uma linha por tentativa, mesmo em erro);
+> `staging_llm_*` substituída por dia (DELETE + upsert). Reprocessar com outro parser é local.
+>
+> **Cron em vez de loop.** Railway cobra por tempo de processo; loop com `sleep` custaria o mês
+> inteiro por 1 min de trabalho. `get_engine().dispose()` no `finally` é o que deixa o processo sair.
+>
+> **Citações no JSON, não nas anotações.** A Interactions API devolve `url_citation` por offset
+> sobre o texto; mapear sobre JSON é frágil. O prompt exige `fonte`/`url` em cada item; as
+> anotações vão para `citacoes_json` só como auditoria.
 
 ## PHILOSOPHY
 

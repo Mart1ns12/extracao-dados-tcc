@@ -1,0 +1,103 @@
+{
+  "data_referencia": "2026-10-14",
+  "resumo_geral": "O Ibovespa encerrou o dia em alta, puxado por petroleiras depois que o Brent recuperou parte das perdas da semana. A expectativa pela sinalizacao do Copom sobre a Selic seguiu no radar dos investidores e pressionou os juros futuros. No setor de mineracao, a queda do minerio de ferro na China pesou sobre as ações da Vale.",
+  "noticias_empresas": [
+    {
+      "ticker": "PETR4",
+      "titulo": "Petrobras anuncia reajuste da gasolina a partir de amanhã",
+      "resumo": "A Petrobras informou novo reajuste no preço da gasolina nas refinarias. A medida tende a melhorar a margem de refino no curto prazo.",
+      "fonte": "InfoMoney",
+      "url": "https://www.infomoney.com.br/mercados/petrobras-anuncia-reajuste-da-gasolina/?utm_source=x",
+      "publicado_em": "2026-10-14",
+      "setor": "petroleo_gas",
+      "sentimento": "positivo",
+      "relevancia": 0.9
+    },
+    {
+      "ticker": "VALE3",
+      "titulo": "Minério de ferro cai com desaceleração da demanda chinesa",
+      "resumo": "O preço do minério de ferro recuou na bolsa de Dalian com a desaceleração da construção civil na China. A Vale é a mineradora mais exposta à queda.",
+      "fonte": "InfoMoney",
+      "url": "https://www.infomoney.com.br/mercados/minerio-de-ferro-cai-com-desaceleracao-da-demanda-chinesa/",
+      "publicado_em": "2026-10-13",
+      "setor": "mineracao_siderurgia",
+      "sentimento": "negativo",
+      "relevancia": 0.75
+    },
+    {
+      "ticker": "XXXX9",
+      "titulo": "Empresa XXXX9 anuncia novo contrato de fornecimento",
+      "resumo": "A companhia fechou um contrato de fornecimento de longo prazo. O valor do acordo não foi divulgado.",
+      "fonte": "Money Times",
+      "url": "https://www.moneytimes.com.br/empresa-xxxx9-anuncia-novo-contrato/",
+      "publicado_em": null,
+      "setor": "outro",
+      "sentimento": "positivo",
+      "relevancia": 0.4
+    }
+  ],
+  "noticias_macro": [
+    {
+      "escopo": "global",
+      "titulo": "Brent sobe com tensões no Oriente Médio e oferta restrita",
+      "resumo": "O petróleo Brent avançou com a preocupação com a oferta global. Os contratos futuros subiram ao longo da sessão.",
+      "fonte": "Reuters",
+      "url": "https://www.reuters.com/markets/commodities/brent-sobe-oferta-restrita-2026-10-14/",
+      "publicado_em": "2026-10-14",
+      "commodities_afetadas": ["petroleo"],
+      "direcao_commodity": "alta",
+      "setores_afetados": ["petroleo_gas"]
+    },
+    {
+      "escopo": "brasil",
+      "titulo": "Mercado precifica manutenção da Selic e reduz apostas de corte",
+      "resumo": "Os juros futuros subiram após a ata do Copom indicar cautela na condução da política monetária. Bancos e construtoras reagem às expectativas de juros mais altos.",
+      "fonte": "InfoMoney",
+      "url": "https://www.infomoney.com.br/economia/mercado-precifica-manutencao-da-selic/",
+      "publicado_em": "2026-10-13",
+      "commodities_afetadas": ["juros_selic"],
+      "direcao_commodity": "incerta",
+      "setores_afetados": ["bancos_financeiro", "construcao_imobiliario"]
+    }
+  ],
+  "acoes_influenciadas": [
+    {
+      "ticker": "PETR4",
+      "direcao_esperada": "alta",
+      "confianca": 0.7,
+      "motivo": "O reajuste da gasolina e a alta do Brent favorecem a margem de refino da companhia no curto prazo.",
+      "setor": "petroleo_gas",
+      "noticias_relacionadas": ["Petrobras anuncia reajuste da gasolina a partir de amanhã"]
+    },
+    {
+      "ticker": "VALE3",
+      "direcao_esperada": "baixa",
+      "confianca": 0.55,
+      "motivo": "A queda do minério de ferro na China pressiona a receita da mineradora.",
+      "setor": "mineracao_siderurgia",
+      "noticias_relacionadas": ["Minério de ferro cai com desaceleração da demanda chinesa"]
+    },
+    {
+      "ticker": "XXXX9",
+      "direcao_esperada": "neutra",
+      "confianca": 0.3,
+      "motivo": "Contrato sem valor divulgado, impacto sobre o resultado incerto.",
+      "setor": "outro",
+      "noticias_relacionadas": ["Empresa XXXX9 anuncia novo contrato de fornecimento"]
+    }
+  ],
+  "mercados_em_alta": [
+    {
+      "nome": "Ibovespa",
+      "tipo": "indice",
+      "variacao_pct": 0.8,
+      "motivo": "Alta puxada por petroleiras e pelo setor financeiro."
+    },
+    {
+      "nome": "Brent",
+      "tipo": "commodity",
+      "variacao_pct": null,
+      "motivo": "Petróleo em alta com oferta restrita; a variação do dia não foi confirmada na fonte."
+    }
+  ]
+}
