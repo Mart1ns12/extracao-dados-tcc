@@ -307,5 +307,53 @@ def validate_tickers() -> None:
         raise typer.Exit(1)
 
 
+@app.command("executor")
+def executor() -> None:
+    """Worker do painel: busca comandos, roda o daily e confirma (fica em loop)."""
+    _setup_logging()
+    from tcc_scraper.config import get_settings
+    from tcc_scraper.executor.comandos import HistoricoIndisponivel
+    from tcc_scraper.executor.loop import Executor
+    from tcc_scraper.executor.painel_client import PainelClient
+    from tcc_scraper.orquestrador import Daily, RepositorioBanco
+
+    settings = get_settings()
+    if not settings.painel_api_url or not settings.executor_token:
+        console.print("[red]PAINEL_API_URL e EXECUTOR_TOKEN precisam estar no .env[/red]")
+        raise typer.Exit(1)
+
+    repo = RepositorioBanco()
+    client = PainelClient(settings.painel_api_url, settings.executor_token)
+    executor_ = Executor(
+        repo, Daily(repo, settings=settings), HistoricoIndisponivel(), client, settings
+    )
+    executor_.run_forever()
+
+
+@app.command("daily")
+def daily_cmd(
+    etapa: str = typer.Option(None, help="Roda so esta etapa (ex.: noticias)"),
+    origem: str = typer.Option("manual", help="Origem registrada na execucao"),
+) -> None:
+    """Roda o daily agora (bloqueante) e imprime o resumo."""
+    _setup_logging()
+    from tcc_scraper.orquestrador import Daily, ExecucaoEmAndamento, RepositorioBanco
+
+    repo = RepositorioBanco()
+    tipo = "etapa" if etapa else "daily"
+    try:
+        execucao_id = Daily(repo).executar(tipo, etapa, origem)
+    except (ExecucaoEmAndamento, ValueError) as exc:
+        console.print(str(exc), style="red", markup=False)
+        raise typer.Exit(1) from exc
+
+    exe = repo.obter(execucao_id)
+    console.print(f"execução [cyan]{execucao_id}[/cyan]: [bold]{exe['status']}[/bold]")
+    _report(
+        "etapas",
+        {f"{e['ordem']}. {e['etapa_id']} [{e['status']}]": e["itens"] for e in exe["etapas"]},
+    )
+
+
 if __name__ == "__main__":
     app()
