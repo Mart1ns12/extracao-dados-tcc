@@ -23,7 +23,7 @@ Uma linha por `(data, ticker)` com as **14 colunas** de `docs/Dataset1.0.xlsx`:
 | `target` | `1` se a ação superar o Ibov em **t+1**, senão `0` |
 
 **Janela: 1 ano** (`DATA_START` a `DATA_END` no `.env`). Os preços são coletados
-`PRICE_WARMUP_DAYS` (45 dias) ANTES de `DATA_START`, para aquecer as janelas de 20
+`PRICE_WARMUP_DAYS` (400 dias) ANTES de `DATA_START`, para aquecer as janelas de 20
 pregões — sem isso, os 20 primeiros dias do dataset sairiam sem `retorno_20d`,
 `volatilidade_20d` e `volume_relativo`. Medido: com aquecimento, essas colunas saem com
 **0% de nulos** (antes: 4%).
@@ -195,7 +195,11 @@ python -m tcc_scraper.cli enrich          # Fase 4: corpo dos artigos (paralelo)
 python -m tcc_scraper.cli score           # Fase 5: FinBERT pt/en
 python -m tcc_scraper.cli build-dataset   # Fase 6: 14 colunas -> banco + Parquet
 python -m tcc_scraper.cli export          # Parquet + CSV
-python -m tcc_scraper.cli analyze-llm [--data YYYY-MM-DD] [--dry-run] [--modelo X]  # Analise diaria por LLM (cron no Railway)
+python -m tcc_scraper.cli analyze-llm [--data YYYY-MM-DD] [--dry-run] [--modelo X]  # Analise diaria por LLM (etapa analise do daily)
+python -m tcc_scraper.cli executor       # Worker do painel (Railway): comandos, daily das 18:30 BRT, carga
+python -m tcc_scraper.cli daily [--etapa ID] [--origem manual]  # Daily de 9 etapas, sem painel (bloqueante)
+# Previstos (ainda não existem no cli): build-entrega, collect-cvm, collect-ipe, collect-cadastro,
+#   collect-proventos, collect-indices, judge-news, historico
 
 pytest                                    # testes (sem rede — usam fixtures)
 ```
@@ -205,6 +209,8 @@ A coleta de notícias leva **6–9 h** na primeira execução (9.010 janelas + s
 
 Para rodar tudo em sequência no servidor: `./scripts/coleta-completa.sh` (ver
 [docs/MIGRACAO-MYSQL.md](docs/MIGRACAO-MYSQL.md)).
+
+**Executor e painel:** ver [docs/EXECUTOR.md](docs/EXECUTOR.md).
 
 ---
 
@@ -261,7 +267,7 @@ JSON schema **na mesma chamada** (só Gemini 3+ aceita os dois juntos). Modelo e
 (substituídas por dia). O `features_dataset_v1` **fica intacto**.
 
 **Exceção aprovada à regra de custo:** é a única dependência paga do projeto, com teto de
-US$ 5/mês (~30 chamadas). Roda como cron no Railway (`0 22 * * *`, UTC = 19:00 de Brasília).
+US$ 5/mês (~30 chamadas). Roda como etapa `analise` do daily, agendada pelo executor às 18:30 de Brasília (ver [docs/EXECUTOR.md](docs/EXECUTOR.md)).
 
 **Citações:** o prompt exige `fonte` e `url` dentro de cada item do JSON. As anotações
 `url_citation` da API vão para `citacoes_json` só como auditoria, nunca como fonte de dados.

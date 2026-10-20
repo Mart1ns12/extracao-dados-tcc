@@ -76,20 +76,19 @@ python -m tcc_scraper.cli db-info    # confere dialeto e tabelas
 Nunca rode `alembic upgrade` no cron. O usuário `tcc_railway` não tem permissão de DDL, e a
 migração não pertence ao job diário.
 
-## 5. Cron
+## 5. Agendamento
 
-O agendamento está em `railway.json` (`deploy.cronSchedule`) e pode ser editado em
-**Settings → Cron Schedule** do serviço.
+Não há cron do Railway. O serviço é um worker sempre ligado (`python -m tcc_scraper.cli executor`),
+e a análise é a etapa `analise` do daily (ver [EXECUTOR.md](EXECUTOR.md)).
 
-- **Horário:** o cron do Railway é em UTC. `0 22 * * *` = 22:00 UTC = **19:00 em Brasília** (o
-  Brasil não tem horário de verão desde 2019).
-- **Frequência mínima:** 5 minutos.
-- **Execução sobreposta:** se a execução anterior ainda estiver rodando, a nova é pulada.
-- **Sem reinício:** `restartPolicyType: NEVER`. Se a execução falhar, o erro já fica em
-  `raw_llm_runs`; reiniciar só geraria uma nova chamada paga.
-- **Disparo manual:** pelo painel do Railway, ou localmente com
-  `railway run python -m tcc_scraper.cli analyze-llm`. Cada disparo consome cota e custo, então
-  use com moderação.
+- **Horário:** o executor agenda o daily automático às **18:30 de Brasília** (`DAILY_HORA`, no fuso
+  `DAILY_TZ`). A etapa `analise` é a última do daily e roda mesmo se a coleta estourar o orçamento.
+- **Uma vez por dia:** o agendamento automático não repete no mesmo dia. O disparo manual pelo painel
+  (`etapa: analise`) ou `python -m tcc_scraper.cli daily --etapa analise` é uma chamada a mais.
+- **Sem reexecução automática:** se o processo reiniciar durante a análise, a execução vira `falhou`
+  (`interrompida por reinício do executor`) e não é refeita. Refazer seria uma nova chamada paga.
+- **Sem `GEMINI_API_KEY`:** a etapa sai `pulada`, sem chamada.
+- **Custo:** cada disparo consome cota e custo, então use o manual com moderação.
 
 ## 6. Teste local
 
