@@ -38,7 +38,20 @@ from sqlalchemy.types import TypeDecorator
 # As camadas viram PREFIXO no nome da tabela (raw_/staging_/features_), nao schema
 # separado: o MySQL nao tem schemas como o PostgreSQL -- la "schema" e "database"
 # sao a mesma coisa. Um unico esquema de nomes funciona nos dois bancos.
-TABLE_PREFIXES = ("raw_", "staging_", "features_")
+TABLE_PREFIXES = ("raw_", "staging_", "features_", "painel_")
+# Tabelas de entrega: nomes fixos pela spec da etapa seguinte do TCC, sem prefixo de camada.
+ENTREGA_TABLES = (
+    "noticias", "precos", "cadastro", "mudancas_ticker",
+    "balancos", "acoes_emitidas", "proventos", "indices",
+)
+
+
+def tabela_do_projeto(name: str) -> bool:
+    """Tabela criada por este projeto: prefixo de camada, ou uma das 8 tabelas de entrega.
+
+    As tabelas de entrega tem nome fixo pela spec, por isso nao carregam prefixo.
+    """
+    return name.startswith(TABLE_PREFIXES) or name in ENTREGA_TABLES
 
 
 class Base(DeclarativeBase):

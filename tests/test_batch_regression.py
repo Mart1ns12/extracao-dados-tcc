@@ -168,8 +168,10 @@ def test_probabilidades_sobrevivem_ao_round_trip(engine) -> None:
 
 def test_todas_as_tabelas_tem_prefixo_de_camada() -> None:
     """Sem schemas, o prefixo e a unica marca de camada -- e o filtro do Alembic."""
+    from tcc_scraper.db.models import tabela_do_projeto
+
     for tabela in Base.metadata.sorted_tables:
-        assert tabela.name.startswith(("raw_", "staging_", "features_")), tabela.name
+        assert tabela_do_projeto(tabela.name), tabela.name
         assert tabela.schema is None, f"{tabela.name} ainda declara schema (quebra no MySQL)"
 
 

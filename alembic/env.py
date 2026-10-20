@@ -12,7 +12,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from tcc_scraper.config import get_settings
-from tcc_scraper.db.models import Base
+from tcc_scraper.db.models import Base, tabela_do_projeto
 
 config = context.config
 config.set_main_option("sqlalchemy.url", get_settings().effective_url)
@@ -31,7 +31,7 @@ def include_object(obj, name, type_, reflected, compare_to) -> bool:
     MySQL do servidor e compartilhado com outra aplicacao.
     """
     if type_ == "table":
-        return name.startswith(("raw_", "staging_", "features_"))
+        return tabela_do_projeto(name)
     return True
 
 
