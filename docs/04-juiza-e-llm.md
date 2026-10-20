@@ -85,7 +85,7 @@ Os nomes casam como palavra inteira, sem acento e sem diferença de maiúscula. 
 | `JUIZA_CONFIANCA_MINIMA` | 0,5 | Ver a seção 4: hoje só vale para o Jev |
 
 - A juíza compartilha o teto de **US$ 5/mês** do Gemini com a análise diária (`CLAUDE.md`, seção 9).
-- Preço do `gemini-3.1-flash-lite`, conforme a tabela de [docs/LLM-ANALISE.md](LLM-ANALISE.md) (verificada em 2026-10-15): US$ 0,25 por milhão de tokens de entrada e US$ 1,50 de saída.
+- Preço do `gemini-3.1-flash-lite`, conforme a tabela comparativa da seção 3.6 (verificada em 2026-10-15): US$ 0,25 por milhão de tokens de entrada e US$ 1,50 de saída.
 - **Custo real da juíza ainda não foi medido.** O spike de custo está pendente (seção 4).
 - A etapa `juiza` termina como `concluida` mesmo com lotes em erro. Os erros aparecem no campo `erros` dos detalhes. Ela só fica `falhou` quando a execução é interrompida por orçamento ou cancelamento.
 
@@ -214,10 +214,11 @@ python -m tcc_scraper.cli analyze-llm --data 2026-10-13  # reexecuta um dia ante
 python -m tcc_scraper.cli analyze-llm --modelo gemini-3.8-flash
 ```
 
-Operação, conforme [docs/LLM-ANALISE.md](LLM-ANALISE.md), seções 5 e 6:
+Operação:
 
 - O daily automático roda uma vez por dia. Um disparo manual pelo painel ou por `daily --etapa analise` é uma chamada a mais, com custo.
 - Se o processo reiniciar durante a análise, a execução vira `falhou` com a mensagem `interrompida por reinício do executor` e não é refeita automaticamente. Refazer seria uma nova chamada paga.
+- Antes de subir, valide a imagem (opcional, com Docker): `docker build -t tcc-llm .` e `docker run --rm -e GEMINI_API_KEY=x tcc-llm python -m tcc_scraper.cli analyze-llm --dry-run`. Confirme que o template `prompts/*.txt` está na imagem: o wheel inclui o diretório inteiro de `src/tcc_scraper`.
 
 ### 3.4 Versionar o prompt
 
@@ -262,6 +263,22 @@ Uso medido com o prompt v3, em 3 execuções de 2026-10-15: cerca de 3,2 mil tok
 
 Com preço dobrado, o cenário pessimista ultrapassa o teto. Reavalie o modelo ou a frequência antes da virada do ano. O `gemini-3.1-flash-lite` custaria cerca de um terço.
 
+Comparativo com outros modelos (página oficial de preços, 2026-10-15; US$ por 1M tokens; estimativa com ~10 mil tokens de entrada e ~15 mil de saída por chamada, 1 chamada por dia). Os modelos 2.5 **não** aceitam `google_search` e JSON schema na mesma chamada: exigiriam 2 chamadas por dia e mudança no cliente.
+
+| Modelo | Entrada | Saída | Chamadas/dia | US$/mês estimado | Observação |
+|---|---|---|---|---|---|
+| `gemini-3.1-flash-lite` | 0,25 | 1,50 | 1 | ~0,75 | mais barato com JSON + grounding juntos |
+| `gemini-3.5-flash-lite` | 0,30 | 2,50 | 1 | ~1,22 | |
+| `gemini-3-flash-preview` | 0,50 | 3,00 | 1 | ~1,50 | preview |
+| `gemini-3.8-flash` (padrão) | 0,75 | 3,75 | 1 | ~1,91 | promocional até 31/12/2026; dobra em 2027 |
+| `gemini-3.1-pro-preview` | 2,00 | 12,00 | 1 | ~6,00 | sem free tier; estoura o teto |
+| `gemini-4-argon` | 2,00 | 10,00 | 1 | ~5,10 | até 30/11/2026; de 1/12 vira 4,00 / 20,00 (~10,20/mês) |
+| `gemini-2.5-flash` | 0,30 | 2,50 | 2 | ~2,10 | precisa de 2 chamadas |
+
+Antes de trocar `GEMINI_MODEL`, confirme o id com `client.models.list()` e o preço na página oficial: só o `gemini-3.8-flash` foi exercitado no spike.
+
+Cenário pessimista (2x tokens: ~20 mil de entrada e ~30 mil de saída por chamada): ~US$ 0,128 por dia, ~US$ 3,83 por mês. Em 2027, com preço dobrado, ~US$ 7,65 por mês, acima do teto. Para sair da faixa grátis de 5.000 buscas por mês com 1 chamada por dia, seriam necessárias ~167 buscas por chamada.
+
 Alerta de orçamento: crie no Google Cloud Billing um orçamento de US$ 5 no projeto do Gemini, com alertas em 50%, 90% e 100%.
 
 ### 3.7 Consultas de leitura da análise
@@ -302,6 +319,6 @@ SELECT ticker, titulo, fonte, url, sentimento, relevancia
 - **Chamada sem busca não confirmada em produção.** O método `classificar` envia `generation_config` com `temperature = 0` na Interactions API. A confirmação numa chamada real é o spike S7, ainda pendente em `progress.md`.
 - **Custo real da juíza não medido.** Está pendente o spike de custo com um dia de artigos, antes de processar o histórico.
 - **Avaliação mede só `papel`.** `tipo_conteudo` não entra na métrica do `--avaliar`.
-- **Jev não implementado.** O adaptador levanta `NotImplementedError`. Ligar o Jev depende de aprovação do dono, de conta e de teste em português. O ADR do Jev (`docs/ADR.md`, linhas 250 a 252) ainda diz "sem justificativa escrita"; o motivo está na spec, seção 6.3.
+- **Jev não implementado.** O adaptador levanta `NotImplementedError`. Ligar o Jev depende de aprovação do dono, de conta e de teste em português. A entrada "Fonte JEV implementada, mas desligada" do [ADR](ADR.md) registra o motivo.
 - **Julgamentos de versões diferentes.** Um par pode ter julgamento de mais de uma versão do prompt. A montagem da entrega usa a versão mais alta.
 - **Limite por execução, não por dia civil.** O teto `JUIZA_MAX_ITENS_DIA` vale por execução de `daily` ou de `historico`. Duas execuções no mesmo dia somam o dobro.

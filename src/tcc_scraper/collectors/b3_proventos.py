@@ -5,7 +5,7 @@ Duas chamadas por empresa, ambas do mesmo endpoint da B3:
 - GetListedSupplementCompany: suplemento com eventos em dinheiro (cashDividends) e em
   acoes (stockDividends, ex.: desdobramento). Subscricoes sao ignoradas.
 
-Gravacao em raw_b3_proventos e raw_b3_suplemento com chave = hash do registro original.
+Gravacao em v1-raw_b3_proventos e v1-raw_b3_suplemento com chave = hash do registro original.
 A camada raw e append-only: update_columns=None preserva a linha ja existente.
 
 Nome de pregao: o parametro tradingName do endpoint espera o nome exato da B3 (ex.:
@@ -40,7 +40,7 @@ class B3ProventosCollector(B3Collector):
     name = "b3_proventos"
 
     def __init__(self, empresas: list[tuple[str, str]] | None = None, **kw) -> None:
-        """empresas: [(issuing_company, trading_name)]. Sem valor, le raw_b3_cadastro."""
+        """empresas: [(issuing_company, trading_name)]. Sem valor, le v1-raw_b3_cadastro."""
         super().__init__(**kw)
         self._empresas = empresas
 
@@ -80,7 +80,7 @@ class B3ProventosCollector(B3Collector):
 
     # -- leitura ------------------------------------------------------------------
     def _ler_universo(self) -> list[dict]:
-        """Empresas de raw_b3_cadastro (ja restritas ao universo pelo B3CadastroCollector)."""
+        """Empresas de v1-raw_b3_cadastro (ja restritas ao universo pelo B3CadastroCollector)."""
         with session_scope() as session:
             rows = session.execute(
                 select(

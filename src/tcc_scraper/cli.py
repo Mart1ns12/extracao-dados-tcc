@@ -362,7 +362,7 @@ def collect_cvm(
     ] = None,
     resume: bool = typer.Option(True, help="Pula o que ja foi coletado"),
 ) -> None:
-    """ITR e DFP da CVM: grava raw_cvm_balancos e raw_cvm_acoes."""
+    """ITR e DFP da CVM: grava v1-raw_cvm_balancos e v1-raw_cvm_acoes."""
     _setup_logging()
     from tcc_scraper.collectors.cvm_demonstracoes import CvmDemonstracoesCollector
 
@@ -449,7 +449,7 @@ def validate_cadastro() -> None:
         if cd_cvm is None:
             motivo = "sem codigo CVM em TICKER_CODE_CVM"
         elif cd_cvm not in por_cvm:
-            motivo = f"cd_cvm {cd_cvm} sem linha em raw_b3_cadastro"
+            motivo = f"cd_cvm {cd_cvm} sem linha em v1-raw_b3_cadastro"
         elif ticker not in por_cvm[cd_cvm]:
             motivo = f"{ticker} ausente de other_codes do cd_cvm {cd_cvm}"
         else:

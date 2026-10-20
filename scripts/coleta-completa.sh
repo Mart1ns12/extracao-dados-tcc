@@ -2,7 +2,7 @@
 # Coleta completa do Dataset 1.0 -- rodar NO SERVIDOR (mesma maquina do banco).
 #
 # NO RAILWAY quem roda e o executor (`python -m tcc_scraper.cli executor`, worker sempre
-# ligado, ver docs/EXECUTOR.md). Este script e para rodar FORA dele, numa maquina com
+# ligado, ver docs/07-executor-e-painel.md). Este script e para rodar FORA dele, numa maquina com
 # acesso direto ao banco. Nao rode os dois ao mesmo tempo no mesmo banco.
 #
 # Cada etapa e retomavel: se o script cair (ou voce interromper com Ctrl-C),

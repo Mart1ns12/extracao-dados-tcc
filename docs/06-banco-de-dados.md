@@ -1,8 +1,7 @@
 # Banco de dados: MySQL 8 único, dicionário das 39 tabelas e migrations
 
 Este documento cobre o banco do projeto: o servidor, o dicionário de todas as tabelas, as migrations 0001 a 0008,
-as regras de tipo e de escrita e os testes que gravam no banco. Substitui o roteiro antigo de
-`docs/MIGRACAO-MYSQL.md`.
+as regras de tipo e de escrita e os testes que gravam no banco. Absorve o antigo roteiro de migração MySQL, que foi removido.
 
 ## 1. Banco único
 
@@ -127,7 +126,7 @@ Entrega (migration 0006). Os nomes e as colunas seguem a spec em `spec-entrega-e
 | Tabela | Chave (PK) | Linhas |
 |---|---|---|
 | `v1-noticias` | `id`, `ticker` | 4.980 |
-| `v1-precos` | `data`, `ticker` | 48.561 (ver seção 7) |
+| `v1-precos` | `data`, `ticker` | 48.561 (verificação de ponta a ponta, ver seção 7) |
 | `v1-cadastro` | `ticker` | 88 |
 | `v1-mudancas_ticker` | `ticker_antigo` | 10 |
 | `v1-balancos` | `cnpj`, `tipo_documento`, `data_inicio_periodo`, `data_fim_periodo` | 247 |
@@ -252,15 +251,11 @@ Por isso, cada teste limpa só as linhas que criou, pelos prefixos `TESTE-`, `RE
 
 ## 7. Pontos em aberto e limitações
 
-- **Preços: 48.561 não conferido.** O número de `v1-precos` vem do briefing de documentação. O ledger registra
-  48.564 linhas no passo `precos` da segunda rodada do ponta a ponta, sem dizer se a contagem é de `raw_prices` ou
-  de `v1-precos`. A diferença não foi reconciliada.
+- **Preços: 48.564 em `raw_prices` e 48.561 em `v1-precos`.** `raw_prices` tem 48.564 linhas: é a coleta, que inclui IDIV, SMLL, IFIX e os símbolos macro. `v1-precos` tem 48.561 linhas, montadas na verificação de ponta a ponta, no Postgres local, antes da migração para o banco único.
 - **`raw_b3_cadastro.cd_cvm` vira `AUTO_INCREMENT`.** A PK é um `Integer` simples, e o SQLAlchemy gera
   `AUTO_INCREMENT` no DDL (ver `sql/completo_ate_0008.mysql.sql`). É inofensivo, porque o coletor sempre informa
   o `cd_cvm`. A correção certa é `autoincrement=False` no modelo e na migration. Não foi feita.
-- **"Raw append-only" não é literal.** Há UPDATEs em `raw_prices`, `raw_macro`, `raw_articles.resolved_url`,
-  `raw_cvm_cadastro` e `raw_b3_cadastro` (seção 3.3). São reingestões e preenchimento de campo, não reescrita de
-  histórico. A regra do `CLAUDE.md` deve ser lida com essa exceção.
+- **"Raw append-only" não é literal.** Há UPDATEs em `raw_prices`, `raw_macro`, `raw_articles.resolved_url`, `v1-raw_cvm_cadastro` e `v1-raw_b3_cadastro` (seção 3.3). São reingestões e preenchimento de campo, não reescrita de histórico. O `CLAUDE.md` (seção 5) registra essa exceção.
 - **Nenhum servidor MySQL de teste.** Migrations e testes com banco rodam contra o MySQL do `.env`. A paridade do
   dataset entre dois bancos, que existia com PostgreSQL, não foi reexecutada depois da migração para banco único.
 - **Números de linhas da seção 3.** Os valores vêm do ponta a ponta (T30), executado na noite de 2026-10-19 para

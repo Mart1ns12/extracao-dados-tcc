@@ -83,6 +83,8 @@ python -m tcc_scraper.cli build-dataset --no-export
 A ordem de uso é `collect-prices`, `collect-macro`, `collect-news`, `enrich`, `score` e `build-dataset`. O
 `collect-news` respeita o teto de 100 itens por consulta do Google News: ao bater o teto, subdivide a janela.
 
+Para rodar tudo de uma vez, com log por etapa, em Linux: `nohup ./scripts/coleta-completa.sh > logs/coleta.log 2>&1 &` e depois `tail -f logs/coleta.log`. A coleta de notícias é retomável: rodar o mesmo comando de novo continua de onde parou. Rode-a sob `tmux` ou `nohup` para sobreviver à queda da sessão SSH.
+
 ### 2.3 Análise diária por LLM
 
 | Comando | Opções | O que faz |
@@ -240,6 +242,20 @@ O scraper roda no Railway como **worker sempre ligado**: o serviço executa `pyt
   4. `CMD ["python", "-m", "tcc_scraper.cli", "executor"]`.
 - **Variáveis**: no painel do Railway, nunca no repositório. Pelo menos: `IP_BANCO`, `USER_BANCO`, `SENHA_BANCO`,
   `PORTA_BANCO`, `NOME_BANCO`, `PAINEL_API_URL`, `EXECUTOR_TOKEN`, `GEMINI_API_KEY` e `JUIZA_*`, conforme o uso.
+- **Banco remoto para o Railway.** O worker grava no MySQL do servidor pela internet. Crie um usuário próprio para o Railway, sem DDL:
+
+  ```sql
+  CREATE USER 'tcc_railway'@'%' IDENTIFIED BY '...';
+  GRANT SELECT, INSERT, UPDATE, DELETE ON tcc_scraper.* TO 'tcc_railway'@'%';
+  ```
+
+  `DELETE` é necessário: as `staging_llm_*` são substituídas por dia. O host é `'%'` porque o Railway, no plano básico, não tem IP de saída fixo. Com a porta 3306 aberta a qualquer origem:
+  - restrinja a 3306 no firewall do servidor ao máximo possível;
+  - confirme que o `bind-address` permite conexão remota;
+  - se o servidor tiver certificado, considere `REQUIRE SSL` no usuário;
+  - use senha forte e única (32 caracteres aleatórios ou mais) e nunca a grave em arquivo versionado.
+
+  O usuário `tcc`, com DDL, continua sendo o da máquina local.
 - **Migrations não rodam no serviço.** O usuário do executor não tem DDL. As migrations saem da máquina local
   (seção 5).
 - **Um processo só.** O estado do daily e da carga histórica fica em memória. Não escale para mais de um executor no
@@ -272,12 +288,13 @@ Esta é a ordem. Cada passo depende do anterior.
    PostgreSQL. O código não as lê, mas elas confundem.
 5. **Deploy do executor no Railway.** Variáveis da seção 4, com `EXECUTOR_TOKEN` igual ao da API. Confirme nos logs
    que o worker sobe e envia heartbeat.
-6. **API do painel em `MODO=live`.** Mesmo banco e mesmo `EXECUTOR_TOKEN`. Confirme `executor: ok` em
+6. **Bloqueio do modo live.** Antes de ligar a API em `MODO=live`: no repositório do painel (`interface-acompanhamento`), as rotas `/api/executor/*` respondem `501`, porque `FilaComandosMySQL` (`api/app/fila.py`) e `fontes/mysql.py` (`api/app/fontes/mysql.py`) ainda são TODO. Enquanto isso, o executor não recebe comandos da API live: o loop segue rodando, sem aplicar nada. Só avance quando essas duas peças estiverem implementadas do lado do painel. Detalhes em [Executor e painel](07-executor-e-painel.md), seção 9.
+7. **API do painel em `MODO=live`.** Mesmo banco e mesmo `EXECUTOR_TOKEN`. Confirme `executor: ok` em
    `/api/componentes`.
-7. **Primeiro daily pelo painel.** Dispare um daily (ou só a etapa `precos`) e confirme que a execução termina em `concluida` ou
+8. **Primeiro daily pelo painel.** Dispare um daily (ou só a etapa `precos`) e confirme que a execução termina em `concluida` ou
    `parcial`, com as 9 etapas e `unidades_total` preenchido. O daily automático roda às `DAILY_HORA` (18:30).
 
-Carga histórica: depois do passo 7, dispare `historico` pelo painel, com `--anos` dos anos desejados. Ela tem
+Carga histórica: depois do passo 8, dispare `historico` pelo painel, com `--anos` dos anos desejados. Ela tem
 prioridade sobre o daily, e o daily espera a carga pausar ou terminar.
 
 ## 6. Problemas conhecidos e soluções

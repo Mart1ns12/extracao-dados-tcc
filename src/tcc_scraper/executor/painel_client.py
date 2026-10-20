@@ -3,7 +3,8 @@
 Nao e coleta, entao nao passa pelo throttle do `Collector`. Nunca levanta para quem chama:
 falha de rede ou de HTTP vira aviso no log e um retorno neutro (None ou False).
 
-Contrato (interface-acompanhamento/docs/contrato-api.md): as tres rotas sao POST.
+Contrato (interface-acompanhamento/api/docs/contrato-api.md; o codigo da API,
+api/app/rotas.py, prevalece): as tres rotas sao POST.
   POST /api/executor/comandos       {}                              -> {"comandos": [...]}
   POST /api/executor/comandos/ack   {"id", "ok", "erro"}            -> 204 / 404 / 409
   POST /api/executor/heartbeat      {"host", "versao", "ocupado_com"} -> 204

@@ -35,6 +35,8 @@ A API nunca chama o scraper. Ela só enfileira o comando. O executor busca, apli
 
 ## 3. Contrato com a API do painel
 
+O contrato completo está em `interface-acompanhamento/api/docs/contrato-api.md`. Onde ele e o código divergem, vale o código da API (`api/app/rotas.py`).
+
 Todas as rotas são `POST`, com corpo JSON, e exigem `Authorization: Bearer <EXECUTOR_TOKEN>`. O token precisa ser igual ao configurado na API. Sem o token, a API responde `401`. Se a API não tem o token configurado, responde `503`.
 
 | Rota | Corpo | Resposta | Quem chama |
@@ -146,8 +148,6 @@ Os status são strings, sem `ENUM` no banco. Os valores de ponto flutuante são 
 - **Logs sem id de execução.** `v1-painel_logs` não tem essa coluna. A ligação com a execução é pelo horário e pela etapa.
 - **Limpeza de logs só na subida.** `PAINEL_LOGS_DIAS` é aplicado quando o executor sobe. Num processo que roda por semanas, os logs antigos só saem no próximo reinício.
 - **CLI sem a prioridade da carga.** Ver [03](03-carga-historica.md), seção 10.
-- **Caminho do contrato.** O docstring de `src/tcc_scraper/executor/painel_client.py` e o `docs/EXECUTOR.md` citam o contrato como `interface-acompanhamento/docs/contrato-api.md`, um caminho que não existe. O contrato está em `interface-acompanhamento/api/docs/contrato-api.md`. Onde o contrato e o código divergem, vale o código.
-- **Imagem e `pyproject.toml`.** O comentário do extra `sentiment` no `pyproject.toml` diz que a imagem do Railway não instala esse extra. O `Dockerfile` instala `.[llm,sentiment]`, e a etapa `enriquecimento` depende dele. Vale o `Dockerfile`.
 
 ## 10. Variáveis do executor
 

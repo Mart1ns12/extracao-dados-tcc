@@ -119,7 +119,7 @@ gravam no banco real; por isso os testes com banco são **opt-in** (`TCC_TESTES_
 um limpa só as linhas que criou; (2) a suíte padrão não exercita SQL de verdade, só o que roda sem
 banco; (3) DDL não tem rollback no MySQL, então uma migration ruim atinge produção. Por isso a
 migration é revisada antes (`alembic ... --sql`) e aplicada da máquina local com usuário com DDL,
-seguindo [MIGRACAO-MYSQL.md](MIGRACAO-MYSQL.md). As migrations 0001–0007 não foram editadas; a 0008 foi reescrita antes de
+seguindo [Banco de dados](06-banco-de-dados.md), seção 4. As migrations 0001–0007 não foram editadas; a 0008 foi reescrita antes de
 ser aplicada em qualquer banco (ver a ADR do prefixo), e as que têm ramo `with_variant` seguem como histórico.
 
 **Portabilidade PostgreSQL + MySQL 8** *(superada pela ADR acima; mantida como registro).* O banco de produção do TCC é MySQL, e o
@@ -249,7 +249,7 @@ fica em `raw_llm_juiza_runs`, inclusive as que falharam.
 
 **Fonte JEV implementada, mas desligada.** Problema: a fonte JEV tem chave própria (`JEV_API_KEY`) e custo
 que não foi decidido. Opções: remover o adaptador ou mantê-lo desligado. Escolhido manter o adaptador com
-`JEV_ENABLED=false` por padrão. Motivo: decisão do usuário, ainda sem justificativa escrita; registrar antes de religar.
+`JEV_ENABLED=false` por padrão. Motivo: a religação aguarda aprovação do dono, porque seria a segunda exceção paga à regra de custo zero (o teto de US$ 5/mês é compartilhado com o Gemini), e a fonte precisa de um teste em português no conjunto-ouro. Nunca substitui o FinBERT, que a spec e a pergunta do TCC nomeiam: se religada, entra só como colunas extras.
 Custo: código sem uso enquanto estiver desligado.
 
 **Nomes de coletor são os do painel.** Problema: o painel mostra cada etapa e coletor pelo nome. Opções:

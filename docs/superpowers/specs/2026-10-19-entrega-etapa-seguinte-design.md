@@ -615,7 +615,7 @@ juíza e como segunda opinião de sentimento (colunas extras), não como substit
 
 **Banco.** O `daily` escreve no MySQL remoto com o usuário `tcc_railway` (sem DDL). As
 migrations (seção 10) continuam aplicadas da máquina local, como documentado em
-`docs/LLM-ANALISE.md`. Decisão do dono: **o consumidor lê as 8 tabelas direto nesse MySQL**,
+`docs/04-juiza-e-llm.md`. Decisão do dono: **o consumidor lê as 8 tabelas direto nesse MySQL**,
 e os nomes dos arquivos da spec são os nomes das tabelas.
 
 **CSV e sistema de arquivos.** O filesystem do Railway é efêmero: nada gravado em

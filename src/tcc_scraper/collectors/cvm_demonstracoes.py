@@ -117,7 +117,7 @@ def _balanco(
 def parse_demonstracoes(
     csvs: dict[str, list[dict]], tipo: str, cd_cvm_universo: set[int]
 ) -> tuple[list[dict], list[dict]]:
-    """Converte os CSVs de um zip ITR/DFP em linhas de raw_cvm_balancos e raw_cvm_acoes.
+    """Converte os CSVs de um zip ITR/DFP em linhas de v1-raw_cvm_balancos e v1-raw_cvm_acoes.
 
     csvs usa as chaves CHAVE_PRINCIPAL, CHAVE_DRE, CHAVE_BPP e CHAVE_COMPOSICAO. So entram
     companhias de cd_cvm_universo. Linha repetida na mesma chave primaria: vale a ultima.
@@ -172,7 +172,7 @@ def parse_demonstracoes(
 
 
 class CvmDemonstracoesCollector(CvmCollector):
-    """ITR e DFP da CVM: um zip por (tipo, ano). Grava raw_cvm_balancos e raw_cvm_acoes."""
+    """ITR e DFP da CVM: um zip por (tipo, ano). Grava v1-raw_cvm_balancos e v1-raw_cvm_acoes."""
 
     name = "cvm_itr_dfp"
 

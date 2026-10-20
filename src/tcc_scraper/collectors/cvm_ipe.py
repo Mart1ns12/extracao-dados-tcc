@@ -2,7 +2,7 @@
 
 O IPE e o cadastro de documentos entregues pelas companhias abertas (fato relevante,
 comunicado ao mercado, aviso aos acionistas). Cada protocolo vira uma linha em
-raw_ipe_docs e uma materia em raw_articles, vinculada a todos os tickers da companhia.
+v1-raw_ipe_docs e uma materia em raw_articles, vinculada a todos os tickers da companhia.
 
 O download do zip anual passa por CvmCollector.baixar_zip (throttle e retry da base).
 O Codigo_CVM do CSV pode vir com zeros a esquerda: a comparacao e sempre feita como int.

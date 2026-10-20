@@ -30,7 +30,7 @@ Documentos de referência:
 
 - `docs/superpowers/specs/2026-10-19-entrega-etapa-seguinte-design.md`: o desenho de produto aprovado.
 - `docs/spec-entrega-etapa-seguinte.md`: o contrato das 8 tabelas.
-- `interface-acompanhamento/docs/contrato-api.md` e `integracao-scraper.md`: o contrato do painel.
+- `interface-acompanhamento/api/docs/contrato-api.md` e `integracao-scraper.md`: o contrato do painel.
 - O plano de execução ficou fora do repositório, em `C:/Users/consu/.claude/plans/quero-fazer-o-seguinte-misty-mochi.md`.
 
 Fluxo do executor:
@@ -172,7 +172,7 @@ Números da entrega e das fontes, conforme o ponta a ponta:
 
 | Tabela | Linhas | Observação |
 |---|---|---|
-| `v1-precos` | 48.561 | Número do briefing. O ledger registra 48.564 linhas no passo `precos` da segunda rodada, sem identificar a tabela. Não reconciliado |
+| `v1-precos` | 48.561 | Montagem da verificação de ponta a ponta (Postgres local, antes da migração para o banco único). `raw_prices` tem 48.564 linhas (coleta) |
 | `v1-noticias` | 4.980 | |
 | `v1-proventos` | 8.392 | |
 | `v1-balancos` | 247 | |
@@ -267,7 +267,7 @@ esteja errado. Onde o ledger não registra custo, a célula tem `-`.
 - **Nomes de empresa**: revisar `NOMES_EMPRESA` à mão. As sugestões do `tradingName` da B3 foram consideradas ruins.
 - **Acentos na coluna `empresa`**: decisão de dado, não de código. Hoje sai sem acento.
 - **`.cursor/rules/codebase-memory.mdc`, linha 56**: ainda cita PostgreSQL.
-- **Docs fora deste trabalho**: `docs/EXECUTOR.md` (linha 159) aponta `completo_ate_0006`. `docs/LLM-ANALISE.md` usa nomes de tabela antigos. Docstrings de `cli.py`, `b3_proventos`, `cvm_demonstracoes`, `cvm_ipe` e `orquestrador/repositorio.py` citam tabelas sem `v1-`. Ajustes apontados na revisão de docs: `CLAUDE.md` (seções 1 e 9) deve dizer que a juíza compartilha o teto de US$ 5/mês do Gemini, e a entrada do Jev no ADR deve dizer que aguarda aprovação do dono.
+- **Docs fora deste trabalho** (feito na etapa final de documentação): os documentos absorvidos foram removidos, os links foram corrigidos, as docstrings citadas passaram a usar `v1-`, o `CLAUDE.md` diz que a juíza compartilha o teto de US$ 5/mês do Gemini, e a entrada do Jev no ADR diz que aguarda aprovação do dono.
 - **Ajuste técnico**: `autoincrement=False` em `raw_b3_cadastro.cd_cvm`, no modelo e na migration (ver [Banco de dados](06-banco-de-dados.md), seção 7).
 
 ## 9. Lacunas
@@ -279,7 +279,7 @@ Estes pontos não foram confirmados no código ou no ambiente. Não há evidênc
 - **Paridade do dataset no MySQL não foi reexecutada.** O teste de paridade existia entre PostgreSQL e MySQL. Depois da
   migração para o banco único, não há servidor de teste.
 - **Ponta a ponta no MySQL de produção não foi feito.** O T30 rodou no PostgreSQL local.
-- **O número de preços (48.561) não foi reconciliado** com as 48.564 linhas do ledger.
+- **Número de preços: resolvido na etapa final de docs.** `raw_prices` tem 48.564 linhas (coleta); `v1-precos` tem 48.561, montadas na verificação de ponta a ponta.
 - **Subida do executor no Railway não foi confirmada.** Depende do deploy da seção 8.
 - **`judge-news --avaliar` sem chave** deveria avisar e sair com código 0. Não foi conferido.
 - **Spike S3 (hora do IPE no RAD)** ficou fora do plano: a publicação é tratada como `precision='date'`, com

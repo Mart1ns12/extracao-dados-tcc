@@ -28,7 +28,8 @@ dependencies = [
 
 [project.optional-dependencies]
 # Analise diaria por Gemini (analyze-llm / cron do Railway). Extra separado: o scraper
-# local nao precisa, e a imagem do Railway NUNCA instala `sentiment` (torch ~2 GB).
+# local nao precisa. A imagem do Railway instala `.[llm,sentiment]` (Dockerfile): a etapa
+# `enriquecimento` depende do extra sentiment (torch ~2 GB, roda CPU).
 llm = [
     "google-genai>=2.0",
 ]

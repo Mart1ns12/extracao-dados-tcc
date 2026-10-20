@@ -119,7 +119,7 @@ class PainelHistorico(Base):
 
     __tablename__ = f"{PREFIXO_TABELA}painel_historico"
 
-    # ex.: hist-20261019-2105
+    # formato hist-AAAAMMDD-HHMMSS, ex.: hist-20261019-210512
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     # em_andamento | pausando | pausada | cancelando | cancelada | concluida | falhou
     status: Mapped[str] = mapped_column(String(16), nullable=False)

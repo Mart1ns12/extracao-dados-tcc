@@ -3,6 +3,8 @@
 Sistema de web scraping que produz um dataset diário de **notícias + mercado B3** para a etapa
 seguinte do TCC (análise/interpretação — **fora deste escopo**).
 
+Índice da documentação: [docs/README.md](docs/README.md).
+
 ---
 
 ## 1. O que este projeto entrega
@@ -33,7 +35,7 @@ pregões — sem isso, os 20 primeiros dias do dataset sairiam sem `retorno_20d`
 exportado em Parquet/CSV. Upsert por `(data, ticker)`: remontar sobrescreve, não duplica.
 
 **Restrição dominante do projeto: custo zero, exceto a LLM do Google (teto US$ 5/mês).**
-A análise diária por LLM (Gemini) é a única dependência paga, com teto aprovado de US$ 5/mês.
+A análise diária por LLM (Gemini) é a única dependência paga. A juíza de notícias usa o mesmo Gemini e compartilha o teto aprovado de US$ 5/mês.
 Qualquer outra proposta que exija API paga, cartão de crédito ou plano pago deve ser rejeitada.
 
 ---
@@ -171,7 +173,7 @@ o que se perdeu com isso.**
   conforme o banco. Há teste de regressão.
 - **Timestamps usam `UTCDateTime`**: o MySQL não guarda fuso e, sem o tipo, o valor voltaria
   naive, deslocando a agregação diária.
-- **A camada `raw` é imutável e append-only.** Reprocessamento sempre parte dela — nunca da rede.
+- **A camada `raw` é append-only, com exceções de UPDATE.** Reprocessamento sempre parte dela — nunca da rede. As exceções reais são upserts que atualizam `raw_prices`, `raw_macro`, `raw_articles.resolved_url`, `v1-raw_cvm_cadastro` e `v1-raw_b3_cadastro` (ver [docs/06-banco-de-dados.md](docs/06-banco-de-dados.md), seção 3.3).
 - **Deduplicação por `url_hash`**, nunca pela URL crua (querystrings de tracking variam).
 - **Toda alteração de schema passa por Alembic.** Nada de `CREATE TABLE` solto.
 - **Prefixo `v1-` só nas tabelas criadas pela pipeline nova** (`PREFIXO_TABELA` em `db/models.py`,
@@ -191,43 +193,40 @@ o que se perdeu com isso.**
 ## 6. Comandos
 
 ```bash
-# Banco: MySQL 8 do .env, o UNICO do projeto (nao ha banco local).
-# Migrations contra ele: ver docs/MIGRACAO-MYSQL.md.
-alembic upgrade head                      # aplica migrations (usuario com DDL)
-python -m tcc_scraper.cli db-info         # confere dialeto e tabelas
-
-python -m tcc_scraper.cli collect-prices  # Fase 2: Yahoo + BCB
-python -m tcc_scraper.cli collect-macro   # Selic e PTAX (BCB)
-python -m tcc_scraper.cli collect-indices # CDI e IPCA (BCB)
-python -m tcc_scraper.cli collect-news    # Fase 3: Google News (retomável)
-python -m tcc_scraper.cli collect-ipe     # fatos relevantes (CVM IPE)
-python -m tcc_scraper.cli enrich          # Fase 4: corpo dos artigos (paralelo)
-python -m tcc_scraper.cli score           # Fase 5: FinBERT pt/en
-python -m tcc_scraper.cli judge-news      # juíza: regra, Jev (desligado) e Gemini
-python -m tcc_scraper.cli collect-cvm     # ITR e DFP (CVM)
-python -m tcc_scraper.cli collect-cadastro
-python -m tcc_scraper.cli collect-proventos
-python -m tcc_scraper.cli validate-cadastro
-python -m tcc_scraper.cli validate-tickers
-python -m tcc_scraper.cli build-dataset   # Fase 6: 14 colunas -> banco + Parquet (janela v1 fixa)
-python -m tcc_scraper.cli build-entrega [--csv] [--tabela X]  # 8 tabelas da entrega (fim rolante)
-python -m tcc_scraper.cli export          # Parquet + CSV
-python -m tcc_scraper.cli analyze-llm [--data YYYY-MM-DD] [--dry-run] [--modelo X]  # Analise diaria por LLM (etapa analise do daily)
-python -m tcc_scraper.cli executor       # Worker do painel (Railway): comandos, daily das 18:30 BRT, carga historica
-python -m tcc_scraper.cli daily [--etapa ID] [--origem manual]  # Daily de 9 etapas, sem painel (bloqueante)
+# Banco: MySQL 8 do .env, o UNICO do projeto (nao ha banco local). Migrations: docs/06-banco-de-dados.md, secao 4.
+alembic upgrade head                            # migrations (usuario com DDL)
+python -m tcc_scraper.cli db-info              # confere o banco e as tabelas (so leitura)
+python -m tcc_scraper.cli validate-tickers     # tickers do IBOV respondem no Yahoo
+python -m tcc_scraper.cli validate-cadastro    # ticker -> codigo CVM -> B3
+python -m tcc_scraper.cli collect-prices       # Yahoo: acoes, Ibovespa, Brent, dolar
+python -m tcc_scraper.cli collect-macro        # Selic e PTAX (BCB)
+python -m tcc_scraper.cli collect-news         # Google News (retomavel; 6-9 h na carga completa)
+python -m tcc_scraper.cli enrich               # corpo dos artigos (resolve o link)
+python -m tcc_scraper.cli score                # FinBERT pt/en (exige o extra sentiment)
+python -m tcc_scraper.cli build-dataset        # 14 colunas -> features_dataset_v1, Parquet e CSV
+python -m tcc_scraper.cli analyze-llm [--data YYYY-MM-DD] [--dry-run] [--modelo X]   # analise diaria (Gemini)
+python -m tcc_scraper.cli collect-ipe          # fatos relevantes (CVM IPE)
+python -m tcc_scraper.cli collect-cvm          # ITR e DFP (CVM)
+python -m tcc_scraper.cli collect-cadastro     # cadastro das companhias (CVM e B3)
+python -m tcc_scraper.cli collect-proventos    # proventos (B3)
+python -m tcc_scraper.cli collect-indices      # CDI e IPCA (BCB)
+python -m tcc_scraper.cli judge-news [--limite N] [--avaliar]   # juiza de noticias
+python -m tcc_scraper.cli build-entrega [--csv] [--tabela X]    # 8 tabelas da entrega
+python -m tcc_scraper.cli executor             # worker do painel (Railway): comandos, daily das 18:30 BRT, carga historica
+python -m tcc_scraper.cli daily [--etapa ID]   # daily de 9 etapas, sem painel (bloqueante)
 python -m tcc_scraper.cli historico --anos 2025 --anos 2026 [--modo pendentes]  # carga historica (bloqueante)
 
-pytest                                    # testes (sem rede — usam fixtures)
-# Testes com banco sao opt-in (gravam no MySQL do .env): TCC_TESTES_COM_BANCO=1 pytest
+pytest                                          # testes (sem rede, usam fixtures)
+TCC_TESTES_COM_BANCO=1 pytest                   # testes com banco: gravam no MySQL do .env (opt-in)
 ```
 
 A coleta de notícias leva **6–9 h** na primeira execução (9.010 janelas + subdivisões).
 É **retomável**: se interromper, rodar o mesmo comando continua de onde parou.
 
 Para rodar tudo em sequência no servidor: `./scripts/coleta-completa.sh` (ver
-[docs/MIGRACAO-MYSQL.md](docs/MIGRACAO-MYSQL.md)).
+[docs/08-operacao-e-deploy.md](docs/08-operacao-e-deploy.md), seção 1).
 
-**Executor e painel:** ver [docs/EXECUTOR.md](docs/EXECUTOR.md).
+**Executor e painel:** ver [docs/07-executor-e-painel.md](docs/07-executor-e-painel.md).
 
 ---
 
@@ -267,7 +266,7 @@ E o `RETURNING` **não existe no MySQL** — por isso `google_news._persist` gra
 relê os ids pelo `url_hash` e só então grava os vínculos: três queries por janela,
 independentemente do número de matérias.
 
-Roteiro de migrations e de acesso: **[docs/MIGRACAO-MYSQL.md](docs/MIGRACAO-MYSQL.md)**.
+Migrations e acesso: **[docs/06-banco-de-dados.md](docs/06-banco-de-dados.md)**.
 
 **Pegadinha do MySQL:** a collation `utf8mb4_0900_ai_ci` ignora acentos em `LIKE` —
 `LIKE '%ã%'` devolve linhas a mais do que o esperado. Não afeta o pipeline (nenhuma query dele
@@ -287,12 +286,12 @@ JSON schema **na mesma chamada** (só Gemini 3+ aceita os dois juntos). Modelo e
 (substituídas por dia). O `features_dataset_v1` **fica intacto**.
 
 **Exceção aprovada à regra de custo:** é a única dependência paga do projeto, com teto de
-US$ 5/mês (~30 chamadas). Roda como etapa `analise` do daily, agendada pelo executor às 18:30 de Brasília (ver [docs/EXECUTOR.md](docs/EXECUTOR.md)).
+US$ 5/mês (~30 chamadas), compartilhado com a juíza (ver [docs/04-juiza-e-llm.md](docs/04-juiza-e-llm.md), seção 3.6). Roda como etapa `analise` do daily, agendada pelo executor às 18:30 de Brasília (ver [docs/07-executor-e-painel.md](docs/07-executor-e-painel.md)).
 
 **Citações:** o prompt exige `fonte` e `url` dentro de cada item do JSON. As anotações
 `url_citation` da API vão para `citacoes_json` só como auditoria, nunca como fonte de dados.
 
-**Mudou o template → sobe `VERSAO` em `llm/prompt.py`** e cria `analise_diaria_v2.txt`;
+**Mudou o template → sobe `VERSAO` em `llm/prompt.py`** e cria `analise_diaria_v{N+1}.txt` (hoje a versão é `v3`);
 nunca edite a versão antiga no lugar.
 
-Roteiro de deploy, variáveis e custo: [docs/LLM-ANALISE.md](docs/LLM-ANALISE.md).
+Variáveis e custo: [docs/04-juiza-e-llm.md](docs/04-juiza-e-llm.md), seção 3. Deploy e banco remoto: [docs/08-operacao-e-deploy.md](docs/08-operacao-e-deploy.md), seção 4.

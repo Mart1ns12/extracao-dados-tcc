@@ -1,6 +1,6 @@
 """Estado do painel: execucoes, etapas, logs, heartbeat e comandos aplicados.
 
-Dois adaptadores com o mesmo contrato: `RepositorioBanco` (tabelas painel_*) e
+Dois adaptadores com o mesmo contrato: `RepositorioBanco` (tabelas v1-painel_*) e
 `RepositorioMemoria` (dicts, para testes). Datas entram e saem aware em UTC.
 """
 
@@ -112,7 +112,7 @@ def _escolher_historico(historicos: list[dict]) -> dict | None:
 
 
 class RepositorioBanco(Repositorio):
-    """Grava nas tabelas painel_* com sessoes curtas (uma por operacao)."""
+    """Grava nas tabelas v1-painel_* com sessoes curtas (uma por operacao)."""
 
     def __init__(self, tz: str | None = None) -> None:
         self._tz = ZoneInfo(tz or get_settings().daily_tz)
@@ -152,7 +152,7 @@ class RepositorioBanco(Repositorio):
         mensagem: str,
         execucao_id: str | None = None,
     ) -> None:
-        # painel_logs nao tem coluna de execucao (decisao do painel): execucao_id nao e gravado.
+        # v1-painel_logs nao tem coluna de execucao (decisao do painel): execucao_id nao e gravado.
         with session_scope() as s:
             s.add(
                 PainelLog(
