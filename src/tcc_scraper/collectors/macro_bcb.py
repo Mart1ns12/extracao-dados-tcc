@@ -83,7 +83,7 @@ def parse_ptax(payload: dict) -> list[MacroRow]:
 class BcbCollector(Collector):
     """Coleta Selic (SGS 432) e dolar PTAX."""
 
-    name = "macro_bcb"
+    name = "bcb"
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -103,14 +103,14 @@ class BcbCollector(Collector):
             params = {
                 "formato": "json",
                 "dataInicial": f"{settings.data_start:%d/%m/%Y}",
-                "dataFinal": f"{settings.data_end:%d/%m/%Y}",
+                "dataFinal": f"{settings.fim_coleta:%d/%m/%Y}",
             }
             rows = parse_sgs(self.fetch(url, params=params).json(), series=unit.payload["series"])
         else:
             # A PTAX exige as datas entre aspas simples no formato MM-DD-AAAA.
             params = {
                 "@dataInicial": f"'{settings.data_start:%m-%d-%Y}'",
-                "@dataFinalCotacao": f"'{settings.data_end:%m-%d-%Y}'",
+                "@dataFinalCotacao": f"'{settings.fim_coleta:%m-%d-%Y}'",
                 "$format": "json",
             }
             rows = parse_ptax(self.fetch(PTAX_ENDPOINT, params=params).json())

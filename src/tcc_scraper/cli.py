@@ -107,6 +107,10 @@ def collect_news(
     resume: bool = typer.Option(True, help="Retoma de onde parou"),
     limit: int = typer.Option(None, help="Coleta so as N primeiras janelas"),
     ticker: str = typer.Option(None, help="Coleta um unico ticker"),
+    desde: str = typer.Option(None, help="Inicio do recorte, YYYY-MM-DD (use com --ate)"),
+    ate: str = typer.Option(
+        None, help="Fim do recorte, exclusivo, YYYY-MM-DD (use com --desde)"
+    ),
 ) -> None:
     """Fase 3: noticias historicas via Google News RSS (~10 h na carga completa)."""
     _setup_logging()
@@ -118,7 +122,19 @@ def collect_news(
             raise typer.BadParameter(f"{ticker} nao esta em IBOV_TICKERS")
         tickers = {ticker: IBOV_TICKERS[ticker]}
 
-    with GoogleNewsCollector(tickers=tickers) as collector:
+    if (desde is None) != (ate is None):
+        raise typer.BadParameter("--desde e --ate devem ser usados juntos")
+    d_desde = d_ate = None
+    if desde is not None:
+        try:
+            d_desde = dt.date.fromisoformat(desde)
+            d_ate = dt.date.fromisoformat(ate)
+        except ValueError as exc:
+            raise typer.BadParameter("datas no formato YYYY-MM-DD") from exc
+        if d_ate <= d_desde:
+            raise typer.BadParameter("--ate deve ser posterior a --desde")
+
+    with GoogleNewsCollector(tickers=tickers, desde=d_desde, ate=d_ate) as collector:
         stats = collector.run(resume=resume, limit=limit)
     _report("noticias (Google News)", stats)
     if stats.get("saturadas"):

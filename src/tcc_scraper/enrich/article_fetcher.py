@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from itertools import zip_longest
 
-from sqlalchemy import select
+from sqlalchemy import bindparam, select
 
 from tcc_scraper.collectors.base import Collector, UnitResult, WorkUnit
 from tcc_scraper.config import ARTICLE_ALLOWLIST
@@ -109,7 +109,7 @@ def intercalar_por_dominio(
 class ArticleBodyCollector(Collector):
     """Baixa e extrai o corpo dos artigos elegiveis."""
 
-    name = "article_bodies"
+    name = "enriquecimento"
 
     def __init__(
         self, batch_size: int = 200, workers: int | None = None, **kwargs
@@ -219,12 +219,16 @@ class ArticleBodyCollector(Collector):
             # Guarda a URL real em coluna propria. Sobrescrever `url` deixaria o
             # url_hash (calculado sobre a URL do Google) sem corresponder ao campo,
             # quebrando a deduplicacao na proxima coleta.
+            # Um UPDATE executemany para o lote inteiro, nao um execute por artigo.
             resolvidos = [
-                {"_id": b.article_id, "resolved_url": b.real_url} for b in bodies if b.real_url
+                {"_id": b.article_id, "_url": b.real_url} for b in bodies if b.real_url
             ]
-            for item in resolvidos:
+            if resolvidos:
+                # Core, e nao update(Article) do ORM: com lista de parametros o ORM
+                # tenta o "bulk update por PK" e exige a chave primaria no dict.
                 session.execute(
                     Article.__table__.update()
-                    .where(Article.id == item["_id"])
-                    .values(resolved_url=item["resolved_url"])
+                    .where(Article.__table__.c.id == bindparam("_id"))
+                    .values(resolved_url=bindparam("_url")),
+                    resolvidos,
                 )

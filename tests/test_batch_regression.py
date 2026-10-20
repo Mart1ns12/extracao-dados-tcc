@@ -255,3 +255,56 @@ def test_sentimento_ausente_vira_null_no_banco(engine, limpa_dataset) -> None:
         ).scalars().all()
 
     assert all(v is None for v in vals), f"esperado NULL, veio {vals}"
+
+
+def test_enriquecimento_grava_resolved_url_em_lote(engine, limpa, monkeypatch) -> None:
+    """O resolved_url de 10 artigos sai em um executemany, nao um UPDATE por artigo."""
+    from contextlib import contextmanager
+
+    from tcc_scraper.enrich import article_fetcher as af
+
+    @contextmanager
+    def _sessao_de_teste():
+        sessao = Session(engine)
+        try:
+            yield sessao
+            sessao.commit()
+        except Exception:
+            sessao.rollback()
+            raise
+        finally:
+            sessao.close()
+
+    # O _persist usa session_scope, que apontaria para o banco configurado no .env.
+    monkeypatch.setattr(af, "session_scope", _sessao_de_teste)
+
+    linhas = _payload(10)
+    with Session(engine) as s:
+        bulk_upsert(s, Article.__table__, linhas,
+                    index_elements=["url_hash"], update_columns=None)
+        s.commit()
+        pares = s.execute(
+            select(Article.id, Article.google_id).where(Article.google_id.like("REGR%"))
+        ).all()
+    assert len(pares) == 10
+
+    corpos = [
+        af.ExtractedBody(
+            article_id=aid, text="texto de materia " * 20, method="trafilatura",
+            real_url=f"https://veiculo.com.br/materia/{gid}",
+        )
+        for aid, gid in pares
+    ]
+
+    with af.ArticleBodyCollector() as coletor, ContaStatements(engine) as contador:
+        coletor._persist(corpos)
+
+    with Session(engine) as s:
+        resolvidas = s.execute(
+            select(Article.resolved_url).where(Article.google_id.like("REGR%"))
+        ).scalars().all()
+    assert len(resolvidas) == 10
+    assert all(url and url.startswith("https://veiculo.com.br/materia/") for url in resolvidas)
+    assert contador.total <= 6, (
+        f"{contador.total} statements para 10 resolved_url -- o update voltou a ser por linha"
+    )
