@@ -201,7 +201,7 @@ def gravadas(monkeypatch) -> list[dict]:
     """
     capturadas: list[dict] = []
 
-    def _falso_gravar(tabela: str, linhas: list[dict], artigos_janela=None) -> None:
+    def _falso_gravar(tabela: str, linhas: list[dict], poda=None) -> None:
         if tabela == "noticias":
             capturadas.extend(linhas)
 
@@ -271,3 +271,46 @@ def test_panorama_some_do_banco_quando_o_filtro_e_religado(
         (prot, "VALE3"),
         (ipe, "PETR4"),
     }
+
+
+def _semear_sem_julgamento(engine) -> int:
+    """Artigo na janela com vinculo PETR4, sem julgamento, e a linha ja entregue em noticias."""
+    agora = dt.datetime.now(dt.UTC)
+    url = PREFIXO_NOTICIAS + "sem-julgamento"
+    with Session(engine) as s:
+        bulk_upsert(s, Article.__table__, [{
+            "url_hash": url_hash(url), "url": url, "title": "T27 sem julgamento",
+            "source_name": "Teste T27", "source_domain": "teste27.invalid",
+            "published_at": dt.datetime(2099, 1, 5, 12, 0, tzinfo=dt.UTC), "lang": "pt",
+            "collected_at": agora, "origem": "google_news",
+        }], index_elements=["url_hash"], update_columns=None)
+        s.flush()
+        art_id = s.execute(select(Article.id).where(Article.url == url)).scalar_one()
+        bulk_upsert(s, ArticleTicker.__table__,
+                    [{"article_id": art_id, "ticker": "PETR4"}],
+                    index_elements=["article_id", "ticker"], update_columns=None)
+        bulk_upsert(s, Noticia.__table__, [{
+            "id": id_noticia(art_id), "ticker": "PETR4",
+            "data_hora_publicacao": "2099-01-05T09:00:00-03:00",
+            "data_hora_coleta": "2099-01-05T09:00:00-03:00", "titulo": "T27 sem julgamento",
+            "fonte": "Teste T27", "link": url, "data_publicacao": dt.date(2099, 1, 5),
+            "momento_pregao": "desconhecido", "origem": "google_news",
+        }], index_elements=["id", "ticker"], update_columns=None)
+        s.commit()
+    return art_id
+
+
+def test_artigo_sem_julgamento_fica_como_esta_com_o_filtro_ligado(
+    engine, noticias_semeadas, monkeypatch
+) -> None:
+    """Sem julgamento nao e reprovado: a linha ja entregue continua, e o panorama julgado sai."""
+    sem = _semear_sem_julgamento(engine)
+    ids = noticias_semeadas
+    monkeypatch.setattr(get_settings(), "entrega_filtro_juiza", True)
+
+    assert "noticias" in build_entrega(
+        tabelas=["noticias"], somente_ids=set(ids.values()) | {sem}
+    )
+
+    assert (id_noticia(sem), "PETR4") in _pares_no_banco(engine, {"sem": sem})
+    assert (id_noticia(ids["pan"]), "PETR4") not in _pares_no_banco(engine, ids)

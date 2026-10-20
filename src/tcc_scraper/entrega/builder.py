@@ -13,6 +13,7 @@ import re
 import unicodedata
 from collections import defaultdict
 from collections.abc import Iterable
+from dataclasses import dataclass
 from decimal import Decimal
 from functools import cached_property
 from typing import Any
@@ -59,6 +60,7 @@ from tcc_scraper.db.session import session_scope
 from tcc_scraper.db.upsert import bulk_upsert
 from tcc_scraper.entrega.filtros import Julgamento, aprovado_para_entrega
 from tcc_scraper.entrega.writers import escrever_csv
+from tcc_scraper.llm.juiza_prompt import VERSAO as VERSAO_JUIZA
 from tcc_scraper.sentiment.finbert import finbert_en, finbert_pt
 
 logger = logging.getLogger(__name__)
@@ -763,20 +765,38 @@ def _em_lotes(itens: list) -> list[list]:
     return [itens[i:i + LOTE_DELETE] for i in range(0, len(itens), LOTE_DELETE)]
 
 
-def _apagar_reprovadas(linhas: list[dict], artigos_janela: set[int]) -> None:
-    """Tira de `noticias` o que a janela deixou de aprovar (desenho 5.1).
+@dataclass(frozen=True)
+class _Poda:
+    """O que `_apagar_reprovadas` precisa saber da janela de noticias."""
+
+    janela: set[int]  # artigos lidos (published_at >= inicio_noticias)
+    julgados: set[int]  # artigos com julgamento na versao vigente do prompt da juiza
+    exigir_juiza: bool  # entrega_filtro_juiza
+
+
+def _apagar_reprovadas(linhas: list[dict], poda: _Poda) -> None:
+    """Tira de `noticias` o que a juiza reprovou (desenho 5.1). So mexe em artigo julgado.
 
     O upsert so grava: uma linha entregue antes de ligar o filtro, ou um artigo rejulgado como
-    panorama, ficaria para sempre. Apaga (a) os artigos da janela sem nenhuma linha aprovada,
-    por id, e (b) os pares (id, ticker) da janela que nao estao entre as aprovadas.
+    panorama, ficaria para sempre. Com o filtro ligado, artigo julgado sem nenhuma linha
+    aprovada sai por id, e o par (id, ticker) que nao esta entre as aprovadas sai por chave
+    composta (ticker que deixou de valer). Com o filtro desligado, so saem os pares obsoletos.
+    Artigo sem julgamento fica como esta: nem entra com o filtro ligado, nem sai o ja entregue.
     """
+    sem_julgamento = poda.janela - poda.julgados
+    if poda.exigir_juiza and sem_julgamento:
+        logger.warning(
+            "entrega: noticias: %d artigos da janela sem julgamento; mantidos como estao",
+            len(sem_julgamento),
+        )
     aprovadas = {(r["id"], r["ticker"]) for r in linhas}
     com_aprovada = {id_ for id_, _ in aprovadas}
-    codigos = {id_noticia(a) for a in artigos_janela}
+    julgados = {id_noticia(a) for a in poda.janela & poda.julgados}
     with session_scope() as session:
-        for lote in _em_lotes(sorted(codigos - com_aprovada)):
-            session.execute(delete(Noticia.__table__).where(Noticia.id.in_(lote)))
-        for lote in _em_lotes(sorted(codigos & com_aprovada)):
+        if poda.exigir_juiza:
+            for lote in _em_lotes(sorted(julgados - com_aprovada)):
+                session.execute(delete(Noticia.__table__).where(Noticia.id.in_(lote)))
+        for lote in _em_lotes(sorted(julgados & com_aprovada)):
             existentes = session.execute(
                 select(Noticia.id, Noticia.ticker).where(Noticia.id.in_(lote))
             ).all()
@@ -788,13 +808,10 @@ def _apagar_reprovadas(linhas: list[dict], artigos_janela: set[int]) -> None:
                 ))
 
 
-def _gravar(
-    tabela: str, linhas: list[dict], artigos_janela: set[int] | None = None
-) -> None:
+def _gravar(tabela: str, linhas: list[dict], poda: _Poda | None = None) -> None:
     """Upsert pela chave da spec. Sem linhas, nao faz upsert.
 
-    Em `noticias`, com `artigos_janela` (ids dos artigos lidos), tambem apaga o que a janela
-    deixou de aprovar: ver `_apagar_reprovadas`.
+    Em `noticias`, com `poda`, tambem apaga o que a juiza reprovou: ver `_apagar_reprovadas`.
     """
     chave = CHAVES[tabela]
     if linhas:
@@ -806,8 +823,8 @@ def _gravar(
                 index_elements=chave,
                 update_columns=[c for c in COLUNAS[tabela] if c not in chave],
             )
-    if tabela == "noticias" and artigos_janela is not None:
-        _apagar_reprovadas(linhas, artigos_janela)
+    if tabela == "noticias" and poda is not None:
+        _apagar_reprovadas(linhas, poda)
 
 
 def build_entrega(
@@ -838,8 +855,17 @@ def build_entrega(
     for tabela in alvo:
         try:
             linhas = _montar(tabela, fontes, settings.entrega_filtro_juiza, modelos)
-            janela = {a["id"] for a in fontes.artigos} if tabela == "noticias" else None
-            _gravar(tabela, linhas, artigos_janela=janela)
+            poda = None
+            if tabela == "noticias":
+                poda = _Poda(
+                    janela={a["id"] for a in fontes.artigos},
+                    julgados={
+                        j["article_id"] for j in fontes.julgamentos
+                        if j["prompt_versao"] == VERSAO_JUIZA
+                    },
+                    exigir_juiza=settings.entrega_filtro_juiza,
+                )
+            _gravar(tabela, linhas, poda)
             if csv:
                 escrever_csv(tabela, linhas, COLUNAS[tabela], settings.entrega_csv_dir)
         except Exception as exc:

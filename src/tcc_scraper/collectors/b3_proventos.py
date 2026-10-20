@@ -165,7 +165,11 @@ def _nomes_candidatos(payload: dict) -> list[str]:
 def parse_cash_dividends(
     paginas: list[dict], issuing_company: str, trading_name: str | None
 ) -> list[dict]:
-    """Uma linha por registro de GetListedCashDividends, em todas as paginas."""
+    """Uma linha por registro de GetListedCashDividends, em todas as paginas.
+
+    O registro_hash inclui a empresa. Mudar o conteudo hasheado exige recoleta: as linhas
+    gravadas com o hash antigo nao sao reescritas pelo upsert (raw e append-only).
+    """
     agora = datetime.now(UTC)
     linhas: list[dict] = []
     for pagina in paginas:
