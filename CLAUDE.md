@@ -22,7 +22,8 @@ Uma linha por `(data, ticker)` com as **14 colunas** de `docs/Dataset1.0.xlsx`:
 | `retorno_ibovespa` | Variação do `^BVSP` |
 | `target` | `1` se a ação superar o Ibov em **t+1**, senão `0` |
 
-**Janela: 1 ano** (`DATA_START` a `DATA_END` no `.env`). Os preços são coletados
+**Janela: 1 ano agora, 5 anos planejados** (`DATA_START` a `DATA_END` no `.env`; a janela do v1
+é fixa, e o fim da coleta diária é rolante, `DATA_FIM_COLETA`). Os preços são coletados
 `PRICE_WARMUP_DAYS` (400 dias) ANTES de `DATA_START`, para aquecer as janelas de 20
 pregões — sem isso, os 20 primeiros dias do dataset sairiam sem `retorno_20d`,
 `volatilidade_20d` e `volume_relativo`. Medido: com aquecimento, essas colunas saem com
@@ -190,16 +191,25 @@ alembic upgrade head                      # aplica migrations
 python -m tcc_scraper.cli db-info         # confere dialeto e tabelas
 
 python -m tcc_scraper.cli collect-prices  # Fase 2: Yahoo + BCB
+python -m tcc_scraper.cli collect-macro   # Selic e PTAX (BCB)
+python -m tcc_scraper.cli collect-indices # CDI e IPCA (BCB)
 python -m tcc_scraper.cli collect-news    # Fase 3: Google News (retomável)
+python -m tcc_scraper.cli collect-ipe     # fatos relevantes (CVM IPE)
 python -m tcc_scraper.cli enrich          # Fase 4: corpo dos artigos (paralelo)
 python -m tcc_scraper.cli score           # Fase 5: FinBERT pt/en
-python -m tcc_scraper.cli build-dataset   # Fase 6: 14 colunas -> banco + Parquet
+python -m tcc_scraper.cli judge-news      # juíza: regra, Jev (desligado) e Gemini
+python -m tcc_scraper.cli collect-cvm     # ITR e DFP (CVM)
+python -m tcc_scraper.cli collect-cadastro
+python -m tcc_scraper.cli collect-proventos
+python -m tcc_scraper.cli validate-cadastro
+python -m tcc_scraper.cli validate-tickers
+python -m tcc_scraper.cli build-dataset   # Fase 6: 14 colunas -> banco + Parquet (janela v1 fixa)
+python -m tcc_scraper.cli build-entrega [--csv] [--tabela X]  # 8 tabelas da entrega (fim rolante)
 python -m tcc_scraper.cli export          # Parquet + CSV
 python -m tcc_scraper.cli analyze-llm [--data YYYY-MM-DD] [--dry-run] [--modelo X]  # Analise diaria por LLM (etapa analise do daily)
-python -m tcc_scraper.cli executor       # Worker do painel (Railway): comandos, daily das 18:30 BRT, carga
+python -m tcc_scraper.cli executor       # Worker do painel (Railway): comandos, daily das 18:30 BRT, carga historica
 python -m tcc_scraper.cli daily [--etapa ID] [--origem manual]  # Daily de 9 etapas, sem painel (bloqueante)
-# Previstos (ainda não existem no cli): build-entrega, collect-cvm, collect-ipe, collect-cadastro,
-#   collect-proventos, collect-indices, judge-news, historico
+python -m tcc_scraper.cli historico --anos 2025 --anos 2026 [--modo pendentes]  # carga historica (bloqueante)
 
 pytest                                    # testes (sem rede — usam fixtures)
 ```

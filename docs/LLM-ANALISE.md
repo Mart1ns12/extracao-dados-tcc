@@ -1,7 +1,7 @@
 # Análise diária por LLM (Gemini): deploy e operação
 
 Este roteiro cobre o deploy do job `analyze-llm` no Railway, a configuração do MySQL remoto, a
-operação do cron e o controle de custo. A decisão de arquitetura está no [ADR](ADR.md) e a regra
+operação da etapa `analise` do executor e o controle de custo. A decisão de arquitetura está no [ADR](ADR.md) e a regra
 de custo está no `CLAUDE.md`, seção 9.
 
 ## 1. O que é e o que não é
@@ -28,7 +28,7 @@ tentativa, inclusive em erro) e `staging_llm_*` (normalizadas, substituídas por
 
 ## 2. Variáveis no Railway
 
-Configure no serviço do cron (Variables). Nunca commite a chave.
+Configure no serviço do executor no Railway (Variables). Nunca commite a chave.
 
 | Variável | Obrigatória | Padrão | Uso |
 |---|---|---|---|
@@ -73,8 +73,8 @@ alembic upgrade head
 python -m tcc_scraper.cli db-info    # confere dialeto e tabelas
 ```
 
-Nunca rode `alembic upgrade` no cron. O usuário `tcc_railway` não tem permissão de DDL, e a
-migração não pertence ao job diário.
+Nunca rode `alembic upgrade` no executor. O usuário `tcc_railway` não tem permissão de DDL, e a
+migração não pertence ao daily.
 
 ## 5. Agendamento
 

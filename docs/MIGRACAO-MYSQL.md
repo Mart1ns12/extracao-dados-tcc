@@ -119,13 +119,20 @@ alembic upgrade head
 python -m tcc_scraper.cli db-info
 ```
 
-O `db-info` confirma o dialeto detectado e se as 8 tabelas existem. São elas:
+O `db-info` confirma o dialeto detectado e se as tabelas existem. A lista abaixo é o início do
+schema (migrations 0001 e 0002); as tabelas de LLM, painel, fontes e entrega vêm nas migrations
+0003 a 0006.
 
 ```
 raw_articles              raw_prices              staging_article_tickers
 raw_article_bodies        raw_macro               staging_article_sentiment
 raw_collection_runs                               features_dataset_v1
 ```
+
+Sem Alembic no servidor, o schema inteiro até a migration 0006 está em
+`sql/completo_ate_0006.mysql.sql`, gerado com `DB_TARGET=mysql alembic upgrade base:head --sql`.
+Banco vazio: rode esse arquivo. Banco já na 0003: aplique só `sql/0004_*`, `0005_*` e `0006_*`.
+Antes, confira `SELECT version_num FROM alembic_version;`.
 
 As camadas são **prefixo no nome**, não schema separado, porque o MySQL não tem
 schemas como o PostgreSQL — lá "schema" e "database" são a mesma coisa.

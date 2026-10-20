@@ -177,12 +177,89 @@ havia criado o `DomainThrottle` — o `throttle_article_fetch` do `.env` nunca e
 > **raw + staging para o LLM.** `raw_llm_runs` append-only (uma linha por tentativa, mesmo em erro);
 > `staging_llm_*` substituída por dia (DELETE + upsert). Reprocessar com outro parser é local.
 >
+> *Superada: o executor roda como worker sempre ligado (ver as decisões do executor abaixo).*
+>
 > **Cron em vez de loop.** Railway cobra por tempo de processo; loop com `sleep` custaria o mês
 > inteiro por 1 min de trabalho. `get_engine().dispose()` no `finally` é o que deixa o processo sair.
 >
 > **Citações no JSON, não nas anotações.** A Interactions API devolve `url_citation` por offset
 > sobre o texto; mapear sobre JSON é frágil. O prompt exige `fonte`/`url` em cada item; as
 > anotações vão para `citacoes_json` só como auditoria.
+
+## DECISÕES DO EXECUTOR E DA ENTREGA
+
+**Executor puxando comandos (pull) em vez de a API chamar o scraper (push).** Problema: o painel
+precisa disparar coleta sem que o scraper exponha uma porta de entrada no Railway. Opções: (a) a API
+chama o scraper por HTTP, o que exige URL pública, healthcheck e deixa o painel dependente da
+disponibilidade do scraper; (b) fila no próprio banco (`painel_comandos`), que o executor consulta por
+HTTP a cada `EXECUTOR_POLL_S`. Escolhida (b). Custo: latência de até `EXECUTOR_POLL_S` (5 s); entrega
+"pelo menos uma vez", tratada com `painel_comandos_aplicados` (um id já aplicado é só reconfirmado);
+heartbeat em `painel_heartbeat` para o painel saber se o executor está vivo. Substitui o cron da
+ADR "Cron em vez de loop" acima.
+
+**Carga histórica dentro do executor, no Railway, com prioridade sobre o daily.** Problema: a carga de
+anos leva horas e disputa o mesmo banco, o mesmo throttle e as mesmas fontes que o daily. Opções: (a)
+serviço separado no Railway, com dois processos escrevendo sem controle de exclusão; (b) rodar a carga
+à mão, fora do painel; (c) uma thread própria dentro do executor, uma execução por vez. Escolhida (c),
+com pausa e cancelamento checados entre unidades (coletor × ano), não no meio de uma requisição. Um
+daily que chega durante a carga nasce `agendada` com `aguardando = historico`. Custo: o executor é um
+processo só; ao reiniciar, a carga retoma sozinha pelos checkpoints de `raw_collection_runs`, mas um
+daily em andamento vira `falhou` e não é refeito.
+
+**Tabelas de entrega sem prefixo.** Problema: as 8 tabelas são o contrato com a etapa seguinte, não uma
+camada de dados. Opções: prefixo de camada (`entrega_*`) ou nome limpo. Escolhido o nome limpo
+(`noticias`, `precos`, `cadastro`, `mudancas_ticker`, `balancos`, `acoes_emitidas`, `proventos`,
+`indices`), listado em `ENTREGA_TABLES`. Custo: é exceção à regra de prefixo do CLAUDE.md, e a lista
+precisa ser mantida à mão.
+
+**Fim rolante da coleta × janela fixa do v1.** Problema: a coleta diária tem de avançar até hoje, mas o
+dataset v1 do TCC precisa de uma janela fixa e reproduzível. Opções: (a) trocar `data_end` por hoje, o
+que muda o v1 silenciosamente; (b) separar dois conceitos: `fim_coleta` rolante (`data_fim_coleta`
+vazio = hoje) e a janela do dataset, fixa em `data_start`/`data_end`. Escolhida (b). Para distinguir a
+origem das linhas de `articles`, a coluna `origem` (default `google_news`) recebe também os outros
+coletores de notícia (IPE), e o v1 filtra por `google_news`. Custo: há duas definições de "fim" no
+código; mudar a janela do v1 exige ADR novo, não basta trocar o `.env`.
+
+**Juíza sem busca na web, com regra barata primeiro.** Problema: decidir se uma notícia é sobre a
+empresa. Busca na web por par é cara, instável e reintroduz uma fonte que não se reproduz. Opções: (a)
+Gemini com grounding por par; (b) regra local (nome, apelido, contexto) decide o que puder, a fonte
+opcional Jev vem depois e só o Gemini recebe o que sobrar; (c) só regra local. Escolhido (b), sem busca.
+Ordem por par pendente: regra (sem custo) -> Jev (desligado) -> Gemini. Custo: o que sobra vai ao Gemini,
+então o consumo precisa ser medido contra o teto de US$ 5/mês (ver `JUIZA_MAX_ITENS_DIA`). Toda chamada
+fica em `raw_llm_juiza_runs`, inclusive as que falharam.
+
+**Fonte JEV implementada, mas desligada.** Problema: a fonte JEV tem chave própria (`JEV_API_KEY`) e custo
+que não foi decidido. Opções: remover o adaptador ou mantê-lo desligado. Escolhido manter o adaptador com
+`JEV_ENABLED=false` por padrão. Motivo: decisão do usuário, ainda sem justificativa escrita; registrar antes de religar.
+Custo: código sem uso enquanto estiver desligado.
+
+**Nomes de coletor são os do painel.** Problema: o painel mostra cada etapa e coletor pelo nome. Opções:
+renomear no painel ou mapear no scraper. Escolhido usar os ids de `EtapaDef` (`precos`, `macro`, `noticias`,
+`ipe`, `enriquecimento`, `juiza`, `cadastro`, `entrega`, `analise`) e os coletores `yahoo`, `bcb`,
+`google_news`, `cvm_ipe`, `finbert`, `cvm_b3`, `build_entrega`, `gemini` como contrato. Custo: renomear
+exige combinar com o painel antes.
+
+**Plano de contas de bancos decidido por `ds_conta`.** Problema: bancos usam outro plano da CVM (lucro em
+3.09, pois não existe 3.11; patrimônio líquido em 2.08, pois 2.03 são passivos). Opções: código fixo por
+tipo de empresa ou também a descrição. Escolhido aceitar a conta pelo código e pela descrição
+(`ds_conta`, em `entrega/builder.py`, `_aceita_conta`), com o mapa de bancos em `config.py`. Custo: a
+descrição vem da CVM em texto livre e pode mudar de redação entre demonstrações.
+
+**Provento de UNIT composto de ON + PN.** Problema: a B3 não publica proventos de UNIT como um papel
+próprio; a UNIT é composta de ações ON e PN. Escolhido compor o provento da UNIT a partir de ON + PN. Custo:
+depende da composição vigente da UNIT; mudança na composição não é detectada sozinha.
+
+**`registro_hash` inclui `issuing_company`.** Problema: o mesmo registro de provento, em empresas
+diferentes, colidia na chave de upsert. Escolhido incluir a empresa emissora no conteúdo hasheado.
+Custo: mudar o conteúdo hasheado muda todos os hashes, e isso exige recoleta completa de proventos.
+
+**Notícias reprovadas pela juíza saem de `noticias`, só para artigos julgados.** Problema: a entrega não
+pode mostrar notícia que a juíza reprovou. Opções: filtrar só na montagem ou apagar da tabela de entrega.
+Escolhido apagar de `noticias` (entrega) o que foi reprovado, e só artigos que já têm julgamento
+(`entrega/builder.py`, `_apagar_reprovadas`). A camada `raw` não muda. Custo: a entrega muda quando a
+juíza reprova, e um novo julgamento pode devolver o artigo.
+
+---
 
 ## PHILOSOPHY
 
