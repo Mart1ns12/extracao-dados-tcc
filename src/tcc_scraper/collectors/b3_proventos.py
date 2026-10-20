@@ -173,7 +173,9 @@ def parse_cash_dividends(
             valor = decimal_b3(registro.get("valueCash"))
             linhas.append(
                 {
-                    "registro_hash": registro_hash(registro),
+                    "registro_hash": registro_hash(
+                        {**registro, "issuing_company": issuing_company}
+                    ),
                     "issuing_company": issuing_company,
                     "trading_name": trading_name,
                     "type_stock": registro.get("typeStock"),
@@ -205,7 +207,7 @@ def parse_suplemento(payload: Any, issuing_company: str) -> list[dict]:
         for item in payload.get(chave) or []:
             linhas.append(
                 {
-                    "registro_hash": registro_hash(item),
+                    "registro_hash": registro_hash({**item, "issuing_company": issuing_company}),
                     "issuing_company": issuing_company,
                     "tipo": tipo,
                     "payload": item,

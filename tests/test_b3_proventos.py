@@ -53,6 +53,18 @@ def test_registro_hash_estavel_entre_chamadas_e_distinto_entre_registros() -> No
     assert len(set(hashes)) == len(hashes)
 
 
+def test_registro_hash_inclui_a_empresa_e_nao_colide_entre_empresas() -> None:
+    pagina = _carregar("b3_cashdividends_USIMINAS_p1.json")
+    da_usim = parse_cash_dividends([pagina], "USIM", "USIMINAS")
+    da_outra = parse_cash_dividends([pagina], "XPTO", "OUTRA")
+    assert {r["registro_hash"] for r in da_usim}.isdisjoint(
+        {r["registro_hash"] for r in da_outra}
+    )
+    sup_a = parse_suplemento({"cashDividends": [{"valor": 1}]}, "USIM")
+    sup_b = parse_suplemento({"cashDividends": [{"valor": 1}]}, "XPTO")
+    assert sup_a[0]["registro_hash"] != sup_b[0]["registro_hash"]
+
+
 def test_tipos_e_acoes_observados_nas_fixtures() -> None:
     # Spike S1: valores reais. UNIT nao aparece em nenhuma fixture de proventos.
     tipos: set[str] = set()

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -333,6 +333,21 @@ def test_disparar_duas_vezes_recusa_a_segunda(monkeypatch):
         solta.set()
         hist.join(10)
     assert repo.historico_atual()["status"] == "concluida"
+
+
+def test_id_da_carga_tem_segundos_e_dois_disparos_no_mesmo_minuto_nao_colidem(monkeypatch):
+    falso = Falso()
+    monkeypatch.setattr(H, "_resolver", falso.resolver)
+    repo = RepositorioMemoria()
+    relogio = [AGORA]  # 18:30:00 UTC = 15:30:00 em Sao Paulo
+    hist = Historico(repo, _settings(), agora=lambda: relogio[0])
+    hist.disparar([2026])
+    hist.join(10)
+    assert repo.historico_atual()["id"] == "hist-20261019-153000"
+    relogio[0] = AGORA + timedelta(seconds=7)
+    hist.disparar([2026])
+    hist.join(10)
+    assert repo.historico_atual()["id"] == "hist-20261019-153007"
 
 
 def test_disparo_cria_linhas_pendentes_de_todos_os_passos(monkeypatch):

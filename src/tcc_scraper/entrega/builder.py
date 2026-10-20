@@ -18,7 +18,7 @@ from functools import cached_property
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, tuple_
 
 from tcc_scraper.collectors.b3_base import data_b3, decimal_b3
 from tcc_scraper.collectors.b3_cadastro import classificacao_b3
@@ -620,20 +620,22 @@ def _consulta(stmt: Any) -> list[dict]:
 class _Fontes:
     """Le cada fonte uma vez, no primeiro uso. Consultas simples; a montagem fica nas funcoes."""
 
-    def __init__(self, inicio_noticias: dt.date) -> None:
+    def __init__(self, inicio_noticias: dt.date, somente_ids: set[int] | None = None) -> None:
         self._limite = dt.datetime.combine(inicio_noticias, dt.time(0), tzinfo=SP).astimezone(
             dt.UTC
         )
+        self._somente_ids = somente_ids
 
     @cached_property
     def artigos(self) -> list[dict]:
-        return _consulta(
-            select(
-                Article.id, Article.title, Article.source_name, Article.source_domain,
-                Article.resolved_url, Article.url, Article.published_at,
-                Article.published_precision, Article.lang, Article.collected_at, Article.origem,
-            ).where(Article.published_at >= self._limite)
-        )
+        consulta = select(
+            Article.id, Article.title, Article.source_name, Article.source_domain,
+            Article.resolved_url, Article.url, Article.published_at,
+            Article.published_precision, Article.lang, Article.collected_at, Article.origem,
+        ).where(Article.published_at >= self._limite)
+        if self._somente_ids is not None:
+            consulta = consulta.where(Article.id.in_(sorted(self._somente_ids)))
+        return _consulta(consulta)
 
     @cached_property
     def vinculos(self) -> list[dict]:
@@ -753,19 +755,59 @@ def _montar(tabela: str, f: _Fontes, exigir_juiza: bool, modelos: dict[str, str]
     raise ValueError(f"tabela de entrega desconhecida: {tabela!r}")
 
 
-def _gravar(tabela: str, linhas: list[dict]) -> None:
-    """Upsert pela chave da spec. Sem linhas, nao toca no banco."""
-    if not linhas:
-        return
-    chave = CHAVES[tabela]
+# Tamanho dos lotes de SELECT/DELETE por id: mantem cada IN abaixo do limite de parametros.
+LOTE_DELETE = 500
+
+
+def _em_lotes(itens: list) -> list[list]:
+    return [itens[i:i + LOTE_DELETE] for i in range(0, len(itens), LOTE_DELETE)]
+
+
+def _apagar_reprovadas(linhas: list[dict], artigos_janela: set[int]) -> None:
+    """Tira de `noticias` o que a janela deixou de aprovar (desenho 5.1).
+
+    O upsert so grava: uma linha entregue antes de ligar o filtro, ou um artigo rejulgado como
+    panorama, ficaria para sempre. Apaga (a) os artigos da janela sem nenhuma linha aprovada,
+    por id, e (b) os pares (id, ticker) da janela que nao estao entre as aprovadas.
+    """
+    aprovadas = {(r["id"], r["ticker"]) for r in linhas}
+    com_aprovada = {id_ for id_, _ in aprovadas}
+    codigos = {id_noticia(a) for a in artigos_janela}
     with session_scope() as session:
-        bulk_upsert(
-            session,
-            MODELOS[tabela].__table__,
-            linhas,
-            index_elements=chave,
-            update_columns=[c for c in COLUNAS[tabela] if c not in chave],
-        )
+        for lote in _em_lotes(sorted(codigos - com_aprovada)):
+            session.execute(delete(Noticia.__table__).where(Noticia.id.in_(lote)))
+        for lote in _em_lotes(sorted(codigos & com_aprovada)):
+            existentes = session.execute(
+                select(Noticia.id, Noticia.ticker).where(Noticia.id.in_(lote))
+            ).all()
+            obsoletas = [(id_, ticker) for id_, ticker in existentes
+                         if (id_, ticker) not in aprovadas]
+            if obsoletas:
+                session.execute(delete(Noticia.__table__).where(
+                    tuple_(Noticia.id, Noticia.ticker).in_(obsoletas)
+                ))
+
+
+def _gravar(
+    tabela: str, linhas: list[dict], artigos_janela: set[int] | None = None
+) -> None:
+    """Upsert pela chave da spec. Sem linhas, nao faz upsert.
+
+    Em `noticias`, com `artigos_janela` (ids dos artigos lidos), tambem apaga o que a janela
+    deixou de aprovar: ver `_apagar_reprovadas`.
+    """
+    chave = CHAVES[tabela]
+    if linhas:
+        with session_scope() as session:
+            bulk_upsert(
+                session,
+                MODELOS[tabela].__table__,
+                linhas,
+                index_elements=chave,
+                update_columns=[c for c in COLUNAS[tabela] if c not in chave],
+            )
+    if tabela == "noticias" and artigos_janela is not None:
+        _apagar_reprovadas(linhas, artigos_janela)
 
 
 def build_entrega(
@@ -773,11 +815,13 @@ def build_entrega(
     tabelas: list[str] | None = None,
     csv: bool = False,
     observador: Any | None = None,
+    somente_ids: set[int] | None = None,
 ) -> dict[str, int]:
     """Monta e grava as tabelas da entrega. Devolve {tabela: n_linhas} das que deram certo.
 
     Erro numa tabela e registrado (log e observador) e nao impede as outras. Com `csv=True`,
-    cada tabela tambem vai para `<entrega_csv_dir>/<tabela>.csv`.
+    cada tabela tambem vai para `<entrega_csv_dir>/<tabela>.csv`. `somente_ids` restringe as
+    noticias (artigos lidos, gravados e apagados) a esses ids de artigo; e para teste.
     """
     settings = get_settings()
     alvo = list(tabelas) if tabelas else list(COLUNAS)
@@ -785,7 +829,7 @@ def build_entrega(
     if desconhecidas:
         raise ValueError(f"tabelas de entrega desconhecidas: {desconhecidas}")
 
-    fontes = _Fontes(settings.inicio_noticias)
+    fontes = _Fontes(settings.inicio_noticias, somente_ids)
     modelos = modelos_finbert()
     if observador is not None:
         observador.plano(len(alvo))
@@ -794,7 +838,8 @@ def build_entrega(
     for tabela in alvo:
         try:
             linhas = _montar(tabela, fontes, settings.entrega_filtro_juiza, modelos)
-            _gravar(tabela, linhas)
+            janela = {a["id"] for a in fontes.artigos} if tabela == "noticias" else None
+            _gravar(tabela, linhas, artigos_janela=janela)
             if csv:
                 escrever_csv(tabela, linhas, COLUNAS[tabela], settings.entrega_csv_dir)
         except Exception as exc:

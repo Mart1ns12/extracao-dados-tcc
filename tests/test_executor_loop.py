@@ -100,6 +100,15 @@ def _comando(id_: str, tipo: str, **parametros) -> dict:
     }
 
 
+def _carga(status: str) -> dict:
+    return {
+        "id": "hist-1", "status": status, "modo": "pendentes", "anos": [2026],
+        "ano_atual": None, "coletor_atual": None, "unidade_atual": None,
+        "iniciada_em": AGORA, "finalizada_em": None, "itens_por_min": 0.0, "erro": None,
+        "atualizada_em": AGORA,
+    }
+
+
 def _esperar(daily: Daily) -> None:
     if daily._thread is not None:
         daily._thread.join(5)
@@ -222,6 +231,7 @@ def test_erro_no_banco_nao_levanta_do_ciclo(cenario):
 # -- heartbeat ------------------------------------------------------------------------
 def test_heartbeat_manda_ocupado_com_historico(cenario):
     repo, daily, relogio = cenario
+    repo.criar_historico(_carga("em_andamento"))
     with respx.mock(assert_all_called=False) as router:
         hb = router.post(f"{URL}/api/executor/heartbeat").mock(return_value=httpx.Response(204))
         ex = _executor(repo, daily, HistoricoFalso(ocupado=True), relogio)
@@ -230,6 +240,49 @@ def test_heartbeat_manda_ocupado_com_historico(cenario):
     assert body["host"] == "maquina-teste"
     assert body["ocupado_com"] == "historico"
     assert repo.heartbeats["maquina-teste"]["ocupado_com"] == "historico"
+
+
+@pytest.mark.parametrize(
+    ("status", "esperado"),
+    [("em_andamento", "historico"), ("pausando", "historico"),
+     ("cancelando", "historico"), ("pausada", None)],
+)
+def test_ocupado_com_historico_so_com_carga_ativa(cenario, status, esperado):
+    repo, daily, relogio = cenario
+    repo.criar_historico(_carga(status))
+    ex = _executor(repo, daily, HistoricoFalso(ocupado=True), relogio)
+    assert ex.ocupado_com() == esperado
+
+
+def test_pausada_com_daily_rodando_reporta_daily(cenario, monkeypatch):
+    repo, daily, relogio = cenario
+    repo.criar_historico(_carga("pausada"))
+    liberar = threading.Event()
+
+    def trava(ctx, p):
+        liberar.wait(5)
+        return ResultadoEtapa("concluida", itens=0)
+
+    monkeypatch.setattr(E, "ETAPAS", (EtapaDef("precos", 1, "p", "c", trava),))
+    ex = _executor(repo, daily, HistoricoFalso(ocupado=True), relogio)
+    eid = daily.criar("daily")
+    daily.iniciar(eid)
+    try:
+        assert ex.ocupado_com() == "daily"
+    finally:
+        liberar.set()
+        _esperar(daily)
+
+
+def test_ocupado_com_nao_levanta_quando_o_banco_falha(cenario, monkeypatch):
+    repo, daily, relogio = cenario
+
+    def quebra():
+        raise RuntimeError("banco fora")
+
+    monkeypatch.setattr(repo, "historico_atual", quebra)
+    ex = _executor(repo, daily, HistoricoFalso(ocupado=True), relogio)
+    assert ex.ocupado_com() is None
 
 
 def test_ocupado_com_daily_enquanto_etapa_roda(cenario, monkeypatch):

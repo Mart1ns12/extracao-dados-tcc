@@ -25,6 +25,9 @@ from tcc_scraper.orquestrador.repositorio import Repositorio
 
 logger = logging.getLogger(__name__)
 
+# Carga historica que ocupa a maquina. Pausada nao ocupa: o daily pode rodar.
+_STATUS_HISTORICO_ATIVO = ("em_andamento", "pausando", "cancelando")
+
 
 def _versao() -> str:
     try:
@@ -98,11 +101,20 @@ class Executor:
         _seguro("inicio da execucao agendada", self._iniciar_agendada)
 
     def ocupado_com(self) -> str | None:
-        if self._historico.ocupado:
+        if self._historico.ocupado and self._carga_historica_ativa():
             return "historico"
         if self._daily.ocupado:
             return "daily"
         return None
+
+    def _carga_historica_ativa(self) -> bool:
+        try:
+            atual = self._repo.historico_atual()
+        except Exception:
+            # O heartbeat roda em thread propria: uma falha de banco nao pode derrubá-lo.
+            logger.exception("executor: nao consegui ler o status da carga historica")
+            return False
+        return atual is not None and atual["status"] in _STATUS_HISTORICO_ATIVO
 
     def bater_heartbeat(self) -> None:
         host = self._settings.host_executor

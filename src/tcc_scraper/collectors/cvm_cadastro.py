@@ -14,7 +14,13 @@ import logging
 from collections.abc import Iterable
 
 from tcc_scraper.collectors.base import UnitResult, WorkUnit
-from tcc_scraper.collectors.cvm_base import CVM_BASE, CvmCollector, cnpj_digitos, last_modified
+from tcc_scraper.collectors.cvm_base import (
+    CVM_BASE,
+    TIMEOUT_ZIP,
+    CvmCollector,
+    cnpj_digitos,
+    last_modified,
+)
 from tcc_scraper.config import TICKER_CODE_CVM
 from tcc_scraper.db.models_fontes import RawCvmCadastro
 from tcc_scraper.db.session import session_scope
@@ -68,7 +74,7 @@ class CvmCadastroCollector(CvmCollector):
         yield WorkUnit(key=f"cad|{lm or hoje}", payload={"url": URL_CAD_CIA_ABERTA})
 
     def process(self, unit: WorkUnit) -> UnitResult:
-        texto = self.fetch(unit.payload["url"]).content.decode("latin-1")
+        texto = self.fetch(unit.payload["url"], timeout=TIMEOUT_ZIP).content.decode("latin-1")
         linhas = csv.DictReader(io.StringIO(texto), delimiter=";")
         regs = parse_cad_cia_aberta(linhas, set(TICKER_CODE_CVM.values()))
         with session_scope() as session:

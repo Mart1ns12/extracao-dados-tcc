@@ -85,3 +85,24 @@ def test_b3_process_sem_detalhe_devolve_zero_sem_levantar(monkeypatch) -> None:
         monkeypatch.setattr(col, "get_json", lambda metodo, params: None)
         resultado = col.process(WorkUnit(key="detail|9512", payload={"cd_cvm": 9512}))
     assert resultado == UnitResult(items_found=0)
+
+
+def test_cvm_cadastro_baixa_o_csv_com_o_timeout_longo_dos_zips(monkeypatch) -> None:
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from tcc_scraper.collectors import cvm_cadastro
+    from tcc_scraper.collectors.cvm_base import TIMEOUT_ZIP
+
+    chamadas: list[dict] = []
+
+    def falso_fetch(url, **kwargs):
+        chamadas.append(kwargs)
+        return SimpleNamespace(content=b"")
+
+    monkeypatch.setattr(cvm_cadastro, "session_scope", nullcontext)
+    monkeypatch.setattr(cvm_cadastro, "bulk_upsert", lambda *a, **k: None)
+    with cvm_cadastro.CvmCadastroCollector() as col:
+        monkeypatch.setattr(col, "fetch", falso_fetch)
+        col.process(WorkUnit(key="cad|x", payload={"url": cvm_cadastro.URL_CAD_CIA_ABERTA}))
+    assert chamadas == [{"timeout": TIMEOUT_ZIP}]

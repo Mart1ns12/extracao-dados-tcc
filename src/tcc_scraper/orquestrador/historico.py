@@ -311,7 +311,8 @@ class Historico:
                 raise ValueError("nenhum dos anos está na janela de coleta")
 
             agora = self._agora()
-            hist_id = f"hist-{agora.astimezone(self._tz):%Y%m%d-%H%M}"
+            # Com segundos: dois disparos no mesmo minuto colidiam no mesmo id.
+            hist_id = f"hist-{agora.astimezone(self._tz):%Y%m%d-%H%M%S}"
             self._repo.criar_historico(
                 {
                     "id": hist_id,

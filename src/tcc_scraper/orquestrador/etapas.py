@@ -213,13 +213,23 @@ def etapa_analise(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
 
 
 def etapa_entrega(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    from tcc_scraper.db.models_entrega import COLUNAS
     from tcc_scraper.entrega.builder import build_entrega
 
     # O builder nao levanta por tabela: a que falha some do dict e o observador recebe ok=False.
     tabelas = build_entrega(observador=p)
     if not tabelas:
         return ResultadoEtapa("falhou", erro="todas as tabelas falharam", detalhes={"tabelas": {}})
-    return ResultadoEtapa("concluida", itens=sum(tabelas.values()), detalhes={"tabelas": tabelas})
+    itens = sum(tabelas.values())
+    faltam = [t for t in COLUNAS if t not in tabelas]
+    if faltam:
+        return ResultadoEtapa(
+            "falhou",
+            itens=itens,
+            erro=f"tabelas com falha: {', '.join(faltam)}",
+            detalhes={"tabelas": tabelas},
+        )
+    return ResultadoEtapa("concluida", itens=itens, detalhes={"tabelas": tabelas})
 
 
 def etapa_juiza(ctx: Contexto, p: Progresso) -> ResultadoEtapa:

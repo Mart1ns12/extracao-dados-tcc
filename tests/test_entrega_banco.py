@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from tcc_scraper.config import get_settings
 from tcc_scraper.db import session as session_mod
 from tcc_scraper.db.models import Article, ArticleSentiment, ArticleTicker, Macro, Price, url_hash
-from tcc_scraper.db.models_entrega import Indice
+from tcc_scraper.db.models_entrega import Indice, Noticia
 from tcc_scraper.db.models_fontes import StagingNoticiaJulgamento
 from tcc_scraper.db.upsert import bulk_upsert
 from tcc_scraper.entrega import builder as entrega_builder
@@ -125,6 +125,8 @@ def _limpar_noticias(engine) -> None:
             select(Article.id).where(Article.url.like(f"{PREFIXO_NOTICIAS}%"))
         ).scalars().all()
         if ids:
+            s.execute(Noticia.__table__.delete().where(
+                Noticia.id.in_([id_noticia(i) for i in ids])))
             s.execute(StagingNoticiaJulgamento.__table__.delete().where(
                 StagingNoticiaJulgamento.article_id.in_(ids)))
             s.execute(ArticleSentiment.__table__.delete().where(
@@ -199,7 +201,7 @@ def gravadas(monkeypatch) -> list[dict]:
     """
     capturadas: list[dict] = []
 
-    def _falso_gravar(tabela: str, linhas: list[dict]) -> None:
+    def _falso_gravar(tabela: str, linhas: list[dict], artigos_janela=None) -> None:
         if tabela == "noticias":
             capturadas.extend(linhas)
 
@@ -239,3 +241,33 @@ def test_sem_filtro_da_juiza_o_panorama_entra_com_o_julgamento(
     assert len(pan) == 1
     assert pan[0]["papel"] == "mencao"
     assert pan[0]["tipo_conteudo"] == "resumo_mercado"
+
+
+def _pares_no_banco(engine, ids: dict[str, int]) -> set[tuple[str, str]]:
+    codigos = [id_noticia(i) for i in ids.values()]
+    with Session(engine) as s:
+        linhas = s.execute(
+            select(Noticia.id, Noticia.ticker).where(Noticia.id.in_(codigos))
+        ).all()
+    return {(i, t) for i, t in linhas}
+
+
+def test_panorama_some_do_banco_quando_o_filtro_e_religado(
+    engine, noticias_semeadas, monkeypatch
+) -> None:
+    """Grava com o filtro desligado (panorama entra), religa o filtro e grava de novo."""
+    ids = noticias_semeadas
+    prot, ipe, pan = id_noticia(ids["prot"]), id_noticia(ids["ipe"]), id_noticia(ids["pan"])
+    alvo = set(ids.values())
+
+    monkeypatch.setattr(get_settings(), "entrega_filtro_juiza", False)
+    assert "noticias" in build_entrega(tabelas=["noticias"], somente_ids=alvo)
+    assert (pan, "PETR4") in _pares_no_banco(engine, ids)
+
+    monkeypatch.setattr(get_settings(), "entrega_filtro_juiza", True)
+    assert "noticias" in build_entrega(tabelas=["noticias"], somente_ids=alvo)
+    assert _pares_no_banco(engine, ids) == {
+        (prot, "PETR4"),
+        (prot, "VALE3"),
+        (ipe, "PETR4"),
+    }

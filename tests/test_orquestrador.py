@@ -493,11 +493,13 @@ def test_etapa_macro_roda_bcb_e_indices_com_o_ano_corrente(monkeypatch) -> None:
 
 # -- entrega e juiza -------------------------------------------------------------------
 def test_etapa_entrega_concluida_soma_as_tabelas_gravadas(monkeypatch) -> None:
+    from tcc_scraper.db.models_entrega import COLUNAS
+
     chamadas: list = []
 
     def falso(**kwargs):
         chamadas.append(kwargs)
-        return {"fato_a": 3, "fato_b": 2}
+        return {t: 2 for t in COLUNAS}
 
     monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", falso)
     obs = _Observador()
@@ -505,8 +507,25 @@ def test_etapa_entrega_concluida_soma_as_tabelas_gravadas(monkeypatch) -> None:
     r = E.etapa_entrega(_ctx(), obs)
 
     assert r.status == "concluida"
-    assert r.itens == 5
+    assert r.itens == 2 * len(COLUNAS)
     assert chamadas == [{"observador": obs}]
+
+
+def test_etapa_entrega_falha_quando_alguma_tabela_nao_gravou(monkeypatch) -> None:
+    from tcc_scraper.db.models_entrega import COLUNAS
+
+    sem = {"cadastro", "indices"}
+
+    def parcial(**kwargs):
+        return {t: 2 for t in COLUNAS if t not in sem}
+
+    monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", parcial)
+
+    r = E.etapa_entrega(_ctx(), _Observador())
+
+    assert r.status == "falhou"
+    assert r.itens == 2 * (len(COLUNAS) - len(sem))  # o que gravou continua contado
+    assert sorted(r.erro.removeprefix("tabelas com falha: ").split(", ")) == sorted(sem)
 
 
 def test_etapa_entrega_falha_quando_nenhuma_tabela_gravou(monkeypatch) -> None:
