@@ -460,6 +460,9 @@ GOOGLE_NEWS_ITEM_CAP = 100
 # --------------------------------------------------------------------------------------
 # Universo historico e entrega
 # --------------------------------------------------------------------------------------
+# Tickers deslistados: sem cadastro atual na B3. validate-cadastro trata a falha deles como aviso.
+TICKERS_DESLISTADOS: frozenset[str] = frozenset({"CRFB3", "STBP3", "SRNA3"})
+
 # Universo historico: (ticker, entrada, saida). None = antes/depois da janela.
 # Datas de saida: spike S5 (TODO).
 UNIVERSO_HISTORICO: list[tuple[str, date | None, date | None]] = [

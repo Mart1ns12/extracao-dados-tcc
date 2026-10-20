@@ -164,3 +164,170 @@ def test_validate_cadastro_sai_um_quando_falta_codigo_ou_ticker(monkeypatch) -> 
     assert "FALHA CCCC3" in r.output
     assert "ok    AAAA3" in r.output
     assert "falhas: 2" in r.output
+
+
+# -- build-entrega, judge-news, historico ----------------------------------------------
+def test_build_entrega_repassa_tabelas_e_csv_e_imprime_contagem(monkeypatch) -> None:
+    chamadas: list = []
+
+    def falso(**kwargs):
+        chamadas.append(kwargs)
+        return {"fato_entrega_a": 7}
+
+    monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", falso)
+
+    r = runner.invoke(app, ["build-entrega", "--csv", "--tabela", "A", "--tabela", "B"])
+
+    assert r.exit_code == 0, r.output
+    assert chamadas == [{"tabelas": ["A", "B"], "csv": True}]
+    assert "fato_entrega_a" in r.output
+    assert "csv:" in r.output
+
+
+def test_build_entrega_sem_flags_monta_todas_e_nao_mostra_csv(monkeypatch) -> None:
+    chamadas: list = []
+
+    def falso(**kwargs):
+        chamadas.append(kwargs)
+        return {"fato_entrega_a": 1}
+
+    monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", falso)
+
+    r = runner.invoke(app, ["build-entrega"])
+
+    assert r.exit_code == 0, r.output
+    assert chamadas == [{"tabelas": None, "csv": False}]
+    assert "csv:" not in r.output
+
+
+def _juiza_falso(monkeypatch, chamadas: list) -> None:
+    from tcc_scraper.llm.juiza import ResultadoJuiza
+
+    def falso(**kwargs):
+        chamadas.append(kwargs)
+        return ResultadoJuiza(
+            pendentes=5,
+            regra=2,
+            jev=1,
+            gemini=1,
+            erros=0,
+            runs=1,
+            tokens_entrada=10,
+            tokens_saida=5,
+        )
+
+    monkeypatch.setattr("tcc_scraper.llm.juiza.julgar_pendentes", falso)
+
+
+def test_judge_news_repassa_limite_e_imprime_contagens(monkeypatch) -> None:
+    chamadas: list = []
+    _juiza_falso(monkeypatch, chamadas)
+
+    r = runner.invoke(app, ["judge-news", "--limite", "50"])
+
+    assert r.exit_code == 0, r.output
+    assert chamadas == [{"limite_itens": 50}]
+    assert "juiza de noticias" in r.output
+    assert "pendentes" in r.output
+
+
+def test_judge_news_avaliar_sem_conjunto_ouro_avisa_e_sai_zero(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("tcc_scraper.config.PROJECT_ROOT", tmp_path)
+
+    r = runner.invoke(app, ["judge-news", "--avaliar"])
+
+    assert r.exit_code == 0, r.output
+    assert "ausente" in r.output
+
+
+def _ouro_em(tmp_path) -> None:
+    fixtures = tmp_path / "tests" / "fixtures"
+    fixtures.mkdir(parents=True)
+    (fixtures / "juiza_gold.csv").write_text("article_id\n", encoding="utf-8")
+
+
+def test_judge_news_avaliar_imprime_metricas(monkeypatch, tmp_path) -> None:
+    _ouro_em(tmp_path)
+    monkeypatch.setattr("tcc_scraper.config.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "tcc_scraper.llm.juiza.avaliar_conjunto_ouro",
+        lambda caminho: {"precisao": {"regra": 0.9}},
+    )
+
+    r = runner.invoke(app, ["judge-news", "--avaliar"])
+
+    assert r.exit_code == 0, r.output
+    assert "precisao" in r.output
+
+
+def test_judge_news_avaliar_sem_gemini_avisa_e_sai_zero(monkeypatch, tmp_path) -> None:
+    _ouro_em(tmp_path)
+    monkeypatch.setattr("tcc_scraper.config.PROJECT_ROOT", tmp_path)
+
+    def sem_chave(caminho):
+        raise ValueError("GEMINI_API_KEY ausente")
+
+    monkeypatch.setattr("tcc_scraper.llm.juiza.avaliar_conjunto_ouro", sem_chave)
+
+    r = runner.invoke(app, ["judge-news", "--avaliar"])
+
+    assert r.exit_code == 0, r.output
+    assert "GEMINI_API_KEY ausente" in r.output
+
+
+def _historico_falso(monkeypatch, registro: list) -> None:
+    class Falso:
+        def __init__(self, repo, settings=None) -> None:
+            registro.append(("init", repo))
+
+        def disparar(self, anos, modo="pendentes") -> str:
+            registro.append(("disparar", anos, modo))
+            return "exec-7"
+
+        def join(self, timeout=None) -> None:
+            registro.append(("join",))
+
+    monkeypatch.setattr("tcc_scraper.orquestrador.historico.Historico", Falso)
+    monkeypatch.setattr(
+        "tcc_scraper.orquestrador.repositorio.RepositorioBanco",
+        lambda *a, **k: "repo-falso",
+    )
+
+
+def test_historico_dispara_com_anos_e_modo_e_espera(monkeypatch) -> None:
+    registro: list = []
+    _historico_falso(monkeypatch, registro)
+
+    r = runner.invoke(
+        app, ["historico", "--anos", "2026", "--anos", "2025", "--modo", "reprocessar_erros"]
+    )
+
+    assert r.exit_code == 0, r.output
+    assert ("init", "repo-falso") in registro
+    assert ("disparar", [2026, 2025], "reprocessar_erros") in registro
+    assert registro[-1] == ("join",)
+    assert "exec-7" in r.output
+
+
+def test_historico_sem_anos_recusa_sem_disparar(monkeypatch) -> None:
+    registro: list = []
+    _historico_falso(monkeypatch, registro)
+
+    r = runner.invoke(app, ["historico"])
+
+    assert r.exit_code == 2
+    assert not any(c[0] == "disparar" for c in registro)
+
+
+# -- validate-cadastro: deslistado sem codigo vira aviso --------------------------------
+def test_validate_cadastro_deslistado_sem_codigo_vira_aviso(monkeypatch) -> None:
+    _universo(monkeypatch, ["AAAA3", "CRFB3"], {"AAAA3": 1})
+    _banco_falso(monkeypatch, [(1, ["AAAA3"])])
+
+    r = runner.invoke(app, ["validate-cadastro"])
+
+    assert r.exit_code == 0, r.output
+    assert "AVISO" in r.output
+    assert "CRFB3" in r.output
+    assert "avisos: 1" in r.output
+    assert "falhas: 0" in r.output

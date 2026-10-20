@@ -489,3 +489,112 @@ def test_etapa_macro_roda_bcb_e_indices_com_o_ano_corrente(monkeypatch) -> None:
     assert ("run", "bcb", False) in registro
     assert ("init", "indices_bcb", {"anos": [2026]}) in registro
     assert ("run", "indices_bcb", False) in registro
+
+
+# -- entrega e juiza -------------------------------------------------------------------
+def test_etapa_entrega_concluida_soma_as_tabelas_gravadas(monkeypatch) -> None:
+    chamadas: list = []
+
+    def falso(**kwargs):
+        chamadas.append(kwargs)
+        return {"fato_a": 3, "fato_b": 2}
+
+    monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", falso)
+    obs = _Observador()
+
+    r = E.etapa_entrega(_ctx(), obs)
+
+    assert r.status == "concluida"
+    assert r.itens == 5
+    assert chamadas == [{"observador": obs}]
+
+
+def test_etapa_entrega_falha_quando_nenhuma_tabela_gravou(monkeypatch) -> None:
+    monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", lambda **kw: {})
+
+    r = E.etapa_entrega(_ctx(), _Observador())
+
+    assert r.status == "falhou"
+    assert r.erro == "todas as tabelas falharam"
+
+
+def test_etapa_entrega_excecao_sobe_para_o_daily(monkeypatch) -> None:
+    def levanta(**kwargs):
+        raise RuntimeError("banco caiu")
+
+    monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", levanta)
+
+    with pytest.raises(RuntimeError, match="banco caiu"):
+        E.etapa_entrega(_ctx(), _Observador())
+
+
+def _resultado_juiza(**campos):
+    from tcc_scraper.llm.juiza import ResultadoJuiza
+
+    base = {
+        "pendentes": 10,
+        "regra": 4,
+        "jev": 2,
+        "gemini": 3,
+        "erros": 1,
+        "runs": 2,
+        "tokens_entrada": 100,
+        "tokens_saida": 20,
+        "interrompido": 0,
+    }
+    base.update(campos)
+    return ResultadoJuiza(**base)
+
+
+def test_etapa_juiza_concluida_soma_regra_jev_e_gemini(monkeypatch) -> None:
+    chamadas: list = []
+
+    def falso(**kwargs):
+        chamadas.append(kwargs)
+        return _resultado_juiza()
+
+    monkeypatch.setattr("tcc_scraper.llm.juiza.julgar_pendentes", falso)
+    ctx = _ctx()
+    obs = _Observador()
+
+    r = E.etapa_juiza(ctx, obs)
+
+    assert r.status == "concluida"
+    assert r.itens == 9
+    assert r.detalhes["tokens_saida"] == 20
+    assert chamadas == [{"limite_itens": ctx.settings.juiza_max_itens_dia, "observador": obs}]
+
+
+def test_etapa_juiza_concluida_mesmo_so_com_a_regra_barata(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tcc_scraper.llm.juiza.julgar_pendentes",
+        lambda **kw: _resultado_juiza(jev=0, gemini=0, regra=6),
+    )
+
+    r = E.etapa_juiza(_ctx(), _Observador())
+
+    assert r.status == "concluida"
+    assert r.itens == 6
+
+
+def test_etapa_juiza_interrompida_e_falhou(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tcc_scraper.llm.juiza.julgar_pendentes",
+        lambda **kw: _resultado_juiza(interrompido=1),
+    )
+
+    r = E.etapa_juiza(_ctx(), _Observador())
+
+    assert r.status == "falhou"
+    assert r.erro == "interrompida: orçamento ou cancelamento"
+    assert r.itens == 9
+
+
+def test_etapa_juiza_excecao_sobe_para_o_daily(monkeypatch) -> None:
+    def levanta(**kwargs):
+        raise RuntimeError("gemini fora")
+
+    monkeypatch.setattr("tcc_scraper.llm.juiza.julgar_pendentes", levanta)
+
+    with pytest.raises(RuntimeError, match="gemini fora"):
+        E.etapa_juiza(_ctx(), _Observador())

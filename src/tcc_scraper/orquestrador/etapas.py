@@ -212,6 +212,39 @@ def etapa_analise(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
     return ResultadoEtapa("falhou", erro=(r.erro or r.status)[:4000])
 
 
+def etapa_entrega(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    from tcc_scraper.entrega.builder import build_entrega
+
+    # O builder nao levanta por tabela: a que falha some do dict e o observador recebe ok=False.
+    tabelas = build_entrega(observador=p)
+    if not tabelas:
+        return ResultadoEtapa("falhou", erro="todas as tabelas falharam", detalhes={"tabelas": {}})
+    return ResultadoEtapa("concluida", itens=sum(tabelas.values()), detalhes={"tabelas": tabelas})
+
+
+def etapa_juiza(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    from tcc_scraper.llm.juiza import julgar_pendentes
+
+    r = julgar_pendentes(limite_itens=ctx.settings.juiza_max_itens_dia, observador=p)
+    itens = r.regra + r.jev + r.gemini
+    detalhes = {
+        "pendentes": r.pendentes,
+        "regra": r.regra,
+        "jev": r.jev,
+        "gemini": r.gemini,
+        "erros": r.erros,
+        "runs": r.runs,
+        "tokens_entrada": r.tokens_entrada,
+        "tokens_saida": r.tokens_saida,
+        "interrompido": r.interrompido,
+    }
+    if r.interrompido:
+        return ResultadoEtapa(
+            "falhou", itens=itens, erro="interrompida: orçamento ou cancelamento", detalhes=detalhes
+        )
+    return ResultadoEtapa("concluida", itens=itens, detalhes=detalhes)
+
+
 def etapa_nao_implementada(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
     return ResultadoEtapa("pulada", erro="etapa ainda não implementada")
 
@@ -222,9 +255,9 @@ ETAPAS: tuple[EtapaDef, ...] = (
     EtapaDef("noticias", 3, "Notícias", "google_news", etapa_noticias),
     EtapaDef("ipe", 4, "Fatos relevantes", "cvm_ipe", etapa_ipe),
     EtapaDef("enriquecimento", 5, "Corpo e sentimento", "finbert", etapa_enriquecimento),
-    EtapaDef("juiza", 6, "Juíza de qualidade", "juiza", etapa_nao_implementada),
+    EtapaDef("juiza", 6, "Juíza de qualidade", "juiza", etapa_juiza),
     EtapaDef("cadastro", 7, "Cadastro e eventos", "cvm_b3", etapa_cadastro),
-    EtapaDef("entrega", 8, "Montagem das 8 tabelas", "build_entrega", etapa_nao_implementada),
+    EtapaDef("entrega", 8, "Montagem das 8 tabelas", "build_entrega", etapa_entrega),
     EtapaDef("analise", 9, "Análise diária", "gemini", etapa_analise),
 )
 

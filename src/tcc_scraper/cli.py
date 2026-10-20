@@ -313,10 +313,10 @@ def executor() -> None:
     """Worker do painel: busca comandos, roda o daily e confirma (fica em loop)."""
     _setup_logging()
     from tcc_scraper.config import get_settings
-    from tcc_scraper.executor.comandos import HistoricoIndisponivel
     from tcc_scraper.executor.loop import Executor
     from tcc_scraper.executor.painel_client import PainelClient
     from tcc_scraper.orquestrador import Daily, RepositorioBanco
+    from tcc_scraper.orquestrador.historico import Historico
 
     settings = get_settings()
     if not settings.painel_api_url or not settings.executor_token:
@@ -326,7 +326,7 @@ def executor() -> None:
     repo = RepositorioBanco()
     client = PainelClient(settings.painel_api_url, settings.executor_token)
     executor_ = Executor(
-        repo, Daily(repo, settings=settings), HistoricoIndisponivel(), client, settings
+        repo, Daily(repo, settings=settings), Historico(repo, settings), client, settings
     )
     executor_.run_forever()
 
@@ -434,7 +434,7 @@ def validate_cadastro() -> None:
     _setup_logging()
     from sqlalchemy import select
 
-    from tcc_scraper.config import TICKER_CODE_CVM, universo_coleta
+    from tcc_scraper.config import TICKER_CODE_CVM, TICKERS_DESLISTADOS, universo_coleta
     from tcc_scraper.db.models_fontes import RawB3Cadastro
     from tcc_scraper.db.session import session_scope
 
@@ -444,7 +444,7 @@ def validate_cadastro() -> None:
         ).all()
     por_cvm = {cd_cvm: set(other_codes or []) for cd_cvm, other_codes in linhas}
 
-    ok, falhas = [], []
+    ok, falhas, avisos = [], [], []
     for ticker in universo_coleta():
         cd_cvm = TICKER_CODE_CVM.get(ticker)
         if cd_cvm is None:
@@ -457,12 +457,102 @@ def validate_cadastro() -> None:
             ok.append(ticker)
             console.print(f"[green]ok[/green]    {ticker} (cd_cvm {cd_cvm})")
             continue
+        if ticker in TICKERS_DESLISTADOS:
+            avisos.append(ticker)
+            console.print(f"[yellow]AVISO[/yellow] {ticker} (deslistado): {motivo}")
+            continue
         falhas.append(ticker)
         console.print(f"[red]FALHA[/red] {ticker}: {motivo}")
 
-    console.print(f"[green]validos: {len(ok)}[/green]  [red]falhas: {len(falhas)}[/red]")
+    console.print(
+        f"[green]validos: {len(ok)}[/green]  [yellow]avisos: {len(avisos)}[/yellow]  "
+        f"[red]falhas: {len(falhas)}[/red]"
+    )
     if falhas:
         raise typer.Exit(1)
+
+
+@app.command("build-entrega")
+def build_entrega_cmd(
+    csv: bool = typer.Option(False, "--csv", help="Tambem grava cada tabela em CSV"),
+    tabela: Annotated[
+        list[str] | None, typer.Option("--tabela", help="Repita: --tabela A --tabela B")
+    ] = None,
+) -> None:
+    """Monta as tabelas da entrega no banco (e em CSV com --csv)."""
+    _setup_logging()
+    from tcc_scraper.config import get_settings
+    from tcc_scraper.entrega.builder import build_entrega
+
+    gravadas = build_entrega(tabelas=tabela or None, csv=csv)
+    _report("entrega", gravadas)
+    if csv:
+        pasta = get_settings().entrega_csv_dir
+        for nome in gravadas:
+            console.print(f"csv: {pasta / (nome + '.csv')}")
+
+
+@app.command("judge-news")
+def judge_news(
+    limite: int | None = typer.Option(None, help="Maximo de itens nesta rodada"),
+    avaliar: bool = typer.Option(
+        False, "--avaliar", help="Mede precisao e revocacao no conjunto ouro, sem gravar"
+    ),
+) -> None:
+    """Juiza de noticias: regra, Jev e Gemini sobre as pendentes."""
+    _setup_logging()
+    from tcc_scraper.config import PROJECT_ROOT
+    from tcc_scraper.llm.juiza import avaliar_conjunto_ouro, julgar_pendentes
+
+    if avaliar:
+        caminho = PROJECT_ROOT / "tests" / "fixtures" / "juiza_gold.csv"
+        if not caminho.exists():
+            console.print(f"[yellow]conjunto ouro ausente: {caminho}[/yellow]")
+            return
+        try:
+            metricas = avaliar_conjunto_ouro(caminho)
+        except ValueError as exc:
+            console.print(f"[yellow]avaliacao nao executada: {exc}[/yellow]")
+            return
+        console.print(metricas)
+        return
+
+    r = julgar_pendentes(limite_itens=limite)
+    _report(
+        "juiza de noticias",
+        {
+            "pendentes": r.pendentes,
+            "regra": r.regra,
+            "jev": r.jev,
+            "gemini": r.gemini,
+            "erros": r.erros,
+            "runs": r.runs,
+            "tokens_entrada": r.tokens_entrada,
+            "tokens_saida": r.tokens_saida,
+            "interrompido": r.interrompido,
+        },
+    )
+
+
+@app.command("historico")
+def historico_cmd(
+    anos: Annotated[
+        list[int] | None, typer.Option("--anos", help="Repita: --anos 2026 --anos 2025")
+    ] = None,
+    modo: str = typer.Option("pendentes", help="pendentes ou reprocessar_erros"),
+) -> None:
+    """Carga historica: dispara e espera (bloqueante) a coleta dos anos pedidos."""
+    _setup_logging()
+    if not anos:
+        raise typer.BadParameter("informe ao menos um --anos")
+    from tcc_scraper.orquestrador.historico import Historico
+    from tcc_scraper.orquestrador.repositorio import RepositorioBanco
+
+    historico = Historico(RepositorioBanco())
+    execucao = historico.disparar(anos, modo)
+    console.print(f"historico {execucao} disparado; aguardando conclusao")
+    historico.join()
+    console.print("historico encerrado")
 
 
 if __name__ == "__main__":
