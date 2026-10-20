@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -353,6 +354,115 @@ def daily_cmd(
         "etapas",
         {f"{e['ordem']}. {e['etapa_id']} [{e['status']}]": e["itens"] for e in exe["etapas"]},
     )
+
+
+@app.command("collect-cvm")
+def collect_cvm(
+    anos: Annotated[
+        list[int] | None, typer.Option("--anos", help="Repita: --anos 2025 --anos 2026")
+    ] = None,
+    resume: bool = typer.Option(True, help="Pula o que ja foi coletado"),
+) -> None:
+    """ITR e DFP da CVM: grava raw_cvm_balancos e raw_cvm_acoes."""
+    _setup_logging()
+    from tcc_scraper.collectors.cvm_demonstracoes import CvmDemonstracoesCollector
+
+    with CvmDemonstracoesCollector(anos=anos or None) as collector:
+        _report("ITR/DFP (CVM)", collector.run(resume=resume))
+
+
+@app.command("collect-ipe")
+def collect_ipe(
+    anos: Annotated[
+        list[int] | None, typer.Option("--anos", help="Repita: --anos 2025 --anos 2026")
+    ] = None,
+    resume: bool = typer.Option(True, help="Pula o que ja foi coletado"),
+) -> None:
+    """Fatos relevantes (IPE) da CVM, gravados como noticias."""
+    _setup_logging()
+    from tcc_scraper.collectors.cvm_ipe import CvmIpeCollector
+
+    with CvmIpeCollector(anos=anos or None) as collector:
+        _report("fatos relevantes (CVM IPE)", collector.run(resume=resume))
+
+
+@app.command("collect-cadastro")
+def collect_cadastro(
+    resume: bool = typer.Option(True, help="Pula o que ja foi coletado"),
+) -> None:
+    """Cadastro das companhias: CVM (cad_cia_aberta) e B3 (GetDetail por codigo CVM)."""
+    _setup_logging()
+    from tcc_scraper.collectors.b3_cadastro import B3CadastroCollector
+    from tcc_scraper.collectors.cvm_cadastro import CvmCadastroCollector
+
+    with CvmCadastroCollector() as collector:
+        _report("cadastro (CVM)", collector.run(resume=resume))
+    with B3CadastroCollector() as collector:
+        _report("cadastro (B3)", collector.run(resume=resume))
+
+
+@app.command("collect-proventos")
+def collect_proventos(
+    resume: bool = typer.Option(True, help="Pula o que ja foi coletado"),
+) -> None:
+    """Proventos (dividendos, JCP etc.) da B3."""
+    _setup_logging()
+    from tcc_scraper.collectors.b3_proventos import B3ProventosCollector
+
+    with B3ProventosCollector() as collector:
+        _report("proventos (B3)", collector.run(resume=resume))
+
+
+@app.command("collect-indices")
+def collect_indices(
+    anos: Annotated[
+        list[int] | None, typer.Option("--anos", help="Repita: --anos 2025 --anos 2026")
+    ] = None,
+    resume: bool = typer.Option(True, help="Pula o que ja foi coletado"),
+) -> None:
+    """CDI e IPCA do Banco Central (SGS 12 e 433)."""
+    _setup_logging()
+    from tcc_scraper.collectors.indices import IndicesBcbCollector
+
+    with IndicesBcbCollector(anos=anos or None) as collector:
+        _report("indices (BCB: CDI e IPCA)", collector.run(resume=resume))
+
+
+@app.command("validate-cadastro")
+def validate_cadastro() -> None:
+    """Confere se cada ticker do universo tem codigo CVM e aparece na B3 desse mesmo codigo."""
+    _setup_logging()
+    from sqlalchemy import select
+
+    from tcc_scraper.config import TICKER_CODE_CVM, universo_coleta
+    from tcc_scraper.db.models_fontes import RawB3Cadastro
+    from tcc_scraper.db.session import session_scope
+
+    with session_scope() as session:
+        linhas = session.execute(
+            select(RawB3Cadastro.cd_cvm, RawB3Cadastro.other_codes)
+        ).all()
+    por_cvm = {cd_cvm: set(other_codes or []) for cd_cvm, other_codes in linhas}
+
+    ok, falhas = [], []
+    for ticker in universo_coleta():
+        cd_cvm = TICKER_CODE_CVM.get(ticker)
+        if cd_cvm is None:
+            motivo = "sem codigo CVM em TICKER_CODE_CVM"
+        elif cd_cvm not in por_cvm:
+            motivo = f"cd_cvm {cd_cvm} sem linha em raw_b3_cadastro"
+        elif ticker not in por_cvm[cd_cvm]:
+            motivo = f"{ticker} ausente de other_codes do cd_cvm {cd_cvm}"
+        else:
+            ok.append(ticker)
+            console.print(f"[green]ok[/green]    {ticker} (cd_cvm {cd_cvm})")
+            continue
+        falhas.append(ticker)
+        console.print(f"[red]FALHA[/red] {ticker}: {motivo}")
+
+    console.print(f"[green]validos: {len(ok)}[/green]  [red]falhas: {len(falhas)}[/red]")
+    if falhas:
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

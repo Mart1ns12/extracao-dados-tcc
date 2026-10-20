@@ -11,11 +11,12 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     import threading
 
+    from tcc_scraper.collectors.base import Collector
     from tcc_scraper.config import Settings
     from tcc_scraper.orquestrador.progresso import Progresso
 
@@ -76,12 +77,85 @@ def etapa_precos(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
     return de_stats(st)
 
 
+def _roda_coletor(coletor: Collector, p: Progresso, **kw: Any) -> dict:
+    with coletor as c:
+        return c.run(observador=p, **kw)
+
+
+def _executa_partes(p: Progresso, partes: list[tuple[str, Callable[[], dict]]]) -> ResultadoEtapa:
+    """Roda os coletores de uma etapa em sequência; um que levanta não derruba os outros.
+
+    Falhou se algum devolveu `interrompido` (orçamento ou cancelamento) ou se todos falharam
+    (levantaram ou tiveram erro total). Caso contrário, concluída, com os itens somados.
+    """
+    sts: dict[str, dict] = {}
+    falhas = 0
+    for nome, executa in partes:
+        try:
+            st = executa()
+        except Exception as exc:
+            logger.exception("%s levantou", nome)
+            p.log("erro", f"{nome} levantou: {exc}"[:4000])
+            sts[nome] = {"excecao": str(exc)[:4000]}
+            falhas += 1
+            continue
+        sts[nome] = dict(st)
+        if de_stats(st).status == "falhou":
+            falhas += 1
+    itens = sum(st.get("itens", 0) for st in sts.values())
+    if any(st.get("interrompido") for st in sts.values()):
+        return ResultadoEtapa(
+            "falhou", itens=itens, erro="interrompida: orçamento ou cancelamento", detalhes=sts
+        )
+    if falhas == len(partes):
+        return ResultadoEtapa("falhou", itens=itens, erro="todas as partes falharam", detalhes=sts)
+    return ResultadoEtapa("concluida", itens=itens, detalhes=sts)
+
+
 def etapa_macro(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    from tcc_scraper.collectors.indices import IndicesBcbCollector
     from tcc_scraper.collectors.macro_bcb import BcbCollector
 
-    with BcbCollector() as c:
-        st = c.run(resume=False, observador=p)
+    return _executa_partes(
+        p,
+        [
+            ("bcb", lambda: _roda_coletor(BcbCollector(), p, resume=False)),
+            (
+                "indices_bcb",
+                lambda: _roda_coletor(IndicesBcbCollector(anos=[ctx.hoje.year]), p, resume=False),
+            ),
+        ],
+    )
+
+
+def etapa_ipe(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    from tcc_scraper.collectors.cvm_ipe import CvmIpeCollector
+
+    with CvmIpeCollector(anos=[ctx.hoje.year]) as c:
+        st = c.run(resume=True, observador=p)
     return de_stats(st)
+
+
+def etapa_cadastro(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    from tcc_scraper.collectors.b3_cadastro import B3CadastroCollector
+    from tcc_scraper.collectors.b3_proventos import B3ProventosCollector
+    from tcc_scraper.collectors.cvm_cadastro import CvmCadastroCollector
+    from tcc_scraper.collectors.cvm_demonstracoes import CvmDemonstracoesCollector
+
+    return _executa_partes(
+        p,
+        [
+            ("cvm_cadastro", lambda: _roda_coletor(CvmCadastroCollector(), p, resume=False)),
+            ("b3_cadastro", lambda: _roda_coletor(B3CadastroCollector(), p, resume=False)),
+            ("b3_proventos", lambda: _roda_coletor(B3ProventosCollector(), p, resume=False)),
+            (
+                "cvm_itr_dfp",
+                lambda: _roda_coletor(
+                    CvmDemonstracoesCollector(anos=[ctx.hoje.year]), p, resume=True
+                ),
+            ),
+        ],
+    )
 
 
 def etapa_noticias(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
@@ -146,10 +220,10 @@ ETAPAS: tuple[EtapaDef, ...] = (
     EtapaDef("precos", 1, "Preços e índices", "yahoo", etapa_precos),
     EtapaDef("macro", 2, "Macro do BCB", "bcb", etapa_macro),
     EtapaDef("noticias", 3, "Notícias", "google_news", etapa_noticias),
-    EtapaDef("ipe", 4, "Fatos relevantes", "cvm_ipe", etapa_nao_implementada),
+    EtapaDef("ipe", 4, "Fatos relevantes", "cvm_ipe", etapa_ipe),
     EtapaDef("enriquecimento", 5, "Corpo e sentimento", "finbert", etapa_enriquecimento),
     EtapaDef("juiza", 6, "Juíza de qualidade", "juiza", etapa_nao_implementada),
-    EtapaDef("cadastro", 7, "Cadastro e eventos", "cvm_b3", etapa_nao_implementada),
+    EtapaDef("cadastro", 7, "Cadastro e eventos", "cvm_b3", etapa_cadastro),
     EtapaDef("entrega", 8, "Montagem das 8 tabelas", "build_entrega", etapa_nao_implementada),
     EtapaDef("analise", 9, "Análise diária", "gemini", etapa_analise),
 )

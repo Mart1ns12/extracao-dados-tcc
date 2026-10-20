@@ -342,3 +342,150 @@ def test_podar_logs_remove_so_os_mais_antigos_que_o_corte() -> None:
 
     assert repo.podar_logs(7) == 1
     assert [m["mensagem"] for m in repo.logs] == ["recente"]
+
+
+# -- etapas com coletores falsos (sem rede) -------------------------------------------
+class _Observador:
+    """Duck-type do Progresso: registra os planos e os logs de cada etapa."""
+
+    def __init__(self) -> None:
+        self.planos: list[int] = []
+        self.logs: list[tuple[str, str]] = []
+
+    def plano(self, total: int) -> None:
+        self.planos.append(total)
+
+    def unidade(self, key, *, ok, itens, saturada, erro) -> None:
+        return None
+
+    def deve_parar(self) -> bool:
+        return False
+
+    def log(self, nivel: str, mensagem: str) -> None:
+        self.logs.append((nivel, mensagem))
+
+
+def _coletor_falso(nome: str, registro: list, levanta: bool = False, stats: dict | None = None):
+    """Coletor que anota o construtor e o run, planeja 1 unidade e, se `levanta`, cai depois."""
+
+    class Falso:
+        def __init__(self, *args, **kwargs) -> None:
+            registro.append(("init", nome, kwargs))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info) -> None:
+            return None
+
+        def run(self, *, resume=True, limit=None, apenas_erros=False, observador=None) -> dict:
+            registro.append(("run", nome, resume))
+            observador.plano(1)
+            if levanta:
+                raise RuntimeError(f"{nome} caiu")
+            return dict(stats or {"total": 1, "ok": 1, "erro": 0, "itens": 2, "saturadas": 0})
+
+    return Falso
+
+
+def test_etapa_cadastro_um_sub_coletor_levanta_e_os_outros_seguem(monkeypatch) -> None:
+    registro: list = []
+    monkeypatch.setattr(
+        "tcc_scraper.collectors.cvm_cadastro.CvmCadastroCollector",
+        _coletor_falso("cvm_cadastro", registro),
+    )
+    monkeypatch.setattr(
+        "tcc_scraper.collectors.b3_cadastro.B3CadastroCollector",
+        _coletor_falso("b3_cadastro", registro),
+    )
+    monkeypatch.setattr(
+        "tcc_scraper.collectors.b3_proventos.B3ProventosCollector",
+        _coletor_falso("b3_proventos", registro, levanta=True),
+    )
+    monkeypatch.setattr(
+        "tcc_scraper.collectors.cvm_demonstracoes.CvmDemonstracoesCollector",
+        _coletor_falso("cvm_itr_dfp", registro),
+    )
+    obs = _Observador()
+
+    r = E.etapa_cadastro(_ctx(), obs)
+
+    assert r.status == "concluida"
+    assert r.itens == 6  # 3 sub-coletores com 2 itens cada; o que caiu contribui com 0
+    assert len(obs.planos) == 4
+    assert [(c[0], c[1], c[2]) for c in registro if c[0] == "run"] == [
+        ("run", "cvm_cadastro", False),
+        ("run", "b3_cadastro", False),
+        ("run", "b3_proventos", False),
+        ("run", "cvm_itr_dfp", True),
+    ]
+    assert ("init", "cvm_itr_dfp", {"anos": [2026]}) in registro
+    assert any(n == "erro" and "b3_proventos" in m for n, m in obs.logs)
+
+
+def test_etapa_cadastro_falha_quando_todos_os_sub_coletores_falham(monkeypatch) -> None:
+    registro: list = []
+    for alvo, nome in [
+        ("tcc_scraper.collectors.cvm_cadastro.CvmCadastroCollector", "cvm_cadastro"),
+        ("tcc_scraper.collectors.b3_cadastro.B3CadastroCollector", "b3_cadastro"),
+        ("tcc_scraper.collectors.b3_proventos.B3ProventosCollector", "b3_proventos"),
+        ("tcc_scraper.collectors.cvm_demonstracoes.CvmDemonstracoesCollector", "cvm_itr_dfp"),
+    ]:
+        monkeypatch.setattr(alvo, _coletor_falso(nome, registro, levanta=True))
+
+    r = E.etapa_cadastro(_ctx(), _Observador())
+
+    assert r.status == "falhou"
+    assert r.erro == "todas as partes falharam"
+
+
+def test_etapa_cadastro_interrompida_e_falhou(monkeypatch) -> None:
+    registro: list = []
+    interrompido = {"total": 1, "ok": 0, "erro": 0, "itens": 0, "saturadas": 0, "interrompido": 1}
+    monkeypatch.setattr(
+        "tcc_scraper.collectors.cvm_cadastro.CvmCadastroCollector",
+        _coletor_falso("cvm_cadastro", registro, stats=interrompido),
+    )
+    for alvo, nome in [
+        ("tcc_scraper.collectors.b3_cadastro.B3CadastroCollector", "b3_cadastro"),
+        ("tcc_scraper.collectors.b3_proventos.B3ProventosCollector", "b3_proventos"),
+        ("tcc_scraper.collectors.cvm_demonstracoes.CvmDemonstracoesCollector", "cvm_itr_dfp"),
+    ]:
+        monkeypatch.setattr(alvo, _coletor_falso(nome, registro))
+
+    r = E.etapa_cadastro(_ctx(), _Observador())
+
+    assert r.status == "falhou"
+    assert r.erro == "interrompida: orçamento ou cancelamento"
+
+
+def test_etapa_ipe_chama_cvm_ipe_com_o_ano_corrente(monkeypatch) -> None:
+    registro: list = []
+    monkeypatch.setattr(
+        "tcc_scraper.collectors.cvm_ipe.CvmIpeCollector", _coletor_falso("cvm_ipe", registro)
+    )
+
+    r = E.etapa_ipe(_ctx(), _Observador())
+
+    assert r.status == "concluida"
+    assert ("init", "cvm_ipe", {"anos": [2026]}) in registro
+    assert ("run", "cvm_ipe", True) in registro
+
+
+def test_etapa_macro_roda_bcb_e_indices_com_o_ano_corrente(monkeypatch) -> None:
+    registro: list = []
+    monkeypatch.setattr(
+        "tcc_scraper.collectors.macro_bcb.BcbCollector", _coletor_falso("bcb", registro)
+    )
+    monkeypatch.setattr(
+        "tcc_scraper.collectors.indices.IndicesBcbCollector",
+        _coletor_falso("indices_bcb", registro),
+    )
+
+    r = E.etapa_macro(_ctx(), _Observador())
+
+    assert r.status == "concluida"
+    assert r.itens == 4
+    assert ("run", "bcb", False) in registro
+    assert ("init", "indices_bcb", {"anos": [2026]}) in registro
+    assert ("run", "indices_bcb", False) in registro
