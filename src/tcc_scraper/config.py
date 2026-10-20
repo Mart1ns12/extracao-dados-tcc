@@ -91,6 +91,12 @@ class Settings(BaseSettings):
     hf_cache_dir: Path = Field(default=PROJECT_ROOT / ".hf_cache")
     export_dir: Path = Field(default=PROJECT_ROOT / "exports")
 
+    # FinBERT: device = auto | cuda | cpu (aceita cuda:N). auto usa GPU se o torch
+    # instalado tiver CUDA. Pedir cuda sem CUDA disponivel falha em vez de cair na CPU.
+    # batch_size: com GPU, 128 costuma caber em 6 GB de VRAM.
+    sentiment_device: str = "auto"
+    sentiment_batch_size: int = 32
+
     # Executor (worker que atende o painel). Vazio = valor padrao do executor.
     painel_api_url: str = ""
     executor_token: str = ""

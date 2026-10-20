@@ -224,6 +224,8 @@ ali. Os caminhos de `EXPORT_DIR`, `ENTREGA_CSV_DIR` e `HF_CACHE_DIR` são padrõ
 | `ENTREGA_CSV_DIR` | `exports/entrega/` | não | Pasta dos CSVs da entrega (`build-entrega --csv`) |
 | `HF_CACHE_DIR` | `.hf_cache/` na pasta do projeto | não | Cache dos modelos do FinBERT. A imagem do Railway fixa `/app/.hf_cache` |
 
+**GPU para o FinBERT.** Com `SENTIMENT_DEVICE=auto` (padrão) o FinBERT usa a GPU se o torch instalado tiver CUDA; senão roda na CPU. Para ter CUDA, instale o torch antes do projeto: `pip install torch --index-url https://download.pytorch.org/whl/cu124` e depois `pip install -e ".[llm,sentiment]"`. `SENTIMENT_DEVICE` aceita `auto`, `cuda`, `cuda:N` ou `cpu`; pedir `cuda` sem GPU falha com erro, em vez de cair na CPU. `SENTIMENT_BATCH_SIZE` (padrão 32; com GPU, 128 costuma caber em 6 GB de VRAM). O Dockerfile do Railway continua CPU.
+
 ## 4. Deploy no Railway
 
 O scraper roda no Railway como **worker sempre ligado**: o serviço executa `python -m tcc_scraper.cli executor`. Não

@@ -7,7 +7,12 @@ a qualidade do FinBERT.
 
 from __future__ import annotations
 
+import pytest
+
+from tcc_scraper.config import Settings
+from tcc_scraper.sentiment import finbert
 from tcc_scraper.sentiment.base import SentimentScore, SentimentScorer
+from tcc_scraper.sentiment.finbert import HuggingFaceFinBERT, resolver_device
 from tcc_scraper.sentiment.router import SentimentRouter, detect_lang
 
 
@@ -114,3 +119,54 @@ def test_lista_vazia_nao_chama_modelo() -> None:
 def test_score_e_positivo_menos_negativo() -> None:
     s = SentimentScore(prob_pos=0.7, prob_neu=0.2, prob_neg=0.1)
     assert s.score == 0.7 - 0.1
+
+
+# --------------------------------------------------------------------------------------
+# Device e batch size do FinBERT (sem carregar modelo)
+# --------------------------------------------------------------------------------------
+def test_device_auto_usa_gpu_quando_disponivel() -> None:
+    assert resolver_device("auto", cuda_disponivel=True) == "cuda"
+
+
+def test_device_auto_cai_para_cpu_sem_gpu() -> None:
+    assert resolver_device("auto", cuda_disponivel=False) == "cpu"
+
+
+def test_device_cpu_ignora_gpu() -> None:
+    assert resolver_device("cpu", cuda_disponivel=True) == "cpu"
+    assert resolver_device("cpu", cuda_disponivel=False) == "cpu"
+
+
+def test_device_cuda_sem_gpu_falha_em_vez_de_cair_na_cpu() -> None:
+    with pytest.raises(RuntimeError, match="SENTIMENT_DEVICE"):
+        resolver_device("cuda", cuda_disponivel=False)
+    with pytest.raises(RuntimeError):
+        resolver_device("cuda:1", cuda_disponivel=False)
+
+
+def test_device_cuda_com_indice_com_gpu() -> None:
+    assert resolver_device("cuda:1", cuda_disponivel=True) == "cuda:1"
+
+
+def test_device_invalido_levanta_value_error() -> None:
+    with pytest.raises(ValueError):
+        resolver_device("mps", cuda_disponivel=True)
+    with pytest.raises(ValueError):
+        resolver_device("", cuda_disponivel=True)
+    with pytest.raises(ValueError):
+        resolver_device("cuda:x", cuda_disponivel=True)
+
+
+def test_batch_size_default_vem_do_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    # get_settings e lru_cache: troca-se a funcao no modulo em vez de depender de env var.
+    monkeypatch.setattr(finbert, "get_settings", lambda: Settings(sentiment_batch_size=128))
+    assert HuggingFaceFinBERT("fake-model", "en").batch_size == 128
+
+
+def test_batch_size_explicito_prevalece_sobre_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(finbert, "get_settings", lambda: Settings(sentiment_batch_size=128))
+    assert HuggingFaceFinBERT("fake-model", "en", batch_size=8).batch_size == 8
+
+
+def test_device_e_none_antes_de_carregar_o_modelo() -> None:
+    assert HuggingFaceFinBERT("fake-model", "en", device="cpu").device is None
