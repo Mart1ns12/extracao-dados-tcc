@@ -719,9 +719,16 @@ INDICES_BCB: dict[str, int] = {"cdi": 12, "ipca": 433}
 MACRO_ENTREGA: dict[str, str] = {"^BVSP": "IBOV", "USDBRL=X": "USDBRL", "BZ=F": "BRENT"}
 
 # Contas das demonstracoes CVM usadas na entrega: demonstracao -> codigo -> coluna.
+# Bancos usam outro plano: lucro em 3.09 (3.11 nao existe) e PL em 2.08 (2.03 sao passivos).
+# Qual codigo vale para cada coluna e decidido pela descricao (builder.py).
 CONTAS_CVM: dict[str, dict[str, str]] = {
-    "DRE": {"3.01": "receita_liquida", "3.03": "lucro_bruto", "3.11": "lucro_liquido"},
-    "BPP": {"2.03": "patrimonio_liquido"},
+    "DRE": {
+        "3.01": "receita_liquida",
+        "3.03": "lucro_bruto",
+        "3.09": "lucro_liquido",
+        "3.11": "lucro_liquido",
+    },
+    "BPP": {"2.03": "patrimonio_liquido", "2.08": "patrimonio_liquido"},
 }
 
 # Categorias de documentos IPE (CVM) que entram na entrega.
