@@ -20,6 +20,7 @@ dependencies = [
     "trafilatura>=1.9",
     "py3langid>=0.3",
     "tenacity>=8.3",
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
