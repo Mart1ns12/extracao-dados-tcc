@@ -11,7 +11,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -20,6 +20,7 @@ from tcc_scraper.executor.agenda import deve_disparar_cron
 from tcc_scraper.executor.comandos import Aplicador, HistoricoControle
 from tcc_scraper.executor.painel_client import Comando, PainelClient
 from tcc_scraper.orquestrador.daily import Daily
+from tcc_scraper.orquestrador.historico import Historico
 from tcc_scraper.orquestrador.repositorio import Repositorio
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ class Executor:
         self,
         repo: Repositorio,
         daily: Daily,
-        historico: HistoricoControle,
+        historico: HistoricoControle | None,
         client: PainelClient,
         settings: Settings,
         agora: Callable[[], datetime] | None = None,
@@ -53,14 +54,16 @@ class Executor:
     ) -> None:
         self._repo = repo
         self._daily = daily
-        self._historico = historico
+        self._historico = historico if historico is not None else Historico(repo, settings)
         self._client = client
         self._settings = settings
         self._agora = agora or (lambda: datetime.now(UTC))
         self._dormir = dormir
-        self._aplicador = Aplicador(repo, daily, historico, settings)
+        self._aplicador = Aplicador(repo, daily, self._historico, settings)
         self._parar = threading.Event()
         self._thread_heartbeat: threading.Thread | None = None
+        # Dia em que o aviso de cron falho ja saiu: o log nao repete a cada ciclo.
+        self._aviso_cron: date | None = None
 
     # -- ciclo de vida -------------------------------------------------------------
     def iniciar(self) -> None:
@@ -132,10 +135,12 @@ class Executor:
             parametros={},
             criado_em=agora.isoformat(),
         )
-        # Sem ack: o comando nao veio do painel.
+        # Sem ack: o comando nao veio do painel. Se falhar (ex.: daily manual rodando),
+        # nada e registrado e a tentativa se repete no proximo ciclo.
         ok, erro = self._aplicador.aplicar(cmd, origem="cron")
-        if not ok:
-            logger.warning("cron de %s nao disparou: %s", hoje, erro)
+        if not ok and self._aviso_cron != hoje:
+            logger.warning("cron de %s nao disparou (nova tentativa a cada ciclo): %s", hoje, erro)
+            self._aviso_cron = hoje
 
     def _iniciar_agendada(self) -> None:
         ex = self._repo.atual()

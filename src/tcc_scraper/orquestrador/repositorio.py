@@ -19,12 +19,16 @@ from tcc_scraper.db.models_painel import (
     PainelEtapa,
     PainelExecucao,
     PainelHeartbeat,
+    PainelHistorico,
+    PainelHistoricoProgresso,
     PainelLog,
 )
 from tcc_scraper.db.session import session_scope
 from tcc_scraper.db.upsert import bulk_upsert
 
 ATIVAS = ("em_andamento", "agendada")
+# Carga historica ainda nao encerrada, na ordem de prioridade de `historico_atual`.
+ATIVAS_HISTORICO = ("em_andamento", "pausando", "pausada", "cancelando")
 
 
 class Repositorio(Protocol):
@@ -65,6 +69,21 @@ class Repositorio(Protocol):
 
     def heartbeat(self, host: str, versao: str, ocupado_com: str | None) -> None: ...
 
+    def criar_historico(self, historico: dict) -> None: ...
+
+    def atualizar_historico(self, historico_id: str, **campos) -> None: ...
+
+    def historico_atual(self) -> dict | None:
+        """Carga historica ativa (em_andamento, pausando, pausada, cancelando), senao a ultima."""
+
+    def criar_progresso_historico(self, linhas: list[dict]) -> None:
+        """Cria (ou sobrescreve) as linhas de progresso (ano, coletor) em lote."""
+
+    def atualizar_progresso_historico(self, ano: int, coletor: str, **campos) -> None: ...
+
+    def progresso_historico(self, ano: int) -> list[dict]:
+        """Linhas de progresso do ano, ordenadas por coletor."""
+
 
 def _como_dict(obj) -> dict:
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
@@ -78,6 +97,17 @@ def _escolher_atual(execucoes: list[dict]) -> str | None:
             return max(ativas, key=lambda e: e["iniciada_em"])["id"]
     if execucoes:
         return max(execucoes, key=lambda e: e["iniciada_em"])["id"]
+    return None
+
+
+def _escolher_historico(historicos: list[dict]) -> dict | None:
+    """Carga historica 'atual': a ativa (a mais recente), senao a ultima iniciada."""
+    for status in ATIVAS_HISTORICO:
+        ativas = [h for h in historicos if h["status"] == status]
+        if ativas:
+            return max(ativas, key=lambda h: h["iniciada_em"])
+    if historicos:
+        return max(historicos, key=lambda h: h["iniciada_em"])
     return None
 
 
@@ -263,6 +293,65 @@ class RepositorioBanco(Repositorio):
                 update_columns=["versao", "ocupado_com", "visto_em"],
             )
 
+    def criar_historico(self, historico: dict) -> None:
+        with session_scope() as s:
+            bulk_upsert(
+                s,
+                PainelHistorico.__table__,
+                [historico],
+                index_elements=["id"],
+                update_columns=None,
+            )
+
+    def atualizar_historico(self, historico_id: str, **campos) -> None:
+        with session_scope() as s:
+            s.execute(
+                update(PainelHistorico).where(PainelHistorico.id == historico_id).values(**campos)
+            )
+
+    def historico_atual(self) -> dict | None:
+        with session_scope() as s:
+            historicos = [
+                _como_dict(h) for h in s.execute(select(PainelHistorico)).scalars().all()
+            ]
+        return _escolher_historico(historicos)
+
+    def criar_progresso_historico(self, linhas: list[dict]) -> None:
+        if not linhas:
+            return
+        with session_scope() as s:
+            bulk_upsert(
+                s,
+                PainelHistoricoProgresso.__table__,
+                linhas,
+                index_elements=["ano", "coletor"],
+                update_columns=[c for c in linhas[0] if c not in ("ano", "coletor")],
+            )
+
+    def atualizar_progresso_historico(self, ano: int, coletor: str, **campos) -> None:
+        with session_scope() as s:
+            s.execute(
+                update(PainelHistoricoProgresso)
+                .where(
+                    PainelHistoricoProgresso.ano == ano,
+                    PainelHistoricoProgresso.coletor == coletor,
+                )
+                .values(**campos)
+            )
+
+    def progresso_historico(self, ano: int) -> list[dict]:
+        with session_scope() as s:
+            linhas = (
+                s.execute(
+                    select(PainelHistoricoProgresso)
+                    .where(PainelHistoricoProgresso.ano == ano)
+                    .order_by(PainelHistoricoProgresso.coletor)
+                )
+                .scalars()
+                .all()
+            )
+            return [_como_dict(r) for r in linhas]
+
 
 class RepositorioMemoria(Repositorio):
     """Mesmo contrato sobre dicts. Usado pelos testes e nao toca banco nenhum."""
@@ -275,6 +364,8 @@ class RepositorioMemoria(Repositorio):
         self.logs: list[dict] = []
         self.comandos: dict[str, dict] = {}
         self.heartbeats: dict[str, dict] = {}
+        self.historicos: dict[str, dict] = {}
+        self.progresso_historico_linhas: dict[tuple[int, str], dict] = {}
 
     def criar_execucao(self, execucao: dict, etapas: list[dict]) -> None:
         with self._lock:
@@ -390,3 +481,34 @@ class RepositorioMemoria(Repositorio):
                 "ocupado_com": ocupado_com,
                 "visto_em": datetime.now(UTC),
             }
+
+    def criar_historico(self, historico: dict) -> None:
+        with self._lock:
+            self.historicos[historico["id"]] = dict(historico)
+
+    def atualizar_historico(self, historico_id: str, **campos) -> None:
+        with self._lock:
+            self.historicos[historico_id].update(campos)
+
+    def historico_atual(self) -> dict | None:
+        with self._lock:
+            return _escolher_historico([dict(h) for h in self.historicos.values()])
+
+    def criar_progresso_historico(self, linhas: list[dict]) -> None:
+        with self._lock:
+            for linha in linhas:
+                self.progresso_historico_linhas[(linha["ano"], linha["coletor"])] = dict(linha)
+
+    def atualizar_progresso_historico(self, ano: int, coletor: str, **campos) -> None:
+        # Como o UPDATE do banco: linha inexistente nao gera erro, so nao muda nada.
+        with self._lock:
+            linha = self.progresso_historico_linhas.get((ano, coletor))
+            if linha is not None:
+                linha.update(campos)
+
+    def progresso_historico(self, ano: int) -> list[dict]:
+        with self._lock:
+            linhas = [
+                dict(v) for (a, _), v in self.progresso_historico_linhas.items() if a == ano
+            ]
+        return sorted(linhas, key=lambda r: r["coletor"])

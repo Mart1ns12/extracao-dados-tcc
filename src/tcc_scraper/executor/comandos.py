@@ -12,6 +12,7 @@ from typing import Protocol
 from tcc_scraper.config import Settings
 from tcc_scraper.executor.painel_client import Comando
 from tcc_scraper.orquestrador.daily import Daily, ExecucaoEmAndamento
+from tcc_scraper.orquestrador.historico import Historico, HistoricoEmAndamento, TransicaoInvalida
 from tcc_scraper.orquestrador.repositorio import Repositorio
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ class HistoricoControle(Protocol):
 
 
 class HistoricoIndisponivel:
-    """Stand-in ate a carga historica existir (T28): nunca bloqueia, recusa os comandos."""
+    """Dublê para testes: nunca bloqueia, recusa os comandos. Producao usa `Historico`."""
 
     @property
     def ocupado(self) -> bool:
@@ -60,12 +61,12 @@ class Aplicador:
         self,
         repo: Repositorio,
         daily: Daily,
-        historico: HistoricoControle,
+        historico: HistoricoControle | None,
         settings: Settings,
     ) -> None:
         self._repo = repo
         self._daily = daily
-        self._historico = historico
+        self._historico = historico if historico is not None else Historico(repo, settings)
         self._settings = settings
 
     def aplicar(self, cmd: Comando, origem: str = "manual") -> tuple[bool, str | None]:
@@ -74,12 +75,20 @@ class Aplicador:
         try:
             self._despachar(cmd, origem)
             ok, erro = True, None
-        except (ComandoRecusado, ExecucaoEmAndamento, ValueError) as exc:
+        except (
+            ComandoRecusado,
+            ExecucaoEmAndamento,
+            HistoricoEmAndamento,
+            TransicaoInvalida,
+            ValueError,
+        ) as exc:
             ok, erro = False, str(exc)
         except Exception:
             logger.exception("falha ao aplicar comando %s (%s)", cmd.id, cmd.tipo)
             ok, erro = False, "falha interna ao aplicar o comando"
-        self._repo.registrar_comando(cmd.id, ok, erro)
+        # Cron sem sucesso nao vira registro: sem ele, a tentativa se repete no proximo ciclo.
+        if ok or origem != "cron":
+            self._repo.registrar_comando(cmd.id, ok, erro)
         return ok, erro
 
     def _despachar(self, cmd: Comando, origem: str) -> None:

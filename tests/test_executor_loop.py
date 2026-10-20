@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
-from datetime import UTC, datetime
+import time
+from datetime import UTC, date, datetime
 
 import httpx
 import pytest
@@ -15,8 +17,10 @@ from tcc_scraper.executor.comandos import Aplicador, HistoricoIndisponivel
 from tcc_scraper.executor.loop import Executor
 from tcc_scraper.executor.painel_client import Comando, PainelClient
 from tcc_scraper.orquestrador import etapas as E
+from tcc_scraper.orquestrador import historico as H
 from tcc_scraper.orquestrador.daily import Daily
 from tcc_scraper.orquestrador.etapas import EtapaDef, ResultadoEtapa
+from tcc_scraper.orquestrador.historico import Historico
 from tcc_scraper.orquestrador.repositorio import RepositorioMemoria
 
 URL = "http://painel.test"
@@ -331,3 +335,146 @@ def test_cliente_ack_409_conta_como_confirmado_e_404_como_falha():
         cliente = PainelClient(URL, "tok", client=httpx.Client())
         assert cliente.ack("a", True, None) is True
         assert cliente.ack("b", True, None) is False
+
+
+# -- carga historica real dentro do executor ------------------------------------------
+class _ColetorVazio:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        return False
+
+    def run(self, *, observador, **_kwargs) -> dict:
+        observador.plano(0)
+        return {"interrompido": 0, "itens": 0}
+
+
+class _ColetorTrava:
+    """Segura a carga em andamento ate a pausa chegar; devolve interrompido."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        return False
+
+    def run(self, *, observador, **_kwargs) -> dict:
+        observador.plano(1)
+        while not observador.deve_parar():
+            time.sleep(0.005)
+        return {"interrompido": 1, "itens": 0}
+
+
+def _resolver_vazio(alvo: str):
+    nome = alvo.split(":")[1]
+    if nome in ("score_pending", "julgar_pendentes", "build_entrega"):
+        return lambda observador=None, **_kwargs: {"interrompido": 0}
+    return lambda **_kwargs: _ColetorVazio()
+
+
+def _resolver_trava(alvo: str):
+    if alvo.split(":")[1] == "YahooPriceCollector":
+        return lambda **_kwargs: _ColetorTrava()
+    return _resolver_vazio(alvo)
+
+
+def _settings_historico() -> Settings:
+    return Settings(
+        gemini_api_key="",
+        painel_api_url=URL,
+        executor_token="tok",
+        executor_poll_s=0,
+        executor_heartbeat_s=3600,
+        executor_host="maquina-teste",
+        data_fim_coleta=date(2026, 10, 19),
+    )
+
+
+def _esperar_status_historico(repo, status: str, limite: float = 5.0) -> None:
+    fim = time.monotonic() + limite
+    while (atual := repo.historico_atual()) is None or atual["status"] != status:
+        if time.monotonic() > fim:
+            raise AssertionError(f"carga histórica não chegou a {status}")
+        time.sleep(0.005)
+
+
+def test_comando_historico_cria_a_carga_real(cenario, monkeypatch):
+    repo, daily, relogio = cenario
+    monkeypatch.setattr(H, "_resolver", _resolver_vazio)
+    historico = Historico(repo, _settings_historico(), agora=relogio)
+    with respx.mock(assert_all_called=False) as router:
+        router.get(COMANDOS).mock(
+            return_value=httpx.Response(
+                200,
+                json={"comandos": [_comando("h1", "historico", anos=[2026], modo="pendentes")]},
+            )
+        )
+        ack = router.post(f"{URL}/api/executor/comandos/h1/ack").mock(
+            return_value=httpx.Response(204)
+        )
+        ex = _executor(repo, daily, historico, relogio)
+
+        ex.ciclo()
+        historico.join(5)
+
+    assert json.loads(ack.calls[-1].request.content) == {"ok": True, "erro": None}
+    assert repo.historico_atual()["status"] == "concluida"
+
+
+def test_daily_com_carga_em_andamento_nasce_agendada_e_inicia_apos_pausar(cenario, monkeypatch):
+    repo, daily, relogio = cenario
+    monkeypatch.setattr(H, "_resolver", _resolver_trava)
+    historico = Historico(repo, _settings_historico(), agora=relogio)
+    historico.disparar([2026])
+    try:
+        with respx.mock(assert_all_called=False) as router:
+            router.get(COMANDOS).mock(
+                return_value=httpx.Response(200, json={"comandos": [_comando("c1", "daily")]})
+            )
+            router.post(f"{URL}/api/executor/comandos/c1/ack").mock(
+                return_value=httpx.Response(204)
+            )
+            ex = _executor(repo, daily, historico, relogio)
+
+            ex.ciclo()
+            agendada = repo.atual()
+            assert agendada["status"] == "agendada"
+            assert agendada["aguardando"] == "historico"
+            assert not daily.ocupado
+
+            assert historico.controlar("pausar") == "pausando"
+            _esperar_status_historico(repo, "pausada")
+            ex.ciclo()  # carga pausada nao bloqueia mais: o daily inicia
+            _esperar(daily)
+            assert repo.obter(agendada["id"])["status"] == "concluida"
+    finally:
+        historico.controlar("cancelar")
+        historico.join(5)
+
+
+def test_cron_que_falha_nao_e_registrado_e_avisa_uma_vez_por_dia(cenario, caplog):
+    repo, daily, relogio = cenario
+    relogio.t = datetime(2026, 10, 19, 21, 45, tzinfo=UTC)  # 18:45 em Sao Paulo
+    historico = HistoricoFalso(bloqueia=True)
+    # Execucao manual ainda agendada: o cron nao consegue criar a dele enquanto ela existir.
+    eid = daily.criar("daily")
+    ex = _executor(repo, daily, historico, relogio)
+
+    with respx.mock(assert_all_called=False) as router:
+        router.get(COMANDOS).mock(return_value=httpx.Response(200, json={"comandos": []}))
+        with caplog.at_level(logging.WARNING, logger="tcc_scraper.executor.loop"):
+            ex.ciclo()
+            ex.ciclo()
+        avisos = [r for r in caplog.records if "nao disparou" in r.getMessage()]
+        assert len(avisos) == 1
+        assert repo.comando_aplicado("cron-2026-10-19") is False
+
+        # A manual termina e a carga libera: o cron dispara no ciclo seguinte.
+        repo.atualizar_execucao(eid, status="concluida")
+        historico.liberar()
+        ex.ciclo()
+        _esperar(daily)
+
+    assert repo.comando_aplicado("cron-2026-10-19") is True
+    assert repo.existe_execucao_cron(date(2026, 10, 19)) is True
