@@ -2,6 +2,11 @@
 
 Nao e coleta, entao nao passa pelo throttle do `Collector`. Nunca levanta para quem chama:
 falha de rede ou de HTTP vira aviso no log e um retorno neutro (None ou False).
+
+Contrato (interface-acompanhamento/docs/contrato-api.md): as tres rotas sao POST.
+  POST /api/executor/comandos       {}                              -> {"comandos": [...]}
+  POST /api/executor/comandos/ack   {"id", "ok", "erro"}            -> 204 / 404 / 409
+  POST /api/executor/heartbeat      {"host", "versao", "ocupado_com"} -> 204
 """
 
 from __future__ import annotations
@@ -38,8 +43,9 @@ class PainelClient:
     def comandos(self) -> list[Comando] | None:
         """Comandos ainda nao confirmados, em ordem. None em falha (de rede ou HTTP)."""
         try:
-            resp = self._http.get(
+            resp = self._http.post(
                 f"{self._url}/api/executor/comandos",
+                json={},
                 headers=self._headers,
                 timeout=self._timeout,
             )
@@ -59,18 +65,24 @@ class PainelClient:
             return None
 
     def ack(self, comando_id: str, ok: bool, erro: str | None) -> bool:
-        """Confirma o comando. True em sucesso ou se ja estava confirmado (409)."""
+        """Confirma o comando. True em sucesso, se ja estava confirmado (409) ou se o painel
+        nao o conhece mais (404): nos dois ultimos casos nao ha o que reenviar."""
         try:
             resp = self._http.post(
-                f"{self._url}/api/executor/comandos/{comando_id}/ack",
-                json={"ok": ok, "erro": erro},
+                f"{self._url}/api/executor/comandos/ack",
+                json={"id": comando_id, "ok": ok, "erro": erro},
                 headers=self._headers,
                 timeout=self._timeout,
             )
         except httpx.HTTPError as exc:
             logger.warning("painel: falha ao confirmar comando %s: %s", comando_id, exc)
             return False
-        if resp.is_success or resp.status_code == 409:
+        if resp.is_success:
+            return True
+        if resp.status_code in (404, 409):
+            logger.info(
+                "painel: ack do comando %s ignorado (HTTP %s)", comando_id, resp.status_code
+            )
             return True
         logger.warning(
             "painel: ack do comando %s recusado (HTTP %s)", comando_id, resp.status_code

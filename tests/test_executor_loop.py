@@ -27,6 +27,7 @@ URL = "http://painel.test"
 # 18:30 UTC = 15:30 em Sao Paulo: antes do horario do cron.
 AGORA = datetime(2026, 10, 19, 18, 30, tzinfo=UTC)
 COMANDOS = f"{URL}/api/executor/comandos"
+ACK = f"{URL}/api/executor/comandos/ack"
 
 
 class Relogio:
@@ -133,41 +134,42 @@ def test_comando_daily_aplica_confirma_uma_vez_e_nao_reaplica(cenario):
     repo, daily, relogio = cenario
     historico = HistoricoFalso()
     with respx.mock(assert_all_called=False) as router:
-        router.get(COMANDOS).mock(
+        router.post(COMANDOS).mock(
             return_value=httpx.Response(200, json={"comandos": [_comando("c1", "daily")]})
         )
-        ack = router.post(f"{URL}/api/executor/comandos/c1/ack").mock(
-            return_value=httpx.Response(204)
-        )
+        ack = router.post(ACK).mock(return_value=httpx.Response(204))
         ex = _executor(repo, daily, historico, relogio)
 
         ex.ciclo()
         _esperar(daily)
         assert ack.call_count == 1
-        assert json.loads(ack.calls[-1].request.content) == {"ok": True, "erro": None}
+        assert json.loads(ack.calls[-1].request.content) == {
+            "id": "c1", "ok": True, "erro": None,
+        }
         assert len(repo.execucoes) == 1
 
         ex.ciclo()  # o painel entregou de novo: ack ok, sem nova execucao
         _esperar(daily)
         assert ack.call_count == 2
-        assert json.loads(ack.calls[-1].request.content) == {"ok": True, "erro": None}
+        assert json.loads(ack.calls[-1].request.content) == {
+            "id": "c1", "ok": True, "erro": None,
+        }
         assert len(repo.execucoes) == 1
 
 
 def test_pausar_sem_carga_confirma_com_motivo(cenario):
     repo, daily, relogio = cenario
     with respx.mock(assert_all_called=False) as router:
-        router.get(COMANDOS).mock(
+        router.post(COMANDOS).mock(
             return_value=httpx.Response(200, json={"comandos": [_comando("p1", "pausar")]})
         )
-        ack = router.post(f"{URL}/api/executor/comandos/p1/ack").mock(
-            return_value=httpx.Response(204)
-        )
+        ack = router.post(ACK).mock(return_value=httpx.Response(204))
         ex = _executor(repo, daily, HistoricoIndisponivel(), relogio)
 
         ex.ciclo()
 
         assert json.loads(ack.calls[-1].request.content) == {
+            "id": "p1",
             "ok": False,
             "erro": "carga histórica ainda não implementada",
         }
@@ -192,13 +194,13 @@ def test_historico_comando_repassa_anos_e_modo(cenario):
 def test_api_com_500_ou_rede_fora_nao_levanta(cenario):
     repo, daily, relogio = cenario
     with respx.mock(assert_all_called=False) as router:
-        router.get(COMANDOS).mock(return_value=httpx.Response(500))
+        router.post(COMANDOS).mock(return_value=httpx.Response(500))
         ex = _executor(repo, daily, HistoricoIndisponivel(), relogio)
         ex.ciclo()
         assert not repo.execucoes
 
     with respx.mock(assert_all_called=False) as router:
-        router.get(COMANDOS).mock(side_effect=httpx.ConnectError("sem rede"))
+        router.post(COMANDOS).mock(side_effect=httpx.ConnectError("sem rede"))
         ex = _executor(repo, daily, HistoricoIndisponivel(), relogio)
         ex.ciclo()
         assert not repo.execucoes
@@ -207,10 +209,10 @@ def test_api_com_500_ou_rede_fora_nao_levanta(cenario):
 def test_ack_falhando_nao_impede_o_ciclo(cenario):
     repo, daily, relogio = cenario
     with respx.mock(assert_all_called=False) as router:
-        router.get(COMANDOS).mock(
+        router.post(COMANDOS).mock(
             return_value=httpx.Response(200, json={"comandos": [_comando("c9", "daily")]})
         )
-        router.post(f"{URL}/api/executor/comandos/c9/ack").mock(return_value=httpx.Response(500))
+        router.post(ACK).mock(return_value=httpx.Response(500))
         ex = _executor(repo, daily, HistoricoIndisponivel(), relogio)
         ex.ciclo()
         _esperar(daily)
@@ -223,7 +225,7 @@ def test_erro_no_banco_nao_levanta_do_ciclo(cenario):
     repo = RepoQuebrado()
     daily = Daily(repo, settings=_settings(), agora=relogio)
     with respx.mock(assert_all_called=False) as router:
-        router.get(COMANDOS).mock(return_value=httpx.Response(200, json={"comandos": []}))
+        router.post(COMANDOS).mock(return_value=httpx.Response(200, json={"comandos": []}))
         ex = _executor(repo, daily, HistoricoIndisponivel(), relogio)
         ex.ciclo()
 
@@ -310,12 +312,10 @@ def test_historico_bloqueia_daily_e_inicia_quando_liberar(cenario):
     repo, daily, relogio = cenario
     historico = HistoricoFalso(bloqueia=True)
     with respx.mock(assert_all_called=False) as router:
-        router.get(COMANDOS).mock(
+        router.post(COMANDOS).mock(
             return_value=httpx.Response(200, json={"comandos": [_comando("c1", "daily")]})
         )
-        ack = router.post(f"{URL}/api/executor/comandos/c1/ack").mock(
-            return_value=httpx.Response(204)
-        )
+        ack = router.post(ACK).mock(return_value=httpx.Response(204))
         ex = _executor(repo, daily, historico, relogio)
 
         ex.ciclo()
@@ -323,7 +323,9 @@ def test_historico_bloqueia_daily_e_inicia_quando_liberar(cenario):
         assert exe["status"] == "agendada"
         assert exe["aguardando"] == "historico"
         assert not daily.ocupado
-        assert json.loads(ack.calls[-1].request.content) == {"ok": True, "erro": None}
+        assert json.loads(ack.calls[-1].request.content) == {
+            "id": "c1", "ok": True, "erro": None,
+        }
 
         historico.liberar()
         ex.ciclo()
@@ -336,7 +338,7 @@ def test_cron_dispara_as_1830_uma_vez_e_nao_faz_ack(cenario):
     repo, daily, relogio = cenario
     relogio.t = datetime(2026, 10, 19, 21, 31, tzinfo=UTC)  # 18:31 em Sao Paulo
     with respx.mock(assert_all_called=False) as router:
-        router.get(COMANDOS).mock(return_value=httpx.Response(200, json={"comandos": []}))
+        router.post(COMANDOS).mock(return_value=httpx.Response(200, json={"comandos": []}))
         ex = _executor(repo, daily, HistoricoIndisponivel(), relogio)
 
         ex.ciclo()
@@ -354,7 +356,7 @@ def test_cron_dispara_as_1830_uma_vez_e_nao_faz_ack(cenario):
 def test_cron_nao_dispara_antes_do_horario(cenario):
     repo, daily, relogio = cenario  # 15:30 em Sao Paulo
     with respx.mock(assert_all_called=False) as router:
-        router.get(COMANDOS).mock(return_value=httpx.Response(200, json={"comandos": []}))
+        router.post(COMANDOS).mock(return_value=httpx.Response(200, json={"comandos": []}))
         ex = _executor(repo, daily, HistoricoIndisponivel(), relogio)
         ex.ciclo()
     assert not repo.execucoes
@@ -363,7 +365,7 @@ def test_cron_nao_dispara_antes_do_horario(cenario):
 # -- cliente HTTP ------------------------------------------------------------------------
 def test_cliente_le_comandos_e_manda_bearer():
     with respx.mock(assert_all_called=False) as router:
-        rota = router.get(COMANDOS).mock(
+        rota = router.post(COMANDOS).mock(
             return_value=httpx.Response(
                 200, json={"comandos": [_comando("c1", "etapa", etapa="noticias")]}
             )
@@ -373,21 +375,26 @@ def test_cliente_le_comandos_e_manda_bearer():
         Comando("c1", "etapa", {"etapa": "noticias"}, "2026-10-19T18:00:00Z"),
     ]
     assert rota.calls[-1].request.headers["Authorization"] == "Bearer segredo"
+    assert json.loads(rota.calls[-1].request.content) == {}
 
 
 def test_cliente_comandos_com_500_devolve_none():
     with respx.mock(assert_all_called=False) as router:
-        router.get(COMANDOS).mock(return_value=httpx.Response(500))
+        router.post(COMANDOS).mock(return_value=httpx.Response(500))
         assert PainelClient(URL, "tok", client=httpx.Client()).comandos() is None
 
 
-def test_cliente_ack_409_conta_como_confirmado_e_404_como_falha():
+@pytest.mark.parametrize(
+    ("status", "esperado"), [(204, True), (409, True), (404, True), (500, False)]
+)
+def test_cliente_ack_manda_id_no_corpo_e_trata_404_409_como_confirmado(status, esperado):
     with respx.mock(assert_all_called=False) as router:
-        router.post(f"{URL}/api/executor/comandos/a/ack").mock(return_value=httpx.Response(409))
-        router.post(f"{URL}/api/executor/comandos/b/ack").mock(return_value=httpx.Response(404))
+        rota = router.post(ACK).mock(return_value=httpx.Response(status))
         cliente = PainelClient(URL, "tok", client=httpx.Client())
-        assert cliente.ack("a", True, None) is True
-        assert cliente.ack("b", True, None) is False
+        assert cliente.ack("a", False, "motivo") is esperado
+    assert json.loads(rota.calls[-1].request.content) == {
+        "id": "a", "ok": False, "erro": "motivo",
+    }
 
 
 # -- carga historica real dentro do executor ------------------------------------------
@@ -457,21 +464,19 @@ def test_comando_historico_cria_a_carga_real(cenario, monkeypatch):
     monkeypatch.setattr(H, "_resolver", _resolver_vazio)
     historico = Historico(repo, _settings_historico(), agora=relogio)
     with respx.mock(assert_all_called=False) as router:
-        router.get(COMANDOS).mock(
+        router.post(COMANDOS).mock(
             return_value=httpx.Response(
                 200,
                 json={"comandos": [_comando("h1", "historico", anos=[2026], modo="pendentes")]},
             )
         )
-        ack = router.post(f"{URL}/api/executor/comandos/h1/ack").mock(
-            return_value=httpx.Response(204)
-        )
+        ack = router.post(ACK).mock(return_value=httpx.Response(204))
         ex = _executor(repo, daily, historico, relogio)
 
         ex.ciclo()
         historico.join(5)
 
-    assert json.loads(ack.calls[-1].request.content) == {"ok": True, "erro": None}
+    assert json.loads(ack.calls[-1].request.content) == {"id": "h1", "ok": True, "erro": None}
     assert repo.historico_atual()["status"] == "concluida"
 
 
@@ -482,12 +487,10 @@ def test_daily_com_carga_em_andamento_nasce_agendada_e_inicia_apos_pausar(cenari
     historico.disparar([2026])
     try:
         with respx.mock(assert_all_called=False) as router:
-            router.get(COMANDOS).mock(
+            router.post(COMANDOS).mock(
                 return_value=httpx.Response(200, json={"comandos": [_comando("c1", "daily")]})
             )
-            router.post(f"{URL}/api/executor/comandos/c1/ack").mock(
-                return_value=httpx.Response(204)
-            )
+            router.post(ACK).mock(return_value=httpx.Response(204))
             ex = _executor(repo, daily, historico, relogio)
 
             ex.ciclo()
@@ -515,7 +518,7 @@ def test_cron_que_falha_nao_e_registrado_e_avisa_uma_vez_por_dia(cenario, caplog
     ex = _executor(repo, daily, historico, relogio)
 
     with respx.mock(assert_all_called=False) as router:
-        router.get(COMANDOS).mock(return_value=httpx.Response(200, json={"comandos": []}))
+        router.post(COMANDOS).mock(return_value=httpx.Response(200, json={"comandos": []}))
         with caplog.at_level(logging.WARNING, logger="tcc_scraper.executor.loop"):
             ex.ciclo()
             ex.ciclo()

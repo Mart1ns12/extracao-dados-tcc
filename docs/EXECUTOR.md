@@ -9,14 +9,17 @@ do painel lê.
 
 ```
 painel -> API do painel -> painel_comandos (fila)
-                                 | GET /api/executor/comandos (a cada EXECUTOR_POLL_S)
+                                 | POST /api/executor/comandos (a cada EXECUTOR_POLL_S)
                             executor -> daily / etapa / historico
                                  | grava
                             MySQL painel_* -> lido pela API -> painel
 ```
 
-- A API **nunca** chama o scraper. Ela grava o comando na fila; o executor busca por HTTP e confirma
-  com `POST /api/executor/comandos/{id}/ack` (`ok`, `erro`). Decisão registrada em [ADR.md](ADR.md).
+- Contrato: `interface-acompanhamento/docs/contrato-api.md`. As três rotas do executor são `POST`.
+- A API **nunca** chama o scraper. Ela grava o comando na fila; o executor busca com
+  `POST /api/executor/comandos` (corpo `{}`) e confirma com `POST /api/executor/comandos/ack`
+  (`id`, `ok`, `erro` no corpo). `204` confirma; `404` e `409` contam como já tratado e não são
+  reenviados. Decisão registrada em [ADR.md](ADR.md).
 - Entrega "pelo menos uma vez": o mesmo comando pode voltar. Ids já aplicados (`painel_comandos_aplicados`)
   são ignorados e reconfirmados com `ok: true`.
 - Heartbeat a cada `EXECUTOR_HEARTBEAT_S` em `POST /api/executor/heartbeat`, espelhado em `painel_heartbeat`.
