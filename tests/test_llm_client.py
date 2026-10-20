@@ -4,7 +4,14 @@ O SDK nao e importado aqui (import lazy); GeminiClient e testado so pela validac
 """
 import pytest
 
-from tcc_scraper.llm.gemini_client import GeminiClient, _transitorio, montar_resposta
+from tcc_scraper.llm.gemini_client import (
+    GeminiClient,
+    _chamar_api,
+    _chamar_api_sem_busca,
+    _transitorio,
+    montar_resposta,
+)
+from tcc_scraper.llm.jev_client import JevClient
 
 
 def test_montar_resposta_forma_nova():
@@ -81,3 +88,62 @@ def test_transitorio_timeout():
 def test_client_sem_chave_levanta_antes_do_import():
     with pytest.raises(ValueError, match="GEMINI_API_KEY"):
         GeminiClient("", "m")
+
+
+class _FakeInteractions:
+    """Cliente falso: grava os kwargs da ultima chamada e devolve uma resposta vazia."""
+
+    def __init__(self):
+        self.kwargs = None
+
+    def create(self, **kwargs):
+        self.kwargs = kwargs
+        return {"output_text": "{}"}
+
+
+class _FakeClient:
+    def __init__(self):
+        self.interactions = _FakeInteractions()
+
+
+def _gemini_falso() -> tuple[GeminiClient, _FakeClient]:
+    """GeminiClient sem SDK real: pula o __init__ e injeta o cliente falso."""
+    cliente = GeminiClient.__new__(GeminiClient)
+    cliente.modelo, cliente.max_attempts = "m", 1
+    cliente._client = _FakeClient()
+    return cliente, cliente._client
+
+
+def test_classificar_nao_envia_google_search():
+    gemini, falso = _gemini_falso()
+    r = gemini.classificar("prompt", {"type": "object"})
+    kwargs = falso.interactions.kwargs
+    assert "tools" not in kwargs
+    assert kwargs["generation_config"] == {"temperature": 0}
+    assert kwargs["input"] == "prompt"
+    assert r.texto == "{}"
+
+
+def test_analisar_continua_com_google_search():
+    gemini, falso = _gemini_falso()
+    gemini.analisar("prompt", {"type": "object"})
+    assert falso.interactions.kwargs["tools"] == [{"type": "google_search"}]
+    assert "generation_config" not in falso.interactions.kwargs
+
+
+def test_chamar_api_sem_busca_sem_tools_direto():
+    falso = _FakeClient()
+    _chamar_api_sem_busca(falso, "m", "p", {})
+    assert "tools" not in falso.interactions.kwargs
+    _chamar_api(falso, "m", "p", {})
+    assert falso.interactions.kwargs["tools"] == [{"type": "google_search"}]
+
+
+def test_jev_sem_chave_levanta():
+    with pytest.raises(ValueError, match="JEV_API_KEY"):
+        JevClient("")
+
+
+def test_jev_classificar_lote_desligado():
+    with pytest.raises(NotImplementedError, match="JEV_ENABLED=false"):
+        JevClient("x").classificar_lote([])
