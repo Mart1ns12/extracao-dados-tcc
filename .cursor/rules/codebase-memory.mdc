@@ -22,7 +22,7 @@ Ao procurar qualquer símbolo Python (função, classe, método), use nesta orde
 Um `search_graph` retorna ~500 tokens onde um grep amplo retornaria ~80k.
 
 **Use grep/glob livremente** para arquivos não-Python: `.env`, `docker-compose.yml`,
-`pyproject.toml`, `alembic/`, `*.sql`, `*.md`, fixtures de teste.
+`pyproject.toml`, `*.sql`, `*.md`, fixtures de teste.
 
 **Sempre leia o arquivo antes de editá-lo.** O grafo aponta onde está; não dispensa a leitura.
 
@@ -53,7 +53,7 @@ Registre via `manage_adr` toda decisão cujo motivo se perderia se ficasse só n
 - Rejeição de fonte de dados **com o limite concreto** que a inviabilizou
   (ex.: Marketaux = 3 artigos por request, sem histórico)
 - Resultado do spike de resolução de link do Google News (taxa medida, rota escolhida)
-- Escolha de PostgreSQL sobre SQLite
+- Escolha de MySQL como banco único
 - Mudanças na regra do `target` ou na definição de qualquer feature
 
 Um ADR responde: **problema, opções, escolha, custo da escolha.**

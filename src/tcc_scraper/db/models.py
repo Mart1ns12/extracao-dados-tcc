@@ -20,7 +20,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Date,
-    DateTime,
     Double,
     ForeignKey,
     Index,
@@ -35,10 +34,34 @@ from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 
+# Prefixo das 25 tabelas CRIADAS pela pipeline nova (antigas migrations 0004-0007), pedido do dono:
+# `v1-painel_comandos`, `v1-raw_ipe_docs`, `v1-noticias`. As que ja existiam (0001-0003)
+# mantem o nome original, inclusive as que a pipeline nova le (`raw_articles`, `raw_prices`).
+# O hifen obriga aspas em SQL escrito a mao (`"v1-raw_ipe_docs"`); o SQLAlchemy ja quota.
+# Trocar o prefixo depois exige RENAME TABLE a mao em sql/alteracoes/ e esta linha. Nao vale para
+# `features_dataset_v1` (dataset v1 congelado): fica com o nome antigo.
+PREFIXO_TABELA = "v1-"
 # As camadas viram PREFIXO no nome da tabela (raw_/staging_/features_), nao schema
-# separado: o MySQL nao tem schemas como o PostgreSQL -- la "schema" e "database"
-# sao a mesma coisa. Um unico esquema de nomes funciona nos dois bancos.
-TABLE_PREFIXES = ("raw_", "staging_", "features_")
+# separado: no MySQL "schema" e "database" sao a mesma coisa.
+TABLE_PREFIXES = ("raw_", "staging_", "features_", "painel_")
+# Tabelas de entrega: nomes fixos pela spec da etapa seguinte do TCC, sem prefixo de camada
+# (o prefixo PREFIXO_TABELA continua valendo para elas no banco).
+_ENTREGA_SEM_PREFIXO = (
+    "noticias", "precos", "cadastro", "mudancas_ticker",
+    "balancos", "acoes_emitidas", "proventos", "indices",
+)
+ENTREGA_TABLES = tuple(f"{PREFIXO_TABELA}{nome}" for nome in _ENTREGA_SEM_PREFIXO)
+
+
+def tabela_do_projeto(name: str) -> bool:
+    """Tabela deste projeto: as 8 de entrega (com `v1-`) ou prefixo de camada, com ou sem `v1-`.
+
+    Tira o `v1-` antes de comparar o prefixo de camada. `features_dataset_v1` cai no prefixo
+    `features_`.
+    """
+    if name in ENTREGA_TABLES:
+        return True
+    return name.removeprefix(PREFIXO_TABELA).startswith(TABLE_PREFIXES)
 
 
 class Base(DeclarativeBase):
@@ -53,35 +76,26 @@ class Base(DeclarativeBase):
 
 
 class UTCDateTime(TypeDecorator):
-    """Timestamp sempre em UTC, nos dois bancos.
+    """Timestamp sempre em UTC.
 
-    O PostgreSQL guarda o fuso junto (TIMESTAMPTZ); o MySQL NAO -- um DATETIME volta
-    sem fuso nenhum. Sem este tipo, `published_at` chegaria aware do Postgres e naive
-    do MySQL, e a agregacao diaria (que converte para America/Sao_Paulo) mudaria de
-    resultado conforme o banco -- uma materia das 22h poderia cair no dia seguinte.
+    O MySQL nao guarda fuso: um DATETIME volta sem fuso nenhum. Sem este tipo, a
+    agregacao diaria (que converte para America/Sao_Paulo) veria horarios naive, e uma
+    materia das 22h poderia cair no dia seguinte.
 
     Contrato: entra aware (ou assume-se UTC), e gravado em UTC, volta sempre aware.
     """
 
-    impl = DateTime
+    # fsp=6 preserva microssegundos; o default do MySQL truncaria para segundos.
+    impl = mysql.DATETIME(fsp=6)
     cache_ok = True
-
-    def load_dialect_impl(self, dialect):
-        if dialect.name in ("mysql", "mariadb"):
-            # fsp=6 preserva microssegundos; o default do MySQL truncaria para segundos.
-            return dialect.type_descriptor(mysql.DATETIME(fsp=6))
-        return dialect.type_descriptor(DateTime(timezone=True))
 
     def process_bind_param(self, value, dialect):
         if value is None:
             return None
         if value.tzinfo is None:
             value = value.replace(tzinfo=dt.UTC)
-        value = value.astimezone(dt.UTC)
         # O MySQL rejeita datetime com tzinfo: grava-se o instante UTC ja "naive".
-        if dialect.name in ("mysql", "mariadb"):
-            return value.replace(tzinfo=None)
-        return value
+        return value.astimezone(dt.UTC).replace(tzinfo=None)
 
     def process_result_value(self, value, dialect):
         if value is None:
@@ -89,11 +103,9 @@ class UTCDateTime(TypeDecorator):
         return value.replace(tzinfo=dt.UTC) if value.tzinfo is None else value.astimezone(dt.UTC)
 
 
-# Double, nao Float: `sa.Float()` vira `double precision` (8 bytes) no PostgreSQL mas
-# `float` (4 bytes, ~7 digitos) no MySQL. Medido: a probabilidade 0.7766114473342896
-# voltava 0.776611 do MySQL, e o dataset mudava conforme o banco -- inaceitavel, ainda
-# mais porque o erro propaga para score_finbert e para os retornos. `Double` mapeia
-# para 8 bytes nos dois.
+# Double, nao Float: `sa.Float()` vira `float` de 4 bytes (~7 digitos) no MySQL.
+# Medido: a probabilidade 0.7766114473342896 voltava 0.776611, e o erro propagava para
+# score_finbert e para os retornos. `Double` mapeia para 8 bytes.
 
 # Parametros de rastreamento que mudam a URL sem mudar o artigo. Removidos antes do
 # hash, senao a mesma materia entra varias vezes vinda de queries diferentes.
@@ -131,6 +143,9 @@ class Article(Base):
     __table_args__ = (
         Index("ix_articles_published_at", "published_at"),
         Index("ix_articles_source_domain", "source_domain"),
+        Index("ix_articles_origem", "origem"),
+        # Nome explicito, igual ao que a 0001 criou: nao depende do nome da tabela.
+        UniqueConstraint("url_hash", name="uq_raw_articles_url_hash"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -138,7 +153,7 @@ class Article(Base):
     # Hash da URL de DESCOBERTA (a do Google News). E a chave de deduplicacao e
     # precisa continuar batendo com `url`, por isso nenhum dos dois e sobrescrito
     # quando o link e resolvido -- a URL real vai para resolved_url.
-    url_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    url_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     url: Mapped[str] = mapped_column(Text, nullable=False)
 
     # Id opaco do Google News. NAO e uma URL e nao decodifica para uma -- guardado
@@ -154,8 +169,18 @@ class Article(Base):
     source_domain: Mapped[str | None] = mapped_column(String(255))
 
     published_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+    # Precisao da data de publicacao: 'datetime' quando a fonte traz a hora (default).
+    published_precision: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="datetime", server_default="datetime"
+    )
     lang: Mapped[str] = mapped_column(String(5), nullable=False)
     collected_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+
+    # Origem do artigo: 'google_news' hoje; IPE e RSS nativo entram com outros valores.
+    # O dataset v1 filtra por 'google_news' (ver features/build.py).
+    origem: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="google_news", server_default="google_news"
+    )
 
     body = relationship("ArticleBody", back_populates="article", uselist=False)
     tickers = relationship("ArticleTicker", back_populates="article")
@@ -310,7 +335,7 @@ class DatasetV1(Base):
 # --------------------------------------------------------------------------------------
 # `Text` e TEXT de 64 KB no MySQL: uma resposta de ~15 mil tokens passa de 60 KB e seria
 # truncada (ou rejeitada em modo estrito). LONGTEXT onde o tamanho e imprevisivel.
-LongText = Text().with_variant(mysql.LONGTEXT, "mysql")
+LongText = mysql.LONGTEXT()
 
 
 class LlmPrompt(Base):
@@ -333,7 +358,9 @@ class LlmRun(Base):
     __table_args__ = (Index("ix_llm_runs_data_referencia", "data_referencia"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    prompt_id: Mapped[int] = mapped_column(ForeignKey("raw_llm_prompts.id"), nullable=False)
+    prompt_id: Mapped[int] = mapped_column(
+        ForeignKey("raw_llm_prompts.id"), nullable=False
+    )
     data_referencia: Mapped[dt.date] = mapped_column(Date, nullable=False)
     # Ultimo pregao <= data_referencia pelo ^BVSP em raw_prices; NULL se nao ha preco.
     pregao_referencia: Mapped[dt.date | None] = mapped_column(Date)

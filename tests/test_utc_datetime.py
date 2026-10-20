@@ -1,67 +1,20 @@
-"""O timestamp precisa voltar identico do PostgreSQL e do MySQL.
+"""O timestamp precisa voltar identico do MySQL, com fuso UTC e microssegundos.
 
 Importa porque a agregacao diaria converte `published_at` para America/Sao_Paulo antes
-de extrair a data. Se o MySQL devolvesse o horario sem fuso e o Postgres com, uma
-materia das 22h cairia em dias diferentes conforme o banco -- e o dataset mudaria de
-conteudo sem ninguem mexer no codigo.
+de extrair a data. Se o banco devolvesse o horario sem fuso (ou com outro fuso), uma
+materia das 22h cairia em dias diferentes -- e o dataset mudaria sem ninguem mexer
+no codigo.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import os
-from functools import cache
 
 import pytest
-from sqlalchemy import Column, Integer, MetaData, Table, create_engine, select
+from sqlalchemy import Column, Integer, MetaData, Table, select
 from sqlalchemy.orm import Session
 
 from tcc_scraper.db.models import UTCDateTime
-
-PG_URL = os.environ.get(
-    "TEST_PG_URL", "postgresql+psycopg://tcc:tcc_local_dev@localhost:5433/tcc_scraper"
-)
-MYSQL_URL = os.environ.get(
-    "TEST_MYSQL_URL", "mysql+pymysql://root@127.0.0.1:3307/tcc_scraper"
-)
-
-
-# Timeout curto e resultado em cache, de proposito. Com o timeout padrao do driver
-# (30 s+) e uma tentativa por teste, a suite travava por dez minutos so para concluir
-# que um banco opcional nao estava no ar -- foi o que aconteceu apos um reinicio da
-# maquina. Com cache, a conclusao e tirada UMA vez por URL.
-_CONNECT_TIMEOUT = 2
-
-
-@cache
-def _tentar_engine(url: str):
-    """Devolve (engine, None) se conectou, ou (None, motivo). Avaliado uma vez por URL."""
-    args = (
-        {"connect_timeout": _CONNECT_TIMEOUT}
-        if url.startswith(("mysql", "postgresql"))
-        else {}
-    )
-    try:
-        engine = create_engine(url, pool_pre_ping=True, connect_args=args)
-        with engine.connect():
-            pass
-        return engine, None
-    except Exception as exc:
-        return None, str(exc)[:80]
-
-
-def _engine_or_skip(url: str, label: str):
-    engine, motivo = _tentar_engine(url)
-    if engine is None:
-        pytest.skip(f"{label} indisponivel: {motivo}")
-    return engine
-
-
-@pytest.fixture(params=["postgresql", "mysql"])
-def engine(request):
-    if request.param == "postgresql":
-        return _engine_or_skip(PG_URL, "PostgreSQL")
-    return _engine_or_skip(MYSQL_URL, "MySQL")
 
 
 @pytest.fixture

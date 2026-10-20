@@ -22,7 +22,7 @@ dominante: **custo financeiro zero**. Exceção única e aprovada: a análise di
 
 ## STACK
 
-Python 3.11+ · PostgreSQL 16 (schemas raw/staging/features) · SQLAlchemy 2.0 + Alembic ·
+Python 3.11+ · MySQL 8 (único banco; camadas por prefixo `raw_`, `staging_`, `painel_`) · SQLAlchemy 2.0 (schema em `sql/schema.mysql.sql`) ·
 httpx · lxml · trafilatura · pandas + pyarrow · transformers/torch (extra opcional) ·
 typer + rich · pytest + ruff · google-genai (extra opcional llm).
 
@@ -80,7 +80,7 @@ nativo. Detalhe crítico: a ordem dos rótulos difere entre checkpoints — o c�
 inteiro sem gerar erro.
 
 **PostgreSQL sobre SQLite.** Decisão do usuário; SQLite foi oferecido (zero infra) e
-recusado. Custo: exige servidor rodando.
+recusado. Custo: exige servidor rodando. *Superada pela ADR "Um banco só": o PostgreSQL saiu do projeto.*
 
 **Carteira do IBOV congelada em código.** Uma lista dinâmica tornaria o dataset
 irreprodutível meses depois. Validada contra o Yahoo: 88/88. 15 códigos corrigidos por
@@ -103,7 +103,26 @@ linhas do dataset no piloto, inflando os nulos de `volume_relativo` de 4% para 2
 `assemble_dataset` recebe `universe`.
 
 
-**Portabilidade PostgreSQL + MySQL 8.** O banco de produção do TCC é MySQL, e o
+**Um banco só: MySQL do `.env` (2026-10-20).** Supera a ADR de portabilidade logo abaixo. Problema:
+o projeto mantinha dois bancos com o mesmo código (PostgreSQL local para desenvolvimento e MySQL de
+produção), duas suítes de paridade e dois caminhos de configuração (`DB_TARGET`, `DATABASE_URL`). Isso
+dobrava a superfície de teste e de manutenção, e a paridade virou um teste que só comparava o
+dataset entre dois bancos. Opções: (a) manter PostgreSQL + MySQL; (b) um MySQL local em Docker;
+(c) um banco só, o MySQL do `.env`, que já tem os dados reais (88 mil artigos, preços, dataset v1).
+Escolhido (c): `Settings.effective_url` monta sempre `mysql+pymysql` a partir de `IP_BANCO`,
+`USER_BANCO`, `SENHA_BANCO`, `PORTA_BANCO` e `NOME_BANCO`; `db/session.py`, `db/upsert.py` e
+`UTCDateTime` ficam só com o caminho MySQL; `docker-compose.yml`, os scripts `pg-*` e a cópia
+`migrar_dados.py` saem do repositório. As decisões de tipo e SQL (`Double`, `UTCDateTime`, sem
+`RETURNING`, o `ON DUPLICATE KEY UPDATE` com deduplicação do lote) continuam valendo.
+Custo que se perde: (1) não há banco de desenvolvimento. O executor local e os testes com banco
+gravam no banco real; por isso os testes com banco são **opt-in** (`TCC_TESTES_COM_BANCO=1`) e cada
+um limpa só as linhas que criou; (2) a suíte padrão não exercita SQL de verdade, só o que roda sem
+banco; (3) DDL não tem rollback no MySQL, então um ALTER ruim atinge produção. Por isso cada alteração é
+revisada antes e aplicada à mão da máquina local, com usuário com DDL e aprovação do dono, seguindo
+[Banco de dados](06-banco-de-dados.md), seção 4. As antigas migrations 0001–0007 não foram editadas; a 0008 foi reescrita antes de
+ser aplicada em qualquer banco (ver a ADR do prefixo), e as que têm ramo `with_variant` seguem como histórico.
+
+**Portabilidade PostgreSQL + MySQL 8** *(superada pela ADR acima; mantida como registro).* O banco de produção do TCC é MySQL, e o
 desenvolvimento segue em PostgreSQL. Três incompatibilidades reais foram encontradas
 testando contra um MySQL 8.4 de verdade, não lendo documentação:
 
@@ -177,12 +196,120 @@ havia criado o `DomainThrottle` — o `throttle_article_fetch` do `.env` nunca e
 > **raw + staging para o LLM.** `raw_llm_runs` append-only (uma linha por tentativa, mesmo em erro);
 > `staging_llm_*` substituída por dia (DELETE + upsert). Reprocessar com outro parser é local.
 >
+> *Superada: o executor roda como worker sempre ligado (ver as decisões do executor abaixo).*
+>
 > **Cron em vez de loop.** Railway cobra por tempo de processo; loop com `sleep` custaria o mês
 > inteiro por 1 min de trabalho. `get_engine().dispose()` no `finally` é o que deixa o processo sair.
 >
 > **Citações no JSON, não nas anotações.** A Interactions API devolve `url_citation` por offset
 > sobre o texto; mapear sobre JSON é frágil. O prompt exige `fonte`/`url` em cada item; as
 > anotações vão para `citacoes_json` só como auditoria.
+
+## DECISÕES DO EXECUTOR E DA ENTREGA
+
+**Executor puxando comandos (pull) em vez de a API chamar o scraper (push).** Problema: o painel
+precisa disparar coleta sem que o scraper exponha uma porta de entrada no Railway. Opções: (a) a API
+chama o scraper por HTTP, o que exige URL pública, healthcheck e deixa o painel dependente da
+disponibilidade do scraper; (b) fila no próprio banco (`painel_comandos`), que o executor consulta por
+HTTP a cada `EXECUTOR_POLL_S`. Escolhida (b). Custo: latência de até `EXECUTOR_POLL_S` (5 s); entrega
+"pelo menos uma vez", tratada com `painel_comandos_aplicados` (um id já aplicado é só reconfirmado);
+heartbeat em `painel_heartbeat` para o painel saber se o executor está vivo. Substitui o cron da
+ADR "Cron em vez de loop" acima.
+
+**Carga histórica dentro do executor, no Railway, com prioridade sobre o daily.** Problema: a carga de
+anos leva horas e disputa o mesmo banco, o mesmo throttle e as mesmas fontes que o daily. Opções: (a)
+serviço separado no Railway, com dois processos escrevendo sem controle de exclusão; (b) rodar a carga
+à mão, fora do painel; (c) uma thread própria dentro do executor, uma execução por vez. Escolhida (c),
+com pausa e cancelamento checados entre unidades (coletor × ano), não no meio de uma requisição. Um
+daily que chega durante a carga nasce `agendada` com `aguardando = historico`. Custo: o executor é um
+processo só; ao reiniciar, a carga retoma sozinha pelos checkpoints de `raw_collection_runs`, mas um
+daily em andamento vira `falhou` e não é refeito.
+
+**Tabelas de entrega sem prefixo.** Problema: as 8 tabelas são o contrato com a etapa seguinte, não uma
+camada de dados. Opções: prefixo de camada (`entrega_*`) ou nome limpo. Escolhido o nome limpo
+(`noticias`, `precos`, `cadastro`, `mudancas_ticker`, `balancos`, `acoes_emitidas`, `proventos`,
+`indices`), listado em `ENTREGA_TABLES`. Custo: é exceção à regra de prefixo do CLAUDE.md, e a lista
+precisa ser mantida à mão.
+
+**Fim rolante da coleta × janela fixa do v1.** Problema: a coleta diária tem de avançar até hoje, mas o
+dataset v1 do TCC precisa de uma janela fixa e reproduzível. Opções: (a) trocar `data_end` por hoje, o
+que muda o v1 silenciosamente; (b) separar dois conceitos: `fim_coleta` rolante (`data_fim_coleta`
+vazio = hoje) e a janela do dataset, fixa em `data_start`/`data_end`. Escolhida (b). Para distinguir a
+origem das linhas de `articles`, a coluna `origem` (default `google_news`) recebe também os outros
+coletores de notícia (IPE), e o v1 filtra por `google_news`. Custo: há duas definições de "fim" no
+código; mudar a janela do v1 exige ADR novo, não basta trocar o `.env`.
+
+**Juíza sem busca na web, com regra barata primeiro.** Problema: decidir se uma notícia é sobre a
+empresa. Busca na web por par é cara, instável e reintroduz uma fonte que não se reproduz. Opções: (a)
+Gemini com grounding por par; (b) regra local (nome, apelido, contexto) decide o que puder, a fonte
+opcional Jev vem depois e só o Gemini recebe o que sobrar; (c) só regra local. Escolhido (b), sem busca.
+Ordem por par pendente: regra (sem custo) -> Jev (desligado) -> Gemini. Custo: o que sobra vai ao Gemini,
+então o consumo precisa ser medido contra o teto de US$ 5/mês (ver `JUIZA_MAX_ITENS_DIA`). Toda chamada
+fica em `raw_llm_juiza_runs`, inclusive as que falharam.
+
+**Fonte JEV implementada, mas desligada.** Problema: a fonte JEV tem chave própria (`JEV_API_KEY`) e custo
+que não foi decidido. Opções: remover o adaptador ou mantê-lo desligado. Escolhido manter o adaptador com
+`JEV_ENABLED=false` por padrão. Motivo: a religação aguarda aprovação do dono, porque seria a segunda exceção paga à regra de custo zero (o teto de US$ 5/mês é compartilhado com o Gemini), e a fonte precisa de um teste em português no conjunto-ouro. Nunca substitui o FinBERT, que a spec e a pergunta do TCC nomeiam: se religada, entra só como colunas extras.
+Custo: código sem uso enquanto estiver desligado.
+
+**Nomes de coletor são os do painel.** Problema: o painel mostra cada etapa e coletor pelo nome. Opções:
+renomear no painel ou mapear no scraper. Escolhido usar os ids de `EtapaDef` (`precos`, `macro`, `noticias`,
+`ipe`, `enriquecimento`, `juiza`, `cadastro`, `entrega`, `analise`) e os coletores `yahoo`, `bcb`,
+`google_news`, `cvm_ipe`, `finbert`, `cvm_b3`, `build_entrega`, `gemini` como contrato. Custo: renomear
+exige combinar com o painel antes.
+
+**Plano de contas de bancos decidido por `ds_conta`.** Problema: bancos usam outro plano da CVM (lucro em
+3.09, pois não existe 3.11; patrimônio líquido em 2.08, pois 2.03 são passivos). Opções: código fixo por
+tipo de empresa ou também a descrição. Escolhido aceitar a conta pelo código e pela descrição
+(`ds_conta`, em `entrega/builder.py`, `_aceita_conta`), com o mapa de bancos em `config.py`. Custo: a
+descrição vem da CVM em texto livre e pode mudar de redação entre demonstrações.
+
+**Provento de UNIT composto de ON + PN.** Problema: a B3 não publica proventos de UNIT como um papel
+próprio; a UNIT é composta de ações ON e PN. Escolhido compor o provento da UNIT a partir de ON + PN. Custo:
+depende da composição vigente da UNIT; mudança na composição não é detectada sozinha.
+
+**`registro_hash` inclui `issuing_company`.** Problema: o mesmo registro de provento, em empresas
+diferentes, colidia na chave de upsert. Escolhido incluir a empresa emissora no conteúdo hasheado.
+Custo: mudar o conteúdo hasheado muda todos os hashes, e isso exige recoleta completa de proventos.
+
+**Notícias reprovadas pela juíza saem de `noticias`, só para artigos julgados.** Problema: a entrega não
+pode mostrar notícia que a juíza reprovou. Opções: filtrar só na montagem ou apagar da tabela de entrega.
+Escolhido apagar de `noticias` (entrega) o que foi reprovado, e só artigos que já têm julgamento
+(`entrega/builder.py`, `_apagar_reprovadas`). A camada `raw` não muda. Custo: a entrega muda quando a
+juíza reprova, e um novo julgamento pode devolver o artigo.
+
+**Prefixo `v1-` só nas tabelas criadas pela pipeline nova.** Problema: a pipeline nova compartilha o banco
+com o dataset v1 congelado (`features_dataset_v1`), e o dono pediu que as tabelas da pipeline nova tenham
+`v1-` na frente do nome. A primeira versão (caf2deb) prefixou as 38 tabelas que a pipeline usa, inclusive
+as que já existiam (`raw_articles`, `raw_prices`, `raw_llm_runs`, `staging_llm_*`). Opções: (a) prefixar
+as 38; (b) prefixar só as 25 criadas a partir da 0004, e as antigas mantêm o nome; (c) schema separado,
+rejeitado porque o MySQL não tem schemas (ver a ADR de camadas); (d) renomear só no código, sem tocar o
+banco, rejeitado porque o nome real precisa bater com o que a API lê. Escolhido (b): critério "só tabelas
+criadas pela pipeline nova; as antigas, inclusive a análise da LLM v3, mantêm o nome". `PREFIXO_TABELA = "v1-"`
+em `db/models.py`; migration 0008 com 25 `rename_table` (MySQL). As 25 são 8 `painel_*`, 9 de fontes e juíza
+(0005, 0007) e as 8 de entrega (0006). As 14 antigas (`raw_articles`, `raw_article_bodies`, `raw_prices`,
+`raw_macro`, `raw_collection_runs`, `staging_article_tickers`, `staging_article_sentiment`, `raw_llm_prompts`,
+`raw_llm_runs`, `staging_llm_*` x4, mais `features_dataset_v1`) mantêm o nome. `tabela_do_projeto` aceita o
+prefixo de camada com ou sem `v1-`, e as 8 de entrega só com `v1-`. Custo: o hífen obriga crase em SQL escrito
+à mão (`v1-raw_ipe_docs`); quem lê uma tabela precisa saber se ela é antiga ou nova (o critério é a migration
+de origem); e as constraints, índices e sequências existentes mantêm o nome antigo. `uq_raw_articles_url_hash`
+tem nome explícito no modelo, igual ao da 0001. A naming_convention gera `v1-` só nas constraints das tabelas
+novas. O CSV de entrega continua sem prefixo.
+
+**Alembic descontinuado (2026-10-20).** Problema: com o banco unificado no MySQL do `.env`, já com todo o schema
+aplicado (estado equivalente à antiga migration 0008), o Alembic só custava: uma dependência, o `env.py`, a tabela de
+controle `alembic_version`, o SQL gerado duplicado em `sql/` e um executor sem DDL, que nunca roda migration. Opções:
+(a) manter o Alembic; (b) `create_all` a partir dos models, que cria banco vazio mas não altera banco existente;
+(c) SQL versionado à mão: `sql/schema.mysql.sql` com o schema completo do estado atual, para banco vazio, e cada
+alteração em `sql/alteracoes/AAAA-MM-DD_descricao.mysql.sql`, aplicada à mão com usuário com DDL e aprovação do dono.
+Escolhido (c). Removidos: `alembic.ini`, a pasta `alembic/`, a dependência no `pyproject.toml` e os `sql/*.mysql.sql`
+gerados. Custo que se perde: (1) downgrade automático: a reversão vira outra alteração escrita à mão, por exemplo um
+`RENAME TABLE` de volta; (2) autogenerate e `alembic check`, que detectavam divergência entre model e banco: hoje a
+conferência é revisão manual; (3) o histórico registrado na própria tabela de controle: passa a ser disciplina manual,
+em `sql/alteracoes/` e no [histórico de mudanças](09-historico-de-mudancas.md); (4) `db-info` só confere a existência
+das tabelas, não as colunas. A tabela `alembic_version` continua no MySQL de produção, sem uso, até o dono aprovar a
+remoção.
+---
 
 ## PHILOSOPHY
 

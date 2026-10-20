@@ -1,0 +1,274 @@
+"""Catalogo das 9 etapas do daily e a implementacao de cada uma.
+
+Ids, ordem, nome e coletor sao o que o painel espera: nao renomear sem combinar com o painel.
+Os imports das fases pesadas (Yahoo, FinBERT, Gemini) sao tardios, dentro das funcoes, para
+importar este modulo nao carregar torch nem o cliente da LLM.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    import threading
+
+    from tcc_scraper.collectors.base import Collector
+    from tcc_scraper.config import Settings
+    from tcc_scraper.orquestrador.progresso import Progresso
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Contexto:
+    execucao_id: str
+    hoje: date
+    settings: Settings
+    deadline: datetime
+    cancelar: threading.Event
+    origem: str
+
+
+@dataclass
+class ResultadoEtapa:
+    status: Literal["concluida", "falhou", "pulada"]
+    itens: int = 0
+    erro: str | None = None
+    detalhes: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class EtapaDef:
+    id: str
+    ordem: int
+    nome: str
+    coletor: str
+    run: Callable[[Contexto, Progresso], ResultadoEtapa]
+
+
+def de_stats(st: dict) -> ResultadoEtapa:
+    """Traduz as estatisticas de `Collector.run` em resultado de etapa."""
+    if st.get("interrompido"):
+        return ResultadoEtapa(
+            "falhou",
+            itens=st.get("itens", 0),
+            erro="interrompida: orçamento ou cancelamento",
+            detalhes=dict(st),
+        )
+    if st["total"] > 0 and st["ok"] == 0 and st["erro"] > 0:
+        return ResultadoEtapa(
+            "falhou",
+            itens=st.get("itens", 0),
+            erro="todas as unidades falharam",
+            detalhes=dict(st),
+        )
+    return ResultadoEtapa("concluida", itens=st["itens"], detalhes=dict(st))
+
+
+def etapa_precos(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    from tcc_scraper.collectors.prices_yahoo import YahooPriceCollector
+
+    with YahooPriceCollector() as c:
+        st = c.run(resume=False, observador=p)
+    return de_stats(st)
+
+
+def _roda_coletor(coletor: Collector, p: Progresso, **kw: Any) -> dict:
+    with coletor as c:
+        return c.run(observador=p, **kw)
+
+
+def _executa_partes(p: Progresso, partes: list[tuple[str, Callable[[], dict]]]) -> ResultadoEtapa:
+    """Roda os coletores de uma etapa em sequência; um que levanta não derruba os outros.
+
+    Falhou se algum devolveu `interrompido` (orçamento ou cancelamento) ou se todos falharam
+    (levantaram ou tiveram erro total). Caso contrário, concluída, com os itens somados.
+    """
+    sts: dict[str, dict] = {}
+    falhas = 0
+    for nome, executa in partes:
+        try:
+            st = executa()
+        except Exception as exc:
+            logger.exception("%s levantou", nome)
+            p.log("erro", f"{nome} levantou: {exc}"[:4000])
+            sts[nome] = {"excecao": str(exc)[:4000]}
+            falhas += 1
+            continue
+        sts[nome] = dict(st)
+        if de_stats(st).status == "falhou":
+            falhas += 1
+    itens = sum(st.get("itens", 0) for st in sts.values())
+    if any(st.get("interrompido") for st in sts.values()):
+        return ResultadoEtapa(
+            "falhou", itens=itens, erro="interrompida: orçamento ou cancelamento", detalhes=sts
+        )
+    if falhas == len(partes):
+        return ResultadoEtapa("falhou", itens=itens, erro="todas as partes falharam", detalhes=sts)
+    return ResultadoEtapa("concluida", itens=itens, detalhes=sts)
+
+
+def etapa_macro(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    from tcc_scraper.collectors.indices import IndicesBcbCollector
+    from tcc_scraper.collectors.macro_bcb import BcbCollector
+
+    return _executa_partes(
+        p,
+        [
+            ("bcb", lambda: _roda_coletor(BcbCollector(), p, resume=False)),
+            (
+                "indices_bcb",
+                lambda: _roda_coletor(IndicesBcbCollector(anos=[ctx.hoje.year]), p, resume=False),
+            ),
+        ],
+    )
+
+
+def etapa_ipe(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    from tcc_scraper.collectors.cvm_ipe import CvmIpeCollector
+
+    with CvmIpeCollector(anos=[ctx.hoje.year]) as c:
+        st = c.run(resume=True, observador=p)
+    return de_stats(st)
+
+
+def etapa_cadastro(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    from tcc_scraper.collectors.b3_cadastro import B3CadastroCollector
+    from tcc_scraper.collectors.b3_proventos import B3ProventosCollector
+    from tcc_scraper.collectors.cvm_cadastro import CvmCadastroCollector
+    from tcc_scraper.collectors.cvm_demonstracoes import CvmDemonstracoesCollector
+
+    return _executa_partes(
+        p,
+        [
+            ("cvm_cadastro", lambda: _roda_coletor(CvmCadastroCollector(), p, resume=False)),
+            ("b3_cadastro", lambda: _roda_coletor(B3CadastroCollector(), p, resume=False)),
+            ("b3_proventos", lambda: _roda_coletor(B3ProventosCollector(), p, resume=False)),
+            (
+                "cvm_itr_dfp",
+                lambda: _roda_coletor(
+                    CvmDemonstracoesCollector(anos=[ctx.hoje.year]), p, resume=True
+                ),
+            ),
+        ],
+    )
+
+
+def etapa_noticias(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    from tcc_scraper.collectors.google_news import GoogleNewsCollector
+
+    with GoogleNewsCollector(
+        desde=ctx.hoje - timedelta(days=2), ate=ctx.hoje + timedelta(days=1)
+    ) as c:
+        st = c.run(resume=False, observador=p)
+    return de_stats(st)
+
+
+def etapa_enriquecimento(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    from tcc_scraper.enrich.article_fetcher import ArticleBodyCollector
+
+    with ArticleBodyCollector() as c:
+        corpo = c.run(resume=False, observador=p)
+    try:
+        from tcc_scraper.sentiment.scoring import score_pending
+
+        sentimento = score_pending(observador=p)
+    except (RuntimeError, ImportError) as exc:
+        return ResultadoEtapa(
+            "falhou",
+            itens=corpo["itens"],
+            erro=f"FinBERT indisponível: {exc}"[:4000],
+            detalhes={"corpo": corpo},
+        )
+    base = de_stats(corpo)
+    if sentimento.get("interrompido") and base.status != "falhou":
+        base = ResultadoEtapa("falhou", erro="interrompida: orçamento ou cancelamento")
+    return ResultadoEtapa(
+        base.status,
+        itens=sentimento.get("gravados", 0),
+        erro=base.erro,
+        detalhes={"corpo": corpo, "sentimento": sentimento},
+    )
+
+
+def etapa_analise(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    if not ctx.settings.gemini_api_key:
+        logger.warning("GEMINI_API_KEY ausente; análise diária pulada")
+        return ResultadoEtapa("pulada", erro="GEMINI_API_KEY ausente")
+
+    from tcc_scraper.llm.job import run_daily_analysis
+
+    r = run_daily_analysis(ctx.hoje)
+    if r.status == "ok":
+        return ResultadoEtapa(
+            "concluida",
+            itens=sum(r.linhas.values()),
+            detalhes={"status": r.status, "linhas": dict(r.linhas)},
+        )
+    return ResultadoEtapa("falhou", erro=(r.erro or r.status)[:4000])
+
+
+def etapa_entrega(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    from tcc_scraper.db.models_entrega import COLUNAS
+    from tcc_scraper.entrega.builder import build_entrega
+
+    # O builder nao levanta por tabela: a que falha some do dict e o observador recebe ok=False.
+    tabelas = build_entrega(observador=p)
+    if not tabelas:
+        return ResultadoEtapa("falhou", erro="todas as tabelas falharam", detalhes={"tabelas": {}})
+    itens = sum(tabelas.values())
+    faltam = [t for t in COLUNAS if t not in tabelas]
+    if faltam:
+        return ResultadoEtapa(
+            "falhou",
+            itens=itens,
+            erro=f"tabelas com falha: {', '.join(faltam)}",
+            detalhes={"tabelas": tabelas},
+        )
+    return ResultadoEtapa("concluida", itens=itens, detalhes={"tabelas": tabelas})
+
+
+def etapa_juiza(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    from tcc_scraper.llm.juiza import julgar_pendentes
+
+    r = julgar_pendentes(limite_itens=ctx.settings.juiza_max_itens_dia, observador=p)
+    itens = r.regra + r.jev + r.gemini
+    detalhes = {
+        "pendentes": r.pendentes,
+        "regra": r.regra,
+        "jev": r.jev,
+        "gemini": r.gemini,
+        "erros": r.erros,
+        "runs": r.runs,
+        "tokens_entrada": r.tokens_entrada,
+        "tokens_saida": r.tokens_saida,
+        "interrompido": r.interrompido,
+    }
+    if r.interrompido:
+        return ResultadoEtapa(
+            "falhou", itens=itens, erro="interrompida: orçamento ou cancelamento", detalhes=detalhes
+        )
+    return ResultadoEtapa("concluida", itens=itens, detalhes=detalhes)
+
+
+def etapa_nao_implementada(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    return ResultadoEtapa("pulada", erro="etapa ainda não implementada")
+
+
+ETAPAS: tuple[EtapaDef, ...] = (
+    EtapaDef("precos", 1, "Preços e índices", "yahoo", etapa_precos),
+    EtapaDef("macro", 2, "Macro do BCB", "bcb", etapa_macro),
+    EtapaDef("noticias", 3, "Notícias", "google_news", etapa_noticias),
+    EtapaDef("ipe", 4, "Fatos relevantes", "cvm_ipe", etapa_ipe),
+    EtapaDef("enriquecimento", 5, "Corpo e sentimento", "finbert", etapa_enriquecimento),
+    EtapaDef("juiza", 6, "Juíza de qualidade", "juiza", etapa_juiza),
+    EtapaDef("cadastro", 7, "Cadastro e eventos", "cvm_b3", etapa_cadastro),
+    EtapaDef("entrega", 8, "Montagem das 8 tabelas", "build_entrega", etapa_entrega),
+    EtapaDef("analise", 9, "Análise diária", "gemini", etapa_analise),
+)
+
+POR_ID: dict[str, EtapaDef] = {e.id: e for e in ETAPAS}

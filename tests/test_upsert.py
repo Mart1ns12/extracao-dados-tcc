@@ -1,18 +1,11 @@
-"""Testes de integracao do upsert portavel, contra PostgreSQL E MySQL reais.
+"""Testes de integracao do upsert contra o MySQL do .env (opt-in: TCC_TESTES_COM_BANCO=1).
 
-Por que banco real e nao mock: o que se testa aqui e justamente a diferenca de
-comportamento entre dialetos (`ON CONFLICT` vs `ON DUPLICATE KEY UPDATE`). Um mock
-confirmaria apenas que o codigo chama o que o codigo chama.
-
-Cada banco indisponivel e pulado, nao falha: a suite continua rodando numa maquina
-que so tem um dos dois. As URLs saem de TEST_PG_URL / TEST_MYSQL_URL, com defaults
-apontando para os servidores locais de desenvolvimento.
+Por que banco real e nao mock: o que se testa aqui e o comportamento real do
+`ON DUPLICATE KEY UPDATE`. Um mock confirmaria apenas que o codigo chama o que o codigo
+chama.
 """
 
 from __future__ import annotations
-
-import os
-from functools import cache
 
 import pytest
 from sqlalchemy import (
@@ -28,52 +21,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import Session
 
 from tcc_scraper.db.upsert import bulk_upsert
-
-PG_URL = os.environ.get(
-    "TEST_PG_URL", "postgresql+psycopg://tcc:tcc_local_dev@localhost:5433/tcc_scraper"
-)
-MYSQL_URL = os.environ.get(
-    "TEST_MYSQL_URL", "mysql+pymysql://root@127.0.0.1:3307/tcc_scraper"
-)
-
-
-# Timeout curto e resultado em cache, de proposito. Com o timeout padrao do driver
-# (30 s+) e uma tentativa por teste, a suite travava por dez minutos so para concluir
-# que um banco opcional nao estava no ar -- foi o que aconteceu apos um reinicio da
-# maquina. Com cache, a conclusao e tirada UMA vez por URL.
-_CONNECT_TIMEOUT = 2
-
-
-@cache
-def _tentar_engine(url: str):
-    """Devolve (engine, None) se conectou, ou (None, motivo). Avaliado uma vez por URL."""
-    args = (
-        {"connect_timeout": _CONNECT_TIMEOUT}
-        if url.startswith(("mysql", "postgresql"))
-        else {}
-    )
-    try:
-        engine = create_engine(url, pool_pre_ping=True, connect_args=args)
-        with engine.connect():
-            pass
-        return engine, None
-    except Exception as exc:
-        return None, str(exc)[:80]
-
-
-def _engine_or_skip(url: str, label: str):
-    engine, motivo = _tentar_engine(url)
-    if engine is None:
-        pytest.skip(f"{label} indisponivel: {motivo}")
-    return engine
-
-
-@pytest.fixture(params=["postgresql", "mysql"])
-def engine(request):
-    """Roda cada teste nos dois dialetos."""
-    if request.param == "postgresql":
-        return _engine_or_skip(PG_URL, "PostgreSQL")
-    return _engine_or_skip(MYSQL_URL, "MySQL")
 
 
 @pytest.fixture
@@ -124,7 +71,7 @@ def test_conflito_com_update_sobrescreve(engine, tabela) -> None:
 
 
 def test_conflito_sem_update_preserva_o_existente(engine, tabela) -> None:
-    """update_columns=None deve equivaler ao DO NOTHING do Postgres nos dois bancos."""
+    """update_columns=None significa nao atualizar: a linha existente e preservada."""
     with Session(engine) as s:
         bulk_upsert(s, tabela, [{"chave": "a", "valor": "ORIGINAL"}],
                     index_elements=["chave"], update_columns=["valor"])
@@ -175,7 +122,7 @@ def test_duplicatas_dentro_do_mesmo_lote(engine, tabela) -> None:
     """A mesma URL pode aparecer duas vezes na resposta de uma janela.
 
     Este e o caso que mais diverge entre os bancos, por isso tem teste proprio:
-    o comportamento precisa ser ao menos ESTAVEL nos dois -- uma linha por chave.
+    o comportamento precisa ser DETERMINISTICO -- uma linha por chave.
     """
     rows = [{"chave": "dup", "valor": "primeiro"}, {"chave": "dup", "valor": "segundo"}]
     with Session(engine) as s:
@@ -184,7 +131,7 @@ def test_duplicatas_dentro_do_mesmo_lote(engine, tabela) -> None:
 
         resultado = _linhas(s, tabela)
         assert len(resultado) == 1
-        # Deterministico nos dois bancos: a ultima ocorrencia vence.
+        # Deterministico: a ultima ocorrencia vence.
         assert resultado["dup"] == "segundo"
 
 

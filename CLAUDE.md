@@ -3,6 +3,8 @@
 Sistema de web scraping que produz um dataset diário de **notícias + mercado B3** para a etapa
 seguinte do TCC (análise/interpretação — **fora deste escopo**).
 
+Índice da documentação: [docs/README.md](docs/README.md).
+
 ---
 
 ## 1. O que este projeto entrega
@@ -22,8 +24,9 @@ Uma linha por `(data, ticker)` com as **14 colunas** de `docs/Dataset1.0.xlsx`:
 | `retorno_ibovespa` | Variação do `^BVSP` |
 | `target` | `1` se a ação superar o Ibov em **t+1**, senão `0` |
 
-**Janela: 1 ano** (`DATA_START` a `DATA_END` no `.env`). Os preços são coletados
-`PRICE_WARMUP_DAYS` (45 dias) ANTES de `DATA_START`, para aquecer as janelas de 20
+**Janela: 1 ano agora, 5 anos planejados** (`DATA_START` a `DATA_END` no `.env`; a janela do v1
+é fixa, e o fim da coleta diária é rolante, `DATA_FIM_COLETA`). Os preços são coletados
+`PRICE_WARMUP_DAYS` (400 dias) ANTES de `DATA_START`, para aquecer as janelas de 20
 pregões — sem isso, os 20 primeiros dias do dataset sairiam sem `retorno_20d`,
 `volatilidade_20d` e `volume_relativo`. Medido: com aquecimento, essas colunas saem com
 **0% de nulos** (antes: 4%).
@@ -32,7 +35,7 @@ pregões — sem isso, os 20 primeiros dias do dataset sairiam sem `retorno_20d`
 exportado em Parquet/CSV. Upsert por `(data, ticker)`: remontar sobrescreve, não duplica.
 
 **Restrição dominante do projeto: custo zero, exceto a LLM do Google (teto US$ 5/mês).**
-A análise diária por LLM (Gemini) é a única dependência paga, com teto aprovado de US$ 5/mês.
+A análise diária por LLM (Gemini) é a única dependência paga. A juíza de notícias usa o mesmo Gemini e compartilha o teto aprovado de US$ 5/mês.
 Qualquer outra proposta que exija API paga, cartão de crédito ou plano pago deve ser rejeitada.
 
 ---
@@ -48,10 +51,10 @@ uma fonte rejeitada sem antes provar, com uma chamada real, que a limitação mu
 |---|---|---|
 | **Yahoo Finance chart API** | Preço **primário** | 5 anos com `adjclose`, sem chave. Cobre ações `.SA`, `^BVSP`, `BZ=F` (Brent), `USDBRL=X` |
 | **Google News RSS** | Notícias **históricas** | Único caminho grátis para 2 anos de histórico. Aceita `after:`/`before:` |
-| **RSS nativos dos veículos** | Notícias **correntes** | InfoMoney/MoneyTimes expõem `content:encoded` = corpo completo do artigo |
+| **RSS nativos dos veículos** | Notícias **correntes** (sem coletor implementado) | InfoMoney/MoneyTimes expõem `content:encoded` = corpo completo do artigo |
 | **BCB SGS série 432** | Selic | Oficial, sem chave, sem limite |
 | **BCB PTAX** | Dólar | Oficial, sem chave. Usar `cotacaoVenda` |
-| **Brapi** | *Fallback* de preço | Funciona sem token; free = 15.000 req/mês. Só 1 ano de histórico |
+| **Brapi** | *Fallback* de preço (sem coletor implementado) | Funciona sem token; free = 15.000 req/mês. Só 1 ano de histórico |
 
 ### Rejeitadas — e o motivo
 
@@ -113,8 +116,8 @@ retorna resultados estruturados em ~500 tokens contra ~80k de um grep amplo.
 4. `get_architecture()` — visão de estrutura ao entrar em uma área nova
 5. `search_code(pattern=...)` — busca textual aumentada pelo grafo
 
-**Grep / Glob / Read continuam livres** (e preferíveis) para: `.env`, `docker-compose.yml`,
-`pyproject.toml`, migrations SQL, Markdown, fixtures de teste e qualquer arquivo não-Python.
+**Grep / Glob / Read continuam livres** (e preferíveis) para: `.env`,
+`pyproject.toml`, arquivos SQL de `sql/`, Markdown, fixtures de teste e qualquer arquivo não-Python.
 
 **Sempre `Read` um arquivo antes de editá-lo** — o grafo diz onde está, não substitui a leitura.
 
@@ -150,7 +153,7 @@ Decisões cujo *motivo* se perde se ficar só no código:
 
 - Rejeição de uma fonte de dados e o limite concreto que a inviabilizou
 - Resultado do spike de resolução de link do Google News (a taxa medida e a rota escolhida)
-- Escolha de PostgreSQL sobre SQLite
+- Escolha de MySQL como banco único (sem banco local)
 - Qualquer mudança na regra do `target` ou na definição de uma feature
 
 Um ADR bem escrito responde: **qual era o problema, quais opções existiam, o que foi escolhido e
@@ -162,17 +165,24 @@ o que se perdeu com isso.**
 
 - **Todo coletor herda de `collectors/base.Collector`.** Ele já resolve throttle por domínio,
   retry exponencial e checkpoint. Nunca chamar `requests`/`httpx` cru em um coletor.
-- **Persistência sempre por `db/upsert.bulk_upsert`.** Nunca `pg_insert`/`mysql_insert`
+- **Persistência sempre por `db/upsert.bulk_upsert`.** Nunca `mysql_insert`
   direto, e nunca um `execute` por linha dentro de laço — foi assim que o `_persist` do
   Google News chegou a ~450 mil idas ao banco na carga completa (hoje: ~8,6 mil).
 - **Tipo de ponto flutuante é `Double`, nunca `Float`.** `sa.Float()` vira 4 bytes no
   MySQL e truncaria as probabilidades do FinBERT em ~7 dígitos, mudando o dataset
   conforme o banco. Há teste de regressão.
-- **Timestamps usam `UTCDateTime`**, não `DateTime(timezone=True)`: o MySQL não guarda
-  fuso e o valor voltaria naive, deslocando a agregação diária.
-- **A camada `raw` é imutável e append-only.** Reprocessamento sempre parte dela — nunca da rede.
+- **Timestamps usam `UTCDateTime`**: o MySQL não guarda fuso e, sem o tipo, o valor voltaria
+  naive, deslocando a agregação diária.
+- **A camada `raw` é append-only, com exceções de UPDATE.** Reprocessamento sempre parte dela — nunca da rede. As exceções reais são upserts que atualizam `raw_prices`, `raw_macro`, `raw_articles.resolved_url`, `v1-raw_cvm_cadastro` e `v1-raw_b3_cadastro` (ver [docs/06-banco-de-dados.md](docs/06-banco-de-dados.md), seção 3.3).
 - **Deduplicação por `url_hash`**, nunca pela URL crua (querystrings de tracking variam).
-- **Toda alteração de schema passa por Alembic.** Nada de `CREATE TABLE` solto.
+- **Alteração de schema é manual:** muda o model em `src/tcc_scraper/db/`, atualiza `sql/schema.mysql.sql` e escreve o ALTER em `sql/alteracoes/AAAA-MM-DD_descricao.mysql.sql`. Quem aplica é o dono, com usuário com DDL, após aprovação. Nada de `CREATE TABLE` solto.
+- **Prefixo `v1-` só nas tabelas criadas pela pipeline nova** (`PREFIXO_TABELA` em `db/models.py`):
+  as que nasceram nas antigas migrations 0004–0007 (25 tabelas: `painel_*`, fontes/juíza e as 8 de
+  entrega). O nome real é `v1-painel_logs`, `v1-raw_ipe_docs`, `v1-noticias` … `v1-indices` (o CSV
+  continua com o nome da spec). As 14 antigas mantêm o nome, inclusive `raw_articles`, `raw_prices` e
+  `raw_llm_runs`; ficam sem prefixo também `features_dataset_v1`. O hífen exige
+  crase em SQL escrito à mão: `` `v1-raw_ipe_docs` ``.
+  No código, prefira `Model.__table__`.
 - **Segredos só em `.env`** (nunca commitado). `.env.example` documenta as chaves.
 - **Vazamento temporal é bug de corretude**, não detalhe: features em `t` só usam dados com
   timestamp `<= t`. O `target` é o único campo que olha `t+1`. Há teste dedicado para isso.
@@ -183,28 +193,40 @@ o que se perdeu com isso.**
 ## 6. Comandos
 
 ```bash
-# Postgres local (instalado via conda em D:, NAO e servico do Windows --
-# nao sobe sozinho no boot):
-powershell scripts\pg-start.ps1           # sobe    | pg-stop.ps1 para
-alembic upgrade head                      # aplica migrations
-python -m tcc_scraper.cli db-info         # confere dialeto e tabelas
+# Banco: MySQL 8 do .env, o UNICO do projeto (nao ha banco local). Schema e alteracoes: docs/06-banco-de-dados.md, secao 4.
+# banco vazio: aplicar sql/schema.mysql.sql (usuario com DDL)
+python -m tcc_scraper.cli db-info              # confere o banco e as tabelas (so leitura)
+python -m tcc_scraper.cli validate-tickers     # tickers do IBOV respondem no Yahoo
+python -m tcc_scraper.cli validate-cadastro    # ticker -> codigo CVM -> B3
+python -m tcc_scraper.cli collect-prices       # Yahoo: acoes, Ibovespa, Brent, dolar
+python -m tcc_scraper.cli collect-macro        # Selic e PTAX (BCB)
+python -m tcc_scraper.cli collect-news         # Google News (retomavel; 6-9 h na carga completa)
+python -m tcc_scraper.cli enrich               # corpo dos artigos (resolve o link)
+python -m tcc_scraper.cli score                # FinBERT pt/en (exige o extra sentiment)
+python -m tcc_scraper.cli build-dataset        # 14 colunas -> features_dataset_v1, Parquet e CSV
+python -m tcc_scraper.cli analyze-llm [--data YYYY-MM-DD] [--dry-run] [--modelo X]   # analise diaria (Gemini)
+python -m tcc_scraper.cli collect-ipe          # fatos relevantes (CVM IPE)
+python -m tcc_scraper.cli collect-cvm          # ITR e DFP (CVM)
+python -m tcc_scraper.cli collect-cadastro     # cadastro das companhias (CVM e B3)
+python -m tcc_scraper.cli collect-proventos    # proventos (B3)
+python -m tcc_scraper.cli collect-indices      # CDI e IPCA (BCB)
+python -m tcc_scraper.cli judge-news [--limite N] [--avaliar]   # juiza de noticias
+python -m tcc_scraper.cli build-entrega [--csv] [--tabela X]    # 8 tabelas da entrega
+python -m tcc_scraper.cli executor             # worker do painel (Railway): comandos, daily das 18:30 BRT, carga historica
+python -m tcc_scraper.cli daily [--etapa ID]   # daily de 9 etapas, sem painel (bloqueante)
+python -m tcc_scraper.cli historico --anos 2025 --anos 2026 [--modo pendentes]  # carga historica (bloqueante)
 
-python -m tcc_scraper.cli collect-prices  # Fase 2: Yahoo + BCB
-python -m tcc_scraper.cli collect-news    # Fase 3: Google News (retomável)
-python -m tcc_scraper.cli enrich          # Fase 4: corpo dos artigos (paralelo)
-python -m tcc_scraper.cli score           # Fase 5: FinBERT pt/en
-python -m tcc_scraper.cli build-dataset   # Fase 6: 14 colunas -> banco + Parquet
-python -m tcc_scraper.cli export          # Parquet + CSV
-python -m tcc_scraper.cli analyze-llm [--data YYYY-MM-DD] [--dry-run] [--modelo X]  # Analise diaria por LLM (cron no Railway)
-
-pytest                                    # testes (sem rede — usam fixtures)
+pytest                                          # testes (sem rede, usam fixtures)
+TCC_TESTES_COM_BANCO=1 pytest                   # testes com banco: gravam no MySQL do .env (opt-in)
 ```
 
 A coleta de notícias leva **6–9 h** na primeira execução (9.010 janelas + subdivisões).
 É **retomável**: se interromper, rodar o mesmo comando continua de onde parou.
 
 Para rodar tudo em sequência no servidor: `./scripts/coleta-completa.sh` (ver
-[docs/MIGRACAO-MYSQL.md](docs/MIGRACAO-MYSQL.md)).
+[docs/08-operacao-e-deploy.md](docs/08-operacao-e-deploy.md), seção 1).
+
+**Executor e painel:** ver [docs/07-executor-e-painel.md](docs/07-executor-e-painel.md).
 
 ---
 
@@ -226,29 +248,32 @@ Se o projeto não aparecer, rode `index_repository` antes de qualquer exploraç�
 
 ---
 
-## 8. Bancos suportados — PostgreSQL e MySQL 8
+## 8. Banco: MySQL 8, único
 
-O projeto roda nos dois e o **dataset sai bit a bit idêntico** (verificado por teste de
-paridade que monta o dataset a partir de cada banco e compara).
+O projeto tem **um banco só**: o MySQL do `.env` (`IP_BANCO`, `USER_BANCO`, `SENHA_BANCO`,
+`PORTA_BANCO`, `NOME_BANCO`). Não existe PostgreSQL nem banco local; a URL é montada sempre pelo
+`Settings.effective_url`. Decisão e custo em `docs/ADR.md` ("Um banco só").
 
-Três decisões tornam isso possível, e nenhuma é cosmética:
+Decisões de tipo e de SQL que continuam valendo:
 
 | Ponto | Por quê |
 |---|---|
 | **Camadas viram prefixo** (`raw_articles`), não schema | MySQL não tem schemas — lá "schema" e "database" são a mesma coisa |
 | **`Double`, nunca `Float`** | `sa.Float()` vira 4 bytes no MySQL: `0.7766114473342896` voltava `0.776611` |
-| **`UTCDateTime`** em vez de `DateTime(timezone=True)` | MySQL não guarda fuso; sem isso, matéria das 22h cairia em dias diferentes conforme o banco |
+| **`UTCDateTime`** | MySQL não guarda fuso; sem isso, matéria das 22h cairia em dias diferentes |
 
 E o `RETURNING` **não existe no MySQL** — por isso `google_news._persist` grava em lote,
 relê os ids pelo `url_hash` e só então grava os vínculos: três queries por janela,
 independentemente do número de matérias.
 
-Roteiro completo de migração: **[docs/MIGRACAO-MYSQL.md](docs/MIGRACAO-MYSQL.md)**.
-Script de cópia de dados: `scripts/migrar_dados.py` (idempotente, com conferência).
+Schema e acesso: **[docs/06-banco-de-dados.md](docs/06-banco-de-dados.md)**.
 
 **Pegadinha do MySQL:** a collation `utf8mb4_0900_ai_ci` ignora acentos em `LIKE` —
-`LIKE '%ã%'` deu 584 linhas no Postgres e 2.078 no MySQL sobre os mesmos dados. Não
-afeta o pipeline (nenhuma query dele usa `LIKE`), mas afeta consultas de análise.
+`LIKE '%ã%'` devolve linhas a mais do que o esperado. Não afeta o pipeline (nenhuma query dele
+usa `LIKE`), mas afeta consultas de análise.
+
+**Testes com banco são opt-in.** Gravam no banco real, por isso só rodam com
+`TCC_TESTES_COM_BANCO=1`; sem a variável são pulados. Cada um limpa só as linhas que criou.
 
 ---
 
@@ -261,12 +286,12 @@ JSON schema **na mesma chamada** (só Gemini 3+ aceita os dois juntos). Modelo e
 (substituídas por dia). O `features_dataset_v1` **fica intacto**.
 
 **Exceção aprovada à regra de custo:** é a única dependência paga do projeto, com teto de
-US$ 5/mês (~30 chamadas). Roda como cron no Railway (`0 22 * * *`, UTC = 19:00 de Brasília).
+US$ 5/mês (~30 chamadas), compartilhado com a juíza (ver [docs/04-juiza-e-llm.md](docs/04-juiza-e-llm.md), seção 3.6). Roda como etapa `analise` do daily, agendada pelo executor às 18:30 de Brasília (ver [docs/07-executor-e-painel.md](docs/07-executor-e-painel.md)).
 
 **Citações:** o prompt exige `fonte` e `url` dentro de cada item do JSON. As anotações
 `url_citation` da API vão para `citacoes_json` só como auditoria, nunca como fonte de dados.
 
-**Mudou o template → sobe `VERSAO` em `llm/prompt.py`** e cria `analise_diaria_v2.txt`;
+**Mudou o template → sobe `VERSAO` em `llm/prompt.py`** e cria `analise_diaria_v{N+1}.txt` (hoje a versão é `v3`);
 nunca edite a versão antiga no lugar.
 
-Roteiro de deploy, variáveis e custo: [docs/LLM-ANALISE.md](docs/LLM-ANALISE.md).
+Variáveis e custo: [docs/04-juiza-e-llm.md](docs/04-juiza-e-llm.md), seção 3. Deploy e banco remoto: [docs/08-operacao-e-deploy.md](docs/08-operacao-e-deploy.md), seção 4.

@@ -1,21 +1,16 @@
-"""Upsert em lote, portavel entre PostgreSQL e MySQL.
+"""Upsert em lote no MySQL 8, ponto unico de escrita do projeto.
 
-Dois problemas resolvidos aqui:
+Todo `_persist` passa por `bulk_upsert`, que traduz para `ON DUPLICATE KEY UPDATE`.
+Centralizar aqui evita que cada coletor reimplemente o upsert e a deduplicacao.
 
-**Portabilidade.** `ON CONFLICT` e sintaxe exclusiva do PostgreSQL; o MySQL usa
-`ON DUPLICATE KEY UPDATE`. Sem esta camada, migrar de banco exigiria reescrever os
-seis metodos `_persist` do projeto.
+**Lote.** Gravar uma linha por `session.execute()` dentro de um laco vira centenas de
+milhares de idas ao banco numa carga completa. Passando a lista inteira, o SQLAlchemy
+emite um `executemany` e o numero de idas cai para a quantidade de lotes.
 
-**Lote.** A versao anterior gravava uma linha por `session.execute()` dentro de um
-laco. Numa carga de ~150 mil artigos isso vira ~450 mil idas ao banco. Passando a
-lista inteira de uma vez, o SQLAlchemy emite um `executemany` e o numero de idas cai
-para a quantidade de lotes.
-
-Uma diferenca de comportamento que NAO da para abstrair: o PostgreSQL permite dizer
-em qual restricao o conflito e esperado (`index_elements`); o MySQL dispara em
-qualquer chave unica violada. Na pratica do projeto isso nao muda o resultado, porque
-cada tabela tem uma unica restricao relevante -- mas esta documentado para quem
-adicionar uma segunda chave unica no futuro.
+Diferenca do MySQL que o codigo precisa respeitar: ele dispara o conflito em QUALQUER
+chave unica violada, nao so na indicada em `index_elements`. Por isso cada tabela que
+passa por aqui deve ter uma unica restricao relevante -- se uma segunda chave unica
+for adicionada, reveja este modulo.
 """
 
 from __future__ import annotations
@@ -43,14 +38,12 @@ def _chunks(rows: Sequence[dict], size: int):
 def deduplicate(rows: Sequence[dict], index_elements: Sequence[str]) -> list[dict]:
     """Remove linhas com a mesma chave dentro do lote, mantendo a ULTIMA.
 
-    Isto nao e zelo: o PostgreSQL ABORTA um `ON CONFLICT DO UPDATE` cujo lote traga
-    a mesma chave duas vezes -- "cannot affect row a second time" -- enquanto o MySQL
-    aceita em silencio. Como a resposta do Google News repete materia dentro de uma
-    mesma janela, sem esta deduplicacao a coleta quebraria no PostgreSQL e produziria
-    resultado dependente do banco.
+    Isto nao e zelo: a resposta do Google News repete materia dentro de uma mesma
+    janela. Sem esta deduplicacao, o MySQL aplicaria as duas ocorrencias em sequencia,
+    e o resultado dependeria de detalhes do servidor. Deduplicar antes deixa o
+    resultado deterministico.
 
-    Manter a ultima ocorrencia reproduz o comportamento efetivo do MySQL e privilegia
-    o dado mais recente da resposta.
+    Manter a ultima ocorrencia privilegia o dado mais recente da resposta.
     """
     vistos: dict[tuple, dict] = {}
     for row in rows:
@@ -74,49 +67,26 @@ def bulk_upsert(
         vazia significa "nao faca nada" -- a linha existente e preservada.
 
     Devolve a quantidade de linhas enviadas (nao a de linhas efetivamente escritas:
-    nenhum dos dois bancos informa isso de forma confiavel num executemany).
+    o MySQL nao informa isso de forma confiavel num executemany).
     """
     if not rows:
         return 0
 
-    # Obrigatorio, nao opcional: sem isto o PostgreSQL aborta o lote com chave
-    # repetida. Ver deduplicate().
+    # Obrigatorio: ver deduplicate().
     rows = deduplicate(rows, index_elements)
 
+    # Guarda, nao ramo: sem ela, um banco que nao seja MySQL (ex.: SQLite em teste)
+    # ignoraria a semantica de upsert em silencio.
     dialect = session.get_bind().dialect.name
+    if dialect not in ("mysql", "mariadb"):
+        raise NotImplementedError(
+            f"upsert so e implementado para MySQL; dialeto atual: {dialect!r}"
+        )
     total = 0
     for chunk in _chunks(rows, chunk_size):
-        if dialect == "postgresql":
-            _upsert_postgresql(session, table, chunk, index_elements, update_columns)
-        elif dialect in ("mysql", "mariadb"):
-            _upsert_mysql(session, table, chunk, index_elements, update_columns)
-        else:
-            raise NotImplementedError(
-                f"upsert nao implementado para o dialeto {dialect!r}; "
-                "suportados: postgresql, mysql, mariadb"
-            )
+        _upsert_mysql(session, table, chunk, index_elements, update_columns)
         total += len(chunk)
     return total
-
-
-def _upsert_postgresql(
-    session: Session,
-    table: Table,
-    rows: Sequence[dict],
-    index_elements: Sequence[str],
-    update_columns: Sequence[str] | None,
-) -> None:
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-    stmt = pg_insert(table).values(list(rows))
-    if update_columns:
-        stmt = stmt.on_conflict_do_update(
-            index_elements=list(index_elements),
-            set_={col: stmt.excluded[col] for col in update_columns},
-        )
-    else:
-        stmt = stmt.on_conflict_do_nothing(index_elements=list(index_elements))
-    session.execute(stmt)
 
 
 def _upsert_mysql(

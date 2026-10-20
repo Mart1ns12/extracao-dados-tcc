@@ -1,71 +1,24 @@
-"""Protege as duas propriedades que a portabilidade custou caro para obter.
+"""Protege duas propriedades do MySQL das quais o pipeline depende.
 
 1. **Lote.** O `_persist` do Google News ja fez tres `execute` POR ARTIGO. Voltar a
    isso nao quebraria teste nenhum -- o resultado seria identico, so lento. Por isso
    o numero de statements e testado explicitamente.
 
 2. **Precisao.** `sa.Float()` vira 4 bytes no MySQL e truncava as probabilidades do
-   FinBERT (0.7766114473342896 voltava 0.776611), fazendo o dataset mudar conforme o
-   banco. `Double` corrige; este teste impede a regressao.
+   FinBERT (0.7766114473342896 voltava 0.776611), fazendo o dataset mudar. `Double`
+   corrige; este teste impede a regressao.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import os
-from functools import cache
 
 import pytest
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from tcc_scraper.db.models import Article, ArticleTicker, Base, url_hash
 from tcc_scraper.db.upsert import bulk_upsert
-
-PG_URL = os.environ.get(
-    "TEST_PG_URL", "postgresql+psycopg://tcc:tcc_local_dev@localhost:5433/tcc_scraper"
-)
-MYSQL_URL = os.environ.get(
-    "TEST_MYSQL_URL", "mysql+pymysql://root@127.0.0.1:3307/tcc_scraper"
-)
-
-
-# Timeout curto e resultado em cache, de proposito. Com o timeout padrao do driver
-# (30 s+) e uma tentativa por teste, a suite travava por dez minutos so para concluir
-# que um banco opcional nao estava no ar -- foi o que aconteceu apos um reinicio da
-# maquina. Com cache, a conclusao e tirada UMA vez por URL.
-_CONNECT_TIMEOUT = 2
-
-
-@cache
-def _tentar_engine(url: str):
-    """Devolve (engine, None) se conectou, ou (None, motivo). Avaliado uma vez por URL."""
-    args = (
-        {"connect_timeout": _CONNECT_TIMEOUT}
-        if url.startswith(("mysql", "postgresql"))
-        else {}
-    )
-    try:
-        engine = create_engine(url, pool_pre_ping=True, connect_args=args)
-        with engine.connect():
-            pass
-        return engine, None
-    except Exception as exc:
-        return None, str(exc)[:80]
-
-
-def _engine_or_skip(url: str, label: str):
-    engine, motivo = _tentar_engine(url)
-    if engine is None:
-        pytest.skip(f"{label} indisponivel: {motivo}")
-    return engine
-
-
-@pytest.fixture(params=["postgresql", "mysql"])
-def engine(request):
-    if request.param == "postgresql":
-        return _engine_or_skip(PG_URL, "PostgreSQL")
-    return _engine_or_skip(MYSQL_URL, "MySQL")
 
 
 class ContaStatements:
@@ -138,7 +91,7 @@ def test_grava_em_lote_e_nao_uma_query_por_linha(engine, limpa) -> None:
 
 
 def test_probabilidades_sobrevivem_ao_round_trip(engine) -> None:
-    """A precisao de double precisa valer nos dois bancos.
+    """A precisao de double precisa sobreviver ao round trip no MySQL.
 
     Com `sa.Float()` o MySQL truncava em ~7 digitos e o dataset mudava de banco
     para banco.
@@ -167,10 +120,46 @@ def test_probabilidades_sobrevivem_ao_round_trip(engine) -> None:
 
 
 def test_todas_as_tabelas_tem_prefixo_de_camada() -> None:
-    """Sem schemas, o prefixo e a unica marca de camada -- e o filtro do Alembic."""
+    """Sem schemas, o prefixo e a unica marca de camada -- e o filtro de tabela_do_projeto."""
+    from tcc_scraper.db.models import tabela_do_projeto
+
     for tabela in Base.metadata.sorted_tables:
-        assert tabela.name.startswith(("raw_", "staging_", "features_")), tabela.name
+        assert tabela_do_projeto(tabela.name), tabela.name
         assert tabela.schema is None, f"{tabela.name} ainda declara schema (quebra no MySQL)"
+
+
+# RENAME da etapa 0008 de sql/schema.mysql.sql: `v1-` so nas tabelas criadas a partir da
+# etapa 0004 (pipeline nova). As antigas (etapas 0001-0003) mantem o nome original, mesmo as que
+# a pipeline nova le.
+TABELAS_COM_V1 = {
+    "v1-painel_comandos", "v1-painel_heartbeat", "v1-painel_execucoes", "v1-painel_etapas",
+    "v1-painel_historico", "v1-painel_historico_progresso", "v1-painel_logs",
+    "v1-painel_comandos_aplicados", "v1-raw_ipe_docs", "v1-raw_cvm_balancos", "v1-raw_cvm_acoes",
+    "v1-raw_cvm_cadastro", "v1-raw_b3_cadastro", "v1-raw_b3_proventos", "v1-raw_b3_suplemento",
+    "v1-raw_llm_juiza_runs", "v1-staging_noticias_julgamento", "v1-noticias", "v1-precos",
+    "v1-cadastro", "v1-mudancas_ticker", "v1-balancos", "v1-acoes_emitidas", "v1-proventos",
+    "v1-indices",
+}
+TABELAS_SEM_V1 = {
+    "raw_articles", "raw_article_bodies", "raw_prices", "raw_macro", "raw_collection_runs",
+    "staging_article_tickers", "staging_article_sentiment", "raw_llm_prompts", "raw_llm_runs",
+    "staging_llm_noticias_empresas", "staging_llm_noticias_macro", "staging_llm_acoes_sinais",
+    "staging_llm_mercados", "features_dataset_v1",
+}
+
+
+def test_prefixo_v1_so_nas_25_tabelas_da_pipeline_nova() -> None:
+    from tcc_scraper.db import models_entrega, models_fontes, models_painel  # noqa: F401
+
+    nomes = set(Base.metadata.tables)
+    assert len(TABELAS_COM_V1) == 25
+    assert len(TABELAS_SEM_V1) == 14
+    assert {n for n in nomes if n.startswith("v1-")} == TABELAS_COM_V1
+    assert nomes >= TABELAS_SEM_V1
+    for tabela in Base.metadata.tables.values():
+        for fk in tabela.foreign_keys:
+            alvo = fk.column.table.name
+            assert alvo in nomes, f"{tabela.name} aponta para {alvo}"
 
 
 # --------------------------------------------------------------------------------------
@@ -253,3 +242,56 @@ def test_sentimento_ausente_vira_null_no_banco(engine, limpa_dataset) -> None:
         ).scalars().all()
 
     assert all(v is None for v in vals), f"esperado NULL, veio {vals}"
+
+
+def test_enriquecimento_grava_resolved_url_em_lote(engine, limpa, monkeypatch) -> None:
+    """O resolved_url de 10 artigos sai em um executemany, nao um UPDATE por artigo."""
+    from contextlib import contextmanager
+
+    from tcc_scraper.enrich import article_fetcher as af
+
+    @contextmanager
+    def _sessao_de_teste():
+        sessao = Session(engine)
+        try:
+            yield sessao
+            sessao.commit()
+        except Exception:
+            sessao.rollback()
+            raise
+        finally:
+            sessao.close()
+
+    # O _persist usa session_scope, que apontaria para o banco configurado no .env.
+    monkeypatch.setattr(af, "session_scope", _sessao_de_teste)
+
+    linhas = _payload(10)
+    with Session(engine) as s:
+        bulk_upsert(s, Article.__table__, linhas,
+                    index_elements=["url_hash"], update_columns=None)
+        s.commit()
+        pares = s.execute(
+            select(Article.id, Article.google_id).where(Article.google_id.like("REGR%"))
+        ).all()
+    assert len(pares) == 10
+
+    corpos = [
+        af.ExtractedBody(
+            article_id=aid, text="texto de materia " * 20, method="trafilatura",
+            real_url=f"https://veiculo.com.br/materia/{gid}",
+        )
+        for aid, gid in pares
+    ]
+
+    with af.ArticleBodyCollector() as coletor, ContaStatements(engine) as contador:
+        coletor._persist(corpos)
+
+    with Session(engine) as s:
+        resolvidas = s.execute(
+            select(Article.resolved_url).where(Article.google_id.like("REGR%"))
+        ).scalars().all()
+    assert len(resolvidas) == 10
+    assert all(url and url.startswith("https://veiculo.com.br/materia/") for url in resolvidas)
+    assert contador.total <= 6, (
+        f"{contador.total} statements para 10 resolved_url -- o update voltou a ser por linha"
+    )

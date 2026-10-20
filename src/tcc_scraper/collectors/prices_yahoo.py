@@ -16,9 +16,11 @@ from dataclasses import dataclass
 from tcc_scraper.collectors.base import Collector, UnitResult, WorkUnit
 from tcc_scraper.config import (
     BENCHMARK_TICKER,
-    IBOV_TICKERS,
+    INDICES_YAHOO,
+    IVVB11,
     MACRO_YAHOO,
     get_settings,
+    universo_coleta,
     yahoo_symbol,
 )
 from tcc_scraper.db.models import Price
@@ -75,8 +77,9 @@ def parse_chart(payload: dict, ticker: str) -> list[PriceRow]:
                 high=_at(quote.get("high"), i),
                 low=_at(quote.get("low"), i),
                 close=close,
-                # Sem adjclose, o proprio close: preferivel a perder a linha.
-                adj_close=_at(adj, i) if adj is not None else close,
+                # Sem adjclose (indices como ^BVSP e IDIV nao trazem), o proprio close:
+                # preferivel a perder a linha.
+                adj_close=_adj_ou_close(adj, i, close),
                 volume=int(volume) if volume is not None else None,
             )
         )
@@ -90,15 +93,27 @@ def _at(seq: list | None, index: int) -> float | None:
     return seq[index]
 
 
+def _adj_ou_close(adj: list | None, index: int, close: float) -> float:
+    """adjclose do dia; cai no close quando a serie inteira ou o dia vem nulo."""
+    ajustado = _at(adj, index)
+    return ajustado if ajustado is not None else close
+
+
 class YahooPriceCollector(Collector):
     """Coleta OHLCV de acoes, benchmark e series macro do Yahoo."""
 
-    name = "prices_yahoo"
+    name = "yahoo"
 
     def __init__(self, tickers: Iterable[str] | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         if tickers is None:
-            tickers = [*IBOV_TICKERS, BENCHMARK_TICKER, *MACRO_YAHOO.values()]
+            tickers = [
+                *universo_coleta(),
+                BENCHMARK_TICKER,
+                *MACRO_YAHOO.values(),
+                IVVB11,
+                *INDICES_YAHOO,
+            ]
         self.tickers = list(tickers)
         self.default_delay = self.settings.throttle_yahoo
         self.throttle.configure("query1.finance.yahoo.com", self.settings.throttle_yahoo)
@@ -120,8 +135,11 @@ class YahooPriceCollector(Collector):
             "period1": int(
                 dt.datetime.combine(settings.price_start, dt.time.min, tzinfo=dt.UTC).timestamp()
             ),
+            # period2 e exclusivo: o dia fim_coleta entra inteiro.
             "period2": int(
-                dt.datetime.combine(settings.data_end, dt.time.max, tzinfo=dt.UTC).timestamp()
+                dt.datetime.combine(
+                    settings.fim_coleta + dt.timedelta(days=1), dt.time.min, tzinfo=dt.UTC
+                ).timestamp()
             ),
             "interval": "1d",
             "events": "div,split",

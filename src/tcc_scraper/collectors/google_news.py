@@ -151,19 +151,40 @@ class GoogleNewsCollector(Collector):
 
     name = "google_news"
 
-    def __init__(self, tickers: dict[str, str] | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        tickers: dict[str, str] | None = None,
+        desde: dt.date | None = None,
+        ate: dt.date | None = None,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
+        if (desde is None) != (ate is None):
+            raise ValueError("desde e ate devem ser informados juntos")
         self.tickers = tickers if tickers is not None else IBOV_TICKERS
+        # desde/ate: recorte manual (collect-news --desde/--ate). Sem eles, a coleta
+        # cobre a janela do dataset ate fim_coleta.
+        self.desde = desde
+        self.ate = ate
         self.default_delay = self.settings.throttle_google_news
         self.throttle.configure("news.google.com", self.settings.throttle_google_news)
 
     def work_units(self) -> Iterable[WorkUnit]:
         settings = get_settings()
+        recorte = self.desde is not None and self.ate is not None
+        inicio = self.desde if recorte else settings.data_start
+        fim = self.ate if recorte else settings.fim_coleta
         for ticker, company in self.tickers.items():
-            for start, end in iter_weeks(settings.data_start, settings.data_end):
+            for start, end in iter_weeks(inicio, fim):
                 for locale in GOOGLE_NEWS_LOCALES:
+                    # Com recorte, a chave ganha o fim da janela: nao colide com a
+                    # serie historica de 3 partes.
+                    if recorte:
+                        chave = f"{ticker}|{start:%Y-%m-%d}|{end:%Y-%m-%d}|{locale['lang']}"
+                    else:
+                        chave = f"{ticker}|{start:%Y-%m-%d}|{locale['lang']}"
                     yield WorkUnit(
-                        key=f"{ticker}|{start:%Y-%m-%d}|{locale['lang']}",
+                        key=chave,
                         payload={
                             "ticker": ticker,
                             "company": company,
@@ -227,7 +248,7 @@ class GoogleNewsCollector(Collector):
         now = dt.datetime.now(dt.UTC)
 
         # A mesma materia pode vir repetida na resposta; o dict resolve antes de
-        # chegar ao banco (o PostgreSQL aborta lote com chave repetida).
+        # chegar ao banco (o lote nao pode trazer a mesma chave duas vezes).
         por_hash = {url_hash(item.google_url): item for item in items}
 
         artigos = [

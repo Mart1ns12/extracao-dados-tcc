@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -62,13 +63,20 @@ class GeminiClient:
         )
 
     def analisar(self, prompt: str, schema: dict) -> RespostaGemini:
+        return self._executar(_chamar_api, prompt, schema)
+
+    def classificar(self, prompt: str, schema: dict) -> RespostaGemini:
+        """Classificacao sem busca na web (temperature=0): o texto vem so do prompt."""
+        return self._executar(_chamar_api_sem_busca, prompt, schema)
+
+    def _executar(self, chamar: Callable[..., Any], prompt: str, schema: dict) -> RespostaGemini:
         chamada = retry(
             stop=stop_after_attempt(self.max_attempts),
             wait=wait_exponential(multiplier=2, min=2, max=30),
             retry=retry_if_exception(_transitorio), reraise=True,
             before_sleep=lambda s: logger.warning("gemini: tentativa %d falhou (%s)",
                                                   s.attempt_number, s.outcome.exception()),
-        )(_chamar_api)
+        )(chamar)
         inicio = time.monotonic()
         bruto = chamada(self._client, self.modelo, prompt, schema)
         return montar_resposta(bruto, self.modelo, int((time.monotonic() - inicio) * 1000))
@@ -85,6 +93,14 @@ def _chamar_api(client: Any, modelo: str, prompt: str, schema: dict) -> Any:
     # return client.models.generate_content(model=modelo, contents=prompt,
     #     config=types.GenerateContentConfig(response_mime_type="application/json",
     #         response_json_schema=schema, tools=[types.Tool(google_search=types.GoogleSearch())]))
+
+
+def _chamar_api_sem_busca(client: Any, modelo: str, prompt: str, schema: dict) -> Any:
+    """Igual a _chamar_api, mas sem google_search e com temperature=0 (classificacao)."""
+    return client.interactions.create(
+        model=modelo, input=prompt, generation_config={"temperature": 0},
+        response_format={"type": "text", "mime_type": "application/json", "schema": schema},
+    )
 
 
 def _como_dict(obj: Any) -> dict:
