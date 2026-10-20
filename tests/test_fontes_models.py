@@ -75,7 +75,7 @@ def test_staging_julgamento_cascateia_do_artigo() -> None:
     tabela = Base.metadata.tables["v1-staging_noticias_julgamento"]
     fks = {fk.parent.name: fk for fk in tabela.foreign_keys}
 
-    assert fks["article_id"].column.table.name == "v1-raw_articles"
+    assert fks["article_id"].column.table.name == "raw_articles"
     assert fks["article_id"].ondelete == "CASCADE"
     assert fks["run_id"].column.table.name == "v1-raw_llm_juiza_runs"
     assert fks["run_id"].ondelete is None
@@ -86,5 +86,5 @@ def test_juiza_runs_aponta_para_o_prompt() -> None:
     fks = list(tabela.foreign_keys)
 
     assert len(fks) == 1
-    assert fks[0].column.table.name == "v1-raw_llm_prompts"
+    assert fks[0].column.table.name == "raw_llm_prompts"
     assert fks[0].column.name == "id"

@@ -1,41 +1,29 @@
--- Migration 0008 (prefixo `v1-` nas 38 tabelas da pipeline nova) para MySQL 8 -- gerado por:
---   alembic upgrade 0007:0008 --sql   (dialeto MySQL, modo offline, DB_TARGET=mysql)
+-- Migration 0008 (prefixo `v1-` nas 25 tabelas criadas pela pipeline nova) para MySQL 8 --
+-- gerado por:
+--   alembic upgrade 0007:0008 --sql   (dialeto MySQL, modo offline; usa o MySQL do .env)
 --
--- Pre-requisito: o banco ja esta na 0007. Confira antes de rodar:
---   SELECT version_num FROM alembic_version;   -- deve devolver '0007'
+-- Tabelas com `v1-` (25): as criadas a partir da 0004 -- painel_comandos, painel_heartbeat,
+-- painel_execucoes, painel_etapas, painel_historico, painel_historico_progresso, painel_logs,
+-- painel_comandos_aplicados, raw_ipe_docs, raw_cvm_balancos, raw_cvm_acoes, raw_cvm_cadastro,
+-- raw_b3_cadastro, raw_b3_proventos, raw_b3_suplemento, raw_llm_juiza_runs,
+-- staging_noticias_julgamento, noticias, precos, cadastro, mudancas_ticker, balancos,
+-- acoes_emitidas, proventos, indices.
+-- Sem prefixo (14): raw_articles, raw_article_bodies, raw_prices, raw_macro,
+-- raw_collection_runs, staging_article_tickers, staging_article_sentiment, raw_llm_prompts,
+-- raw_llm_runs, staging_llm_noticias_empresas, staging_llm_noticias_macro,
+-- staging_llm_acoes_sinais, staging_llm_mercados, features_dataset_v1 (e alembic_version).
+--
+-- Pre-requisito: o banco esta na 0007, mas o alembic_version tem DUAS linhas ('0002' e
+-- '0007'); a '0002' e uma sobra antiga e faz o UPDATE abaixo errar. Confira e remova a sobra:
+--   SELECT version_num FROM alembic_version;   -- deve devolver '0002' e '0007'
+DELETE FROM alembic_version WHERE version_num = '0002';
+--   SELECT version_num FROM alembic_version;   -- depois do DELETE: so '0007'
 --
 -- RENAME TABLE nao e transacional no MySQL: se falhar no meio, parte das tabelas ja foi
 -- renomeada. Nenhuma linha e reescrita. Chaves, indices e constraints mantem o nome antigo;
 -- as foreign keys seguem a tabela renomeada (MySQL 8 atualiza a definicao).
--- Tabelas que ficam sem prefixo: features_dataset_v1 e alembic_version.
 
 -- Running upgrade 0007 -> 0008
-
-ALTER TABLE raw_articles RENAME TO `v1-raw_articles`;
-
-ALTER TABLE raw_article_bodies RENAME TO `v1-raw_article_bodies`;
-
-ALTER TABLE raw_prices RENAME TO `v1-raw_prices`;
-
-ALTER TABLE raw_macro RENAME TO `v1-raw_macro`;
-
-ALTER TABLE raw_collection_runs RENAME TO `v1-raw_collection_runs`;
-
-ALTER TABLE staging_article_tickers RENAME TO `v1-staging_article_tickers`;
-
-ALTER TABLE staging_article_sentiment RENAME TO `v1-staging_article_sentiment`;
-
-ALTER TABLE raw_llm_prompts RENAME TO `v1-raw_llm_prompts`;
-
-ALTER TABLE raw_llm_runs RENAME TO `v1-raw_llm_runs`;
-
-ALTER TABLE staging_llm_noticias_empresas RENAME TO `v1-staging_llm_noticias_empresas`;
-
-ALTER TABLE staging_llm_noticias_macro RENAME TO `v1-staging_llm_noticias_macro`;
-
-ALTER TABLE staging_llm_acoes_sinais RENAME TO `v1-staging_llm_acoes_sinais`;
-
-ALTER TABLE staging_llm_mercados RENAME TO `v1-staging_llm_mercados`;
 
 ALTER TABLE painel_comandos RENAME TO `v1-painel_comandos`;
 

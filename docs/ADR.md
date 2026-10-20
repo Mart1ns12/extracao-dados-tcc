@@ -22,7 +22,7 @@ dominante: **custo financeiro zero**. Exceção única e aprovada: a análise di
 
 ## STACK
 
-Python 3.11+ · MySQL 8 (único banco; camadas por prefixo `v1-raw_`, `v1-staging_`) · SQLAlchemy 2.0 + Alembic ·
+Python 3.11+ · MySQL 8 (único banco; camadas por prefixo `raw_`, `staging_`, `painel_`) · SQLAlchemy 2.0 + Alembic ·
 httpx · lxml · trafilatura · pandas + pyarrow · transformers/torch (extra opcional) ·
 typer + rich · pytest + ruff · google-genai (extra opcional llm).
 
@@ -119,8 +119,8 @@ gravam no banco real; por isso os testes com banco são **opt-in** (`TCC_TESTES_
 um limpa só as linhas que criou; (2) a suíte padrão não exercita SQL de verdade, só o que roda sem
 banco; (3) DDL não tem rollback no MySQL, então uma migration ruim atinge produção. Por isso a
 migration é revisada antes (`alembic ... --sql`) e aplicada da máquina local com usuário com DDL,
-seguindo [MIGRACAO-MYSQL.md](MIGRACAO-MYSQL.md). As migrations 0001–0008 não foram editadas, e as
-que têm ramo `with_variant` seguem como histórico.
+seguindo [MIGRACAO-MYSQL.md](MIGRACAO-MYSQL.md). As migrations 0001–0007 não foram editadas; a 0008 foi reescrita antes de
+ser aplicada em qualquer banco (ver a ADR do prefixo), e as que têm ramo `with_variant` seguem como histórico.
 
 **Portabilidade PostgreSQL + MySQL 8** *(superada pela ADR acima; mantida como registro).* O banco de produção do TCC é MySQL, e o
 desenvolvimento segue em PostgreSQL. Três incompatibilidades reais foram encontradas
@@ -278,18 +278,23 @@ Escolhido apagar de `noticias` (entrega) o que foi reprovado, e só artigos que 
 (`entrega/builder.py`, `_apagar_reprovadas`). A camada `raw` não muda. Custo: a entrega muda quando a
 juíza reprova, e um novo julgamento pode devolver o artigo.
 
-**Prefixo `v1-` nas tabelas da pipeline nova.** Problema: a pipeline nova (camadas `raw_`, `staging_`,
-`painel_` e as 8 tabelas de entrega) compartilha o banco com o dataset v1 congelado (`features_dataset_v1`),
-e o dono pediu que toda tabela usada pela pipeline nova tenha `v1-` na frente do nome. Opções: (a) prefixo
-literal `v1-` no nome, com hífen; (b) schema separado, rejeitado porque o MySQL não tem schemas (ver a ADR
-de camadas); (c) renomear só no código, sem tocar o banco, rejeitado porque o nome real precisa bater com
-o que a API lê. Escolhido (a): `PREFIXO_TABELA = "v1-"` em `db/models.py`, migration 0008 com 38
-`rename_table` (PostgreSQL e MySQL), `tabela_do_projeto` que tira o prefixo antes de comparar, e
-`ENTREGA_TABLES` com os nomes prefixados. Custo: o hífen obriga crase em SQL escrito à mão (`v1-raw_articles`). As constraints, índices e sequências existentes mantêm o nome antigo; só a
-constraint `uq_raw_articles_url_hash` teve de ganhar nome explícito no modelo, porque a naming_convention
-geraria `uq_v1-raw_articles_url_hash` e o `alembic check` acusaria divergência. A convenção de nomes passa a
-gerar `v1-` nos índices e constraints criados a partir de agora. O CSV de entrega continua sem prefixo.
-
+**Prefixo `v1-` só nas tabelas criadas pela pipeline nova.** Problema: a pipeline nova compartilha o banco
+com o dataset v1 congelado (`features_dataset_v1`), e o dono pediu que as tabelas da pipeline nova tenham
+`v1-` na frente do nome. A primeira versão (caf2deb) prefixou as 38 tabelas que a pipeline usa, inclusive
+as que já existiam (`raw_articles`, `raw_prices`, `raw_llm_runs`, `staging_llm_*`). Opções: (a) prefixar
+as 38; (b) prefixar só as 25 criadas a partir da 0004, e as antigas mantêm o nome; (c) schema separado,
+rejeitado porque o MySQL não tem schemas (ver a ADR de camadas); (d) renomear só no código, sem tocar o
+banco, rejeitado porque o nome real precisa bater com o que a API lê. Escolhido (b): critério "só tabelas
+criadas pela pipeline nova; as antigas, inclusive a análise da LLM v3, mantêm o nome". `PREFIXO_TABELA = "v1-"`
+em `db/models.py`; migration 0008 com 25 `rename_table` (MySQL). As 25 são 8 `painel_*`, 9 de fontes e juíza
+(0005, 0007) e as 8 de entrega (0006). As 14 antigas (`raw_articles`, `raw_article_bodies`, `raw_prices`,
+`raw_macro`, `raw_collection_runs`, `staging_article_tickers`, `staging_article_sentiment`, `raw_llm_prompts`,
+`raw_llm_runs`, `staging_llm_*` x4, mais `features_dataset_v1`) mantêm o nome. `tabela_do_projeto` aceita o
+prefixo de camada com ou sem `v1-`, e as 8 de entrega só com `v1-`. Custo: o hífen obriga crase em SQL escrito
+à mão (`v1-raw_ipe_docs`); quem lê uma tabela precisa saber se ela é antiga ou nova (o critério é a migration
+de origem); e as constraints, índices e sequências existentes mantêm o nome antigo. `uq_raw_articles_url_hash`
+tem nome explícito no modelo, igual ao da 0001. A naming_convention gera `v1-` só nas constraints das tabelas
+novas. O CSV de entrega continua sem prefixo.
 ---
 
 ## PHILOSOPHY

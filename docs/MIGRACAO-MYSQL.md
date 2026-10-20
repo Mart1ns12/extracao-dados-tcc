@@ -97,14 +97,17 @@ O `db-info` mostra o destino (sem a senha) e lista as tabelas que faltam. Ele é
 Sem Alembic, o schema inteiro até a migration 0008 está em `sql/completo_ate_0008.mysql.sql`
 (gerado com `alembic upgrade base:head --sql`). Banco vazio: rode esse arquivo. Banco já na 0003:
 aplique só `sql/0004_*` a `sql/0008_*`. Antes, confira `SELECT version_num FROM alembic_version;`.
+No MySQL atual, o `alembic_version` tem duas linhas (`0002` e `0007`): antes do `sql/0008_*`, rode o
+`DELETE` que o cabeçalho desse arquivo traz.
 
 **DDL não tem rollback no MySQL.** Se uma migration quebra no meio, o banco fica parcialmente
 alterado. Antes de aplicar em banco com dados reais, confira o `--sql` gerado e o backup.
 
-As camadas são **prefixo no nome** (`v1-raw_articles`, `v1-staging_*`, `v1-painel_*`), não schema
-separado: no MySQL, "schema" e "database" são a mesma coisa. Em SQL escrito à mão, o nome com
-hífen vai entre crases: `` SELECT * FROM `v1-raw_articles` ``. O `features_dataset_v1` é o dataset
-v1 congelado e mantém o nome antigo.
+As camadas são **prefixo no nome** (`raw_`, `staging_`, `painel_`), não schema separado: no MySQL,
+"schema" e "database" são a mesma coisa. As tabelas criadas pela pipeline nova levam `v1-` na frente
+(`v1-raw_ipe_docs`, `v1-painel_logs`, `v1-noticias`); as que já existiam não (`raw_articles`,
+`raw_prices`). Em SQL escrito à mão, o nome com hífen vai entre crases: `` SELECT * FROM `v1-painel_logs` ``.
+O `features_dataset_v1` é o dataset v1 congelado e mantém o nome antigo.
 
 ---
 
@@ -138,7 +141,7 @@ Em Linux, rode-a sob `tmux` ou `nohup` para sobreviver à queda da sessão SSH.
 acento, force a collation:
 
 ```sql
-SELECT * FROM `v1-raw_articles` WHERE title LIKE '%ã%' COLLATE utf8mb4_0900_as_cs;
+SELECT * FROM `raw_articles` WHERE title LIKE '%ã%' COLLATE utf8mb4_0900_as_cs;
 ```
 
 Isso **não afeta o dataset**: nenhuma query do pipeline depende de `LIKE`.

@@ -83,7 +83,7 @@ Dispara pelo painel (`historico`) ou pela CLI: `python -m tcc_scraper.cli histor
 - **Pausa e cancelamento.** Checados **entre** unidades, nunca no meio de uma requisição. `pausar` vai para
   `pausando` e termina em `pausada`. `cancelar` vai para `cancelando` e termina em `cancelada`; numa carga
   já `pausada` (sem thread rodando), vai direto para `cancelada`. Os coletores são retomáveis por checkpoint
-  (`v1-raw_collection_runs`), então retomar recomeça a unidade interrompida.
+  (`raw_collection_runs`), então retomar recomeça a unidade interrompida.
 - **Modos.** `pendentes` roda o que falta. `reprocessar_erros` refaz as unidades com erro.
 - **Ritmo.** `itens_por_min` é uma média móvel de 10 minutos.
 - **Retomada após reinício.** Ao subir, o executor retoma sozinho uma carga `em_andamento` ou `pausando`

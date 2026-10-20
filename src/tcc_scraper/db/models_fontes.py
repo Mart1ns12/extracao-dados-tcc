@@ -162,7 +162,7 @@ class RawLlmJuizaRun(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     prompt_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey(f"{PREFIXO_TABELA}raw_llm_prompts.id", name="fk_raw_llm_juiza_runs_prompt_id"),
+        ForeignKey("raw_llm_prompts.id", name="fk_raw_llm_juiza_runs_prompt_id"),
         nullable=False,
     )
     modelo: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -186,7 +186,7 @@ class StagingNoticiaJulgamento(Base):
     article_id: Mapped[int] = mapped_column(
         BigInteger,
         ForeignKey(
-            f"{PREFIXO_TABELA}raw_articles.id", ondelete="CASCADE",
+            "raw_articles.id", ondelete="CASCADE",
             name="fk_staging_noticias_julgamento_article_id",
         ),
         primary_key=True,

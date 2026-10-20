@@ -2,7 +2,7 @@
 
 Roda em thread propria, ao lado do executor. Pausa e cancelamento sao checados ENTRE
 unidades de trabalho (`deve_parar()` do observador): nunca interrompem uma requisicao no
-meio. Os coletores sao retomaveis por checkpoint (`v1-raw_collection_runs`), entao retomar
+meio. Os coletores sao retomaveis por checkpoint (`raw_collection_runs`), entao retomar
 recomeca a unidade interrompida e segue do mesmo ponto.
 
 O estado da carga (status e posicao) vive em `v1-painel_historico`; as flags de controle

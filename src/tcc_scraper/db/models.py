@@ -34,10 +34,12 @@ from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 
-# Prefixo de TODA tabela da pipeline nova (migration 0008), pedido do dono: `v1-raw_articles`.
-# O hifen obriga aspas em SQL escrito a mao (`"v1-raw_articles"`); o SQLAlchemy ja quota.
+# Prefixo das 25 tabelas CRIADAS pela pipeline nova (migrations 0004-0007), pedido do dono:
+# `v1-painel_comandos`, `v1-raw_ipe_docs`, `v1-noticias`. As que ja existiam (0001-0003)
+# mantem o nome original, inclusive as que a pipeline nova le (`raw_articles`, `raw_prices`).
+# O hifen obriga aspas em SQL escrito a mao (`"v1-raw_ipe_docs"`); o SQLAlchemy ja quota.
 # Trocar o prefixo depois exige uma migration nova e esta linha. Nao vale para
-# `features_dataset_v1`, que e o dataset v1 congelado e fica com o nome antigo.
+# `features_dataset_v1` (dataset v1 congelado) nem para `alembic_version`: ficam com o nome antigo.
 PREFIXO_TABELA = "v1-"
 # As camadas viram PREFIXO no nome da tabela (raw_/staging_/features_), nao schema
 # separado: no MySQL "schema" e "database" sao a mesma coisa.
@@ -52,12 +54,14 @@ ENTREGA_TABLES = tuple(f"{PREFIXO_TABELA}{nome}" for nome in _ENTREGA_SEM_PREFIX
 
 
 def tabela_do_projeto(name: str) -> bool:
-    """Tabela deste projeto: prefixo de camada (com ou sem `v1-`) ou uma das 8 de entrega.
+    """Tabela deste projeto: as 8 de entrega (com `v1-`) ou prefixo de camada, com ou sem `v1-`.
 
-    Tira o `v1-` antes de comparar. `features_dataset_v1` cai no prefixo `features_`.
+    Tira o `v1-` antes de comparar o prefixo de camada. `features_dataset_v1` cai no prefixo
+    `features_`.
     """
-    sem_prefixo = name.removeprefix(PREFIXO_TABELA)
-    return sem_prefixo.startswith(TABLE_PREFIXES) or sem_prefixo in _ENTREGA_SEM_PREFIXO
+    if name in ENTREGA_TABLES:
+        return True
+    return name.removeprefix(PREFIXO_TABELA).startswith(TABLE_PREFIXES)
 
 
 class Base(DeclarativeBase):
@@ -135,13 +139,12 @@ def url_hash(url: str) -> str:
 class Article(Base):
     """Uma noticia unica. A mesma materia citada por varios tickers aparece UMA vez aqui."""
 
-    __tablename__ = f"{PREFIXO_TABELA}raw_articles"
+    __tablename__ = "raw_articles"
     __table_args__ = (
         Index("ix_articles_published_at", "published_at"),
         Index("ix_articles_source_domain", "source_domain"),
         Index("ix_articles_origem", "origem"),
-        # Nome explicito: a naming_convention geraria `uq_v1-raw_articles_url_hash`, e o
-        # alembic check acusaria divergencia com o nome que a 0001 criou (e a 0008 manteve).
+        # Nome explicito, igual ao que a 0001 criou: nao depende do nome da tabela.
         UniqueConstraint("url_hash", name="uq_raw_articles_url_hash"),
     )
 
@@ -186,10 +189,10 @@ class Article(Base):
 class ArticleBody(Base):
     """Corpo do artigo, quando extraido. Ausencia = so a manchete esta disponivel."""
 
-    __tablename__ = f"{PREFIXO_TABELA}raw_article_bodies"
+    __tablename__ = "raw_article_bodies"
 
     article_id: Mapped[int] = mapped_column(
-        ForeignKey(f"{PREFIXO_TABELA}raw_articles.id", ondelete="CASCADE"), primary_key=True
+        ForeignKey("raw_articles.id", ondelete="CASCADE"), primary_key=True
     )
     body_text: Mapped[str] = mapped_column(Text, nullable=False)
     # 'rss_content_encoded' | 'trafilatura' -- registra COMO o texto foi obtido.
@@ -202,7 +205,7 @@ class ArticleBody(Base):
 class Price(Base):
     """OHLCV diario. Cobre acoes, ^BVSP e as series macro do Yahoo."""
 
-    __tablename__ = f"{PREFIXO_TABELA}raw_prices"
+    __tablename__ = "raw_prices"
 
     ticker: Mapped[str] = mapped_column(String(12), primary_key=True)
     date: Mapped[dt.date] = mapped_column(Date, primary_key=True)
@@ -219,7 +222,7 @@ class Price(Base):
 class Macro(Base):
     """Series macroeconomicas do Banco Central (selic, ptax_venda)."""
 
-    __tablename__ = f"{PREFIXO_TABELA}raw_macro"
+    __tablename__ = "raw_macro"
 
     series: Mapped[str] = mapped_column(String(24), primary_key=True)
     date: Mapped[dt.date] = mapped_column(Date, primary_key=True)
@@ -233,7 +236,7 @@ class CollectionRun(Base):
     interrupcao obrigaria a recomecar. Uma linha por unidade de trabalho concluida.
     """
 
-    __tablename__ = f"{PREFIXO_TABELA}raw_collection_runs"
+    __tablename__ = "raw_collection_runs"
     __table_args__ = (
         UniqueConstraint("collector", "unit_key", name="uq_collection_runs_collector_unit"),
     )
@@ -257,13 +260,13 @@ class CollectionRun(Base):
 class ArticleTicker(Base):
     """Vinculo N:N noticia-ticker. Uma materia sobre a Vale pode citar Petrobras tambem."""
 
-    __tablename__ = f"{PREFIXO_TABELA}staging_article_tickers"
+    __tablename__ = "staging_article_tickers"
     __table_args__ = (
         Index("ix_article_tickers_ticker", "ticker"),
     )
 
     article_id: Mapped[int] = mapped_column(
-        ForeignKey(f"{PREFIXO_TABELA}raw_articles.id", ondelete="CASCADE"), primary_key=True
+        ForeignKey("raw_articles.id", ondelete="CASCADE"), primary_key=True
     )
     ticker: Mapped[str] = mapped_column(String(12), primary_key=True)
     article = relationship("Article", back_populates="tickers")
@@ -276,7 +279,7 @@ class ArticleSentiment(Base):
     sem apagar o resultado anterior -- util para a analise de qualidade do TCC.
     """
 
-    __tablename__ = f"{PREFIXO_TABELA}staging_article_sentiment"
+    __tablename__ = "staging_article_sentiment"
     __table_args__ = (
         CheckConstraint(
             "prob_pos >= 0 AND prob_neu >= 0 AND prob_neg >= 0",
@@ -285,7 +288,7 @@ class ArticleSentiment(Base):
     )
 
     article_id: Mapped[int] = mapped_column(
-        ForeignKey(f"{PREFIXO_TABELA}raw_articles.id", ondelete="CASCADE"), primary_key=True
+        ForeignKey("raw_articles.id", ondelete="CASCADE"), primary_key=True
     )
     model: Mapped[str] = mapped_column(String(64), primary_key=True)
     prob_pos: Mapped[float] = mapped_column(Double, nullable=False)
@@ -337,7 +340,7 @@ LongText = mysql.LONGTEXT()
 
 class LlmPrompt(Base):
     """Template versionado. Imutavel: mudou o texto, sobe a versao."""
-    __tablename__ = f"{PREFIXO_TABELA}raw_llm_prompts"
+    __tablename__ = "raw_llm_prompts"
     __table_args__ = (UniqueConstraint("nome", "versao", name="uq_llm_prompts_nome_versao"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -351,12 +354,12 @@ class LlmPrompt(Base):
 
 class LlmRun(Base):
     """Uma linha por tentativa, inclusive as que falharam. Append-only."""
-    __tablename__ = f"{PREFIXO_TABELA}raw_llm_runs"
+    __tablename__ = "raw_llm_runs"
     __table_args__ = (Index("ix_llm_runs_data_referencia", "data_referencia"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     prompt_id: Mapped[int] = mapped_column(
-        ForeignKey(f"{PREFIXO_TABELA}raw_llm_prompts.id"), nullable=False
+        ForeignKey("raw_llm_prompts.id"), nullable=False
     )
     data_referencia: Mapped[dt.date] = mapped_column(Date, nullable=False)
     # Ultimo pregao <= data_referencia pelo ^BVSP em raw_prices; NULL se nao ha preco.
@@ -383,7 +386,7 @@ class LlmRun(Base):
 
 class LlmNoticiaEmpresa(Base):
     """Noticia por ticker. PK natural: reexecutar o dia substitui, nao duplica."""
-    __tablename__ = f"{PREFIXO_TABELA}staging_llm_noticias_empresas"
+    __tablename__ = "staging_llm_noticias_empresas"
     __table_args__ = (Index("ix_llm_noticias_empresas_ticker", "ticker"),)
 
     data_referencia: Mapped[dt.date] = mapped_column(Date, primary_key=True)
@@ -391,7 +394,7 @@ class LlmNoticiaEmpresa(Base):
     # url_hash da URL canonicalizada; sem URL, sha256 do titulo normalizado.
     item_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[int] = mapped_column(
-        ForeignKey(f"{PREFIXO_TABELA}raw_llm_runs.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("raw_llm_runs.id", ondelete="CASCADE"), nullable=False
     )
     pregao_referencia: Mapped[dt.date | None] = mapped_column(Date)
     titulo: Mapped[str] = mapped_column(Text, nullable=False)
@@ -405,12 +408,12 @@ class LlmNoticiaEmpresa(Base):
 
 
 class LlmNoticiaMacro(Base):
-    __tablename__ = f"{PREFIXO_TABELA}staging_llm_noticias_macro"
+    __tablename__ = "staging_llm_noticias_macro"
 
     data_referencia: Mapped[dt.date] = mapped_column(Date, primary_key=True)
     item_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[int] = mapped_column(
-        ForeignKey(f"{PREFIXO_TABELA}raw_llm_runs.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("raw_llm_runs.id", ondelete="CASCADE"), nullable=False
     )
     pregao_referencia: Mapped[dt.date | None] = mapped_column(Date)
     escopo: Mapped[str] = mapped_column(String(8), nullable=False)       # global | brasil
@@ -426,13 +429,13 @@ class LlmNoticiaMacro(Base):
 
 
 class LlmAcaoSinal(Base):
-    __tablename__ = f"{PREFIXO_TABELA}staging_llm_acoes_sinais"
+    __tablename__ = "staging_llm_acoes_sinais"
     __table_args__ = (Index("ix_llm_acoes_sinais_ticker", "ticker"),)
 
     data_referencia: Mapped[dt.date] = mapped_column(Date, primary_key=True)
     ticker: Mapped[str] = mapped_column(String(12), primary_key=True)
     run_id: Mapped[int] = mapped_column(
-        ForeignKey(f"{PREFIXO_TABELA}raw_llm_runs.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("raw_llm_runs.id", ondelete="CASCADE"), nullable=False
     )
     pregao_referencia: Mapped[dt.date | None] = mapped_column(Date)
     direcao_esperada: Mapped[str] = mapped_column(String(8), nullable=False)   # alta|baixa|neutra
@@ -443,12 +446,12 @@ class LlmAcaoSinal(Base):
 
 
 class LlmMercado(Base):
-    __tablename__ = f"{PREFIXO_TABELA}staging_llm_mercados"
+    __tablename__ = "staging_llm_mercados"
 
     data_referencia: Mapped[dt.date] = mapped_column(Date, primary_key=True)
     nome: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[int] = mapped_column(
-        ForeignKey(f"{PREFIXO_TABELA}raw_llm_runs.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("raw_llm_runs.id", ondelete="CASCADE"), nullable=False
     )
     pregao_referencia: Mapped[dt.date | None] = mapped_column(Date)
     tipo: Mapped[str] = mapped_column(String(16), nullable=False)   # indice|commodity|moeda|setor

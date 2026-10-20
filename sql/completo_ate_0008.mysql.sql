@@ -1,14 +1,15 @@
 -- Dataset 1.0 -- schema completo ate a migration 0008 (MySQL 8), em um arquivo so.
 -- Gerado por:
---   DB_TARGET=mysql alembic upgrade base:head --sql   (modo offline, dialeto MySQL)
+--   alembic upgrade base:head --sql   (modo offline, dialeto MySQL; usa o MySQL do .env)
 --
 -- Uso: banco VAZIO (sem tabelas do projeto). Banco ja na 0007: aplique so o
--- sql/0008_prefixo_v1.mysql.sql. Banco ja na 0003: aplique so os
--- sql/0004_*, 0005_*, 0006_*, 0007_* e 0008_* (ou confira em alembic_version antes de rodar este arquivo).
+-- sql/0008_prefixo_v1.mysql.sql, com o pre-requisito do alembic_version descrito la.
+-- Banco ja na 0003: aplique so os sql/0004_*, 0005_*, 0006_*, 0007_* e 0008_*, nessa ordem.
 --   SELECT version_num FROM alembic_version;   -- deve devolver '0008' ao fim
 --
 -- Este arquivo cria as tabelas com o nome antigo e termina com os RENAME da 0008: o
--- resultado final tem o prefixo `v1-` em 38 tabelas.
+-- resultado final tem o prefixo `v1-` em 25 tabelas (as criadas pela pipeline nova; lista
+-- no cabecalho de sql/0008_prefixo_v1.mysql.sql). As 14 antigas mantem o nome.
 --
 
 CREATE TABLE alembic_version (
@@ -620,32 +621,6 @@ ALTER TABLE raw_ipe_docs MODIFY tipo_apresentacao VARCHAR(64) NULL;
 UPDATE alembic_version SET version_num='0007' WHERE alembic_version.version_num = '0006';
 
 -- Running upgrade 0007 -> 0008
-
-ALTER TABLE raw_articles RENAME TO `v1-raw_articles`;
-
-ALTER TABLE raw_article_bodies RENAME TO `v1-raw_article_bodies`;
-
-ALTER TABLE raw_prices RENAME TO `v1-raw_prices`;
-
-ALTER TABLE raw_macro RENAME TO `v1-raw_macro`;
-
-ALTER TABLE raw_collection_runs RENAME TO `v1-raw_collection_runs`;
-
-ALTER TABLE staging_article_tickers RENAME TO `v1-staging_article_tickers`;
-
-ALTER TABLE staging_article_sentiment RENAME TO `v1-staging_article_sentiment`;
-
-ALTER TABLE raw_llm_prompts RENAME TO `v1-raw_llm_prompts`;
-
-ALTER TABLE raw_llm_runs RENAME TO `v1-raw_llm_runs`;
-
-ALTER TABLE staging_llm_noticias_empresas RENAME TO `v1-staging_llm_noticias_empresas`;
-
-ALTER TABLE staging_llm_noticias_macro RENAME TO `v1-staging_llm_noticias_macro`;
-
-ALTER TABLE staging_llm_acoes_sinais RENAME TO `v1-staging_llm_acoes_sinais`;
-
-ALTER TABLE staging_llm_mercados RENAME TO `v1-staging_llm_mercados`;
 
 ALTER TABLE painel_comandos RENAME TO `v1-painel_comandos`;
 

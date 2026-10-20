@@ -128,6 +128,39 @@ def test_todas_as_tabelas_tem_prefixo_de_camada() -> None:
         assert tabela.schema is None, f"{tabela.name} ainda declara schema (quebra no MySQL)"
 
 
+# Migration 0008: `v1-` so nas tabelas criadas a partir da 0004 (pipeline nova). As antigas
+# (0001-0003) mantem o nome original, mesmo as que a pipeline nova le.
+TABELAS_COM_V1 = {
+    "v1-painel_comandos", "v1-painel_heartbeat", "v1-painel_execucoes", "v1-painel_etapas",
+    "v1-painel_historico", "v1-painel_historico_progresso", "v1-painel_logs",
+    "v1-painel_comandos_aplicados", "v1-raw_ipe_docs", "v1-raw_cvm_balancos", "v1-raw_cvm_acoes",
+    "v1-raw_cvm_cadastro", "v1-raw_b3_cadastro", "v1-raw_b3_proventos", "v1-raw_b3_suplemento",
+    "v1-raw_llm_juiza_runs", "v1-staging_noticias_julgamento", "v1-noticias", "v1-precos",
+    "v1-cadastro", "v1-mudancas_ticker", "v1-balancos", "v1-acoes_emitidas", "v1-proventos",
+    "v1-indices",
+}
+TABELAS_SEM_V1 = {
+    "raw_articles", "raw_article_bodies", "raw_prices", "raw_macro", "raw_collection_runs",
+    "staging_article_tickers", "staging_article_sentiment", "raw_llm_prompts", "raw_llm_runs",
+    "staging_llm_noticias_empresas", "staging_llm_noticias_macro", "staging_llm_acoes_sinais",
+    "staging_llm_mercados", "features_dataset_v1",
+}
+
+
+def test_prefixo_v1_so_nas_25_tabelas_da_pipeline_nova() -> None:
+    from tcc_scraper.db import models_entrega, models_fontes, models_painel  # noqa: F401
+
+    nomes = set(Base.metadata.tables)
+    assert len(TABELAS_COM_V1) == 25
+    assert len(TABELAS_SEM_V1) == 14
+    assert {n for n in nomes if n.startswith("v1-")} == TABELAS_COM_V1
+    assert nomes >= TABELAS_SEM_V1
+    for tabela in Base.metadata.tables.values():
+        for fk in tabela.foreign_keys:
+            alvo = fk.column.table.name
+            assert alvo in nomes, f"{tabela.name} aponta para {alvo}"
+
+
 # --------------------------------------------------------------------------------------
 # Persistencia do dataset em features_dataset_v1
 # --------------------------------------------------------------------------------------

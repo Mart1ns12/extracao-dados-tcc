@@ -87,4 +87,4 @@ def test_carregar_entradas_v1_so_le_artigos_google_news(monkeypatch) -> None:
     build.carregar_entradas_v1()
 
     sql_artigos = next(s for s in sqls if "staging_article_sentiment" in s)
-    assert "\"v1-raw_articles\".origem = 'google_news'" in sql_artigos
+    assert "raw_articles.origem = 'google_news'" in sql_artigos
