@@ -23,7 +23,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from tcc_scraper.db.models import Base
+from tcc_scraper.db.models import PREFIXO_TABELA, Base
 
 COLUNAS: dict[str, list[str]] = {
     "noticias": [
@@ -54,7 +54,7 @@ COLUNAS: dict[str, list[str]] = {
 class Noticia(Base):
     """Uma linha por (artigo, ticker). Filtro de qualidade e regras na Fase B (desenho 5.1)."""
 
-    __tablename__ = "noticias"
+    __tablename__ = f"{PREFIXO_TABELA}noticias"
     __table_args__ = (
         Index("ix_noticias_ticker_data_publicacao", "ticker", "data_publicacao"),
     )
@@ -80,7 +80,7 @@ class Noticia(Base):
 
 
 class Preco(Base):
-    __tablename__ = "precos"
+    __tablename__ = f"{PREFIXO_TABELA}precos"
     __table_args__ = (Index("ix_precos_ticker", "ticker"),)
 
     data: Mapped[dt.date] = mapped_column(Date, primary_key=True)
@@ -94,7 +94,7 @@ class Preco(Base):
 
 
 class Cadastro(Base):
-    __tablename__ = "cadastro"
+    __tablename__ = f"{PREFIXO_TABELA}cadastro"
 
     ticker: Mapped[str] = mapped_column(String(12), primary_key=True)
     cnpj: Mapped[str | None] = mapped_column(String(14))
@@ -107,7 +107,7 @@ class Cadastro(Base):
 
 
 class MudancaTicker(Base):
-    __tablename__ = "mudancas_ticker"
+    __tablename__ = f"{PREFIXO_TABELA}mudancas_ticker"
 
     ticker_antigo: Mapped[str] = mapped_column(String(12), primary_key=True)
     ticker_novo: Mapped[str] = mapped_column(String(12), nullable=False)
@@ -115,7 +115,7 @@ class MudancaTicker(Base):
 
 
 class Balanco(Base):
-    __tablename__ = "balancos"
+    __tablename__ = f"{PREFIXO_TABELA}balancos"
 
     cnpj: Mapped[str] = mapped_column(String(14), primary_key=True)
     tipo_documento: Mapped[str] = mapped_column(String(3), primary_key=True)
@@ -129,7 +129,7 @@ class Balanco(Base):
 
 
 class AcoesEmitida(Base):
-    __tablename__ = "acoes_emitidas"
+    __tablename__ = f"{PREFIXO_TABELA}acoes_emitidas"
 
     cnpj: Mapped[str] = mapped_column(String(14), primary_key=True)
     data_referencia: Mapped[dt.date] = mapped_column(Date, primary_key=True)
@@ -138,7 +138,7 @@ class AcoesEmitida(Base):
 
 
 class Provento(Base):
-    __tablename__ = "proventos"
+    __tablename__ = f"{PREFIXO_TABELA}proventos"
     __table_args__ = (Index("ix_proventos_ticker", "ticker"),)
 
     ticker: Mapped[str] = mapped_column(String(12), primary_key=True)
@@ -149,7 +149,7 @@ class Provento(Base):
 
 
 class Indice(Base):
-    __tablename__ = "indices"
+    __tablename__ = f"{PREFIXO_TABELA}indices"
     __table_args__ = (Index("ix_indices_indice", "indice"),)
 
     data: Mapped[dt.date] = mapped_column(Date, primary_key=True)

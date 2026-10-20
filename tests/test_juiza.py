@@ -154,7 +154,7 @@ def settings(monkeypatch):
 
 def _staging(gravacoes) -> list[dict]:
     return [r for nome, rows, _ in gravacoes.upserts
-            if nome == "staging_noticias_julgamento" for r in rows]
+            if nome == "v1-staging_noticias_julgamento" for r in rows]
 
 
 def _runs(gravacoes) -> list[RawLlmJuizaRun]:

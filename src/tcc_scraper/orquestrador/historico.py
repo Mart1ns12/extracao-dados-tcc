@@ -2,10 +2,10 @@
 
 Roda em thread propria, ao lado do executor. Pausa e cancelamento sao checados ENTRE
 unidades de trabalho (`deve_parar()` do observador): nunca interrompem uma requisicao no
-meio. Os coletores sao retomaveis por checkpoint (`raw_collection_runs`), entao retomar
+meio. Os coletores sao retomaveis por checkpoint (`v1-raw_collection_runs`), entao retomar
 recomeca a unidade interrompida e segue do mesmo ponto.
 
-O estado da carga (status e posicao) vive em `painel_historico`; as flags de controle
+O estado da carga (status e posicao) vive em `v1-painel_historico`; as flags de controle
 vivem na memoria do processo. `recuperar_apos_reinicio` reconcilia os dois.
 """
 
@@ -138,7 +138,7 @@ class _Ritmo:
 class ProgressoHistorico:
     """Observador de um passo da carga (duck-type de `ObservadorColeta`, tambem de score_pending).
 
-    Grava o passo em `painel_historico_progresso` e a posicao/ritmo em `painel_historico`.
+    Grava o passo em `v1-painel_historico_progresso` e a posicao/ritmo em `v1-painel_historico`.
     Um UPDATE por flush; o flush acontece a cada 25 unidades ou a cada 2 s.
     Um mesmo objeto acompanha o passo inteiro, inclusive as retomadas: os contadores
     nao zeram quando a carga e pausada e retomada.

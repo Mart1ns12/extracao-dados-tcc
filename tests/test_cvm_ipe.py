@@ -175,13 +175,13 @@ def test_persist_grava_documentos_artigos_e_um_vinculo_por_ticker(monkeypatch) -
     total = cvm_ipe._persist(docs)
 
     assert total == len(docs)
-    assert len(gravacoes["raw_ipe_docs"]) == len(docs)
-    assert len(gravacoes["raw_articles"]) == len(docs)
-    vinculos = gravacoes["staging_article_tickers"]
+    assert len(gravacoes["v1-raw_ipe_docs"]) == len(docs)
+    assert len(gravacoes["v1-raw_articles"]) == len(docs)
+    vinculos = gravacoes["v1-staging_article_tickers"]
     assert {v["ticker"] for v in vinculos} == {"PETR3", "PETR4"}
-    assert len(vinculos) == 2 * len(gravacoes["raw_articles"])
-    assert all(linha["origem"] == "cvm_ipe" for linha in gravacoes["raw_articles"])
-    assert gravacoes["raw_articles"][0]["title"]
+    assert len(vinculos) == 2 * len(gravacoes["v1-raw_articles"])
+    assert all(linha["origem"] == "cvm_ipe" for linha in gravacoes["v1-raw_articles"])
+    assert gravacoes["v1-raw_articles"][0]["title"]
 
 
 def test_persist_sem_documentos_nao_toca_o_banco(monkeypatch) -> None:

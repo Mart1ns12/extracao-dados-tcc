@@ -25,13 +25,13 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from tcc_scraper.db.models import Base, UTCDateTime
+from tcc_scraper.db.models import PREFIXO_TABELA, Base, UTCDateTime
 
 
 class PainelComando(Base):
     """Comando enviado pela API do painel; o executor marca ack_em ao aplicar."""
 
-    __tablename__ = "painel_comandos"
+    __tablename__ = f"{PREFIXO_TABELA}painel_comandos"
     __table_args__ = (Index("ix_painel_comandos_ack_em", "ack_em"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -46,7 +46,7 @@ class PainelComando(Base):
 class PainelHeartbeat(Base):
     """Um registro por host do executor, atualizado a cada batida."""
 
-    __tablename__ = "painel_heartbeat"
+    __tablename__ = f"{PREFIXO_TABELA}painel_heartbeat"
 
     host: Mapped[str] = mapped_column(String(64), primary_key=True)
     versao: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -57,7 +57,7 @@ class PainelHeartbeat(Base):
 class PainelExecucao(Base):
     """Uma execucao diaria ou de etapa, do agendamento ao fim."""
 
-    __tablename__ = "painel_execucoes"
+    __tablename__ = f"{PREFIXO_TABELA}painel_execucoes"
     __table_args__ = (Index("ix_painel_execucoes_iniciada_em", "iniciada_em"),)
 
     id: Mapped[str] = mapped_column(String(48), primary_key=True)
@@ -80,11 +80,15 @@ class PainelExecucao(Base):
 class PainelEtapa(Base):
     """Progresso de uma etapa dentro de uma execucao. Apagada junto com a execucao."""
 
-    __tablename__ = "painel_etapas"
+    __tablename__ = f"{PREFIXO_TABELA}painel_etapas"
 
     execucao_id: Mapped[str] = mapped_column(
         String(48),
-        ForeignKey("painel_execucoes.id", ondelete="CASCADE", name="fk_painel_etapas_execucao_id"),
+        ForeignKey(
+            f"{PREFIXO_TABELA}painel_execucoes.id",
+            ondelete="CASCADE",
+            name="fk_painel_etapas_execucao_id",
+        ),
         primary_key=True,
     )
     etapa_id: Mapped[str] = mapped_column(String(24), primary_key=True)
@@ -113,7 +117,7 @@ class PainelEtapa(Base):
 class PainelHistorico(Base):
     """Uma execucao do coletor historico (2 anos de Google News)."""
 
-    __tablename__ = "painel_historico"
+    __tablename__ = f"{PREFIXO_TABELA}painel_historico"
 
     # ex.: hist-20261019-2105
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -137,7 +141,7 @@ class PainelHistorico(Base):
 class PainelHistoricoProgresso(Base):
     """Progresso por (ano, coletor) do historico. Substituido a cada atualizacao."""
 
-    __tablename__ = "painel_historico_progresso"
+    __tablename__ = f"{PREFIXO_TABELA}painel_historico_progresso"
 
     ano: Mapped[int] = mapped_column(Integer, primary_key=True)
     coletor: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -159,7 +163,7 @@ class PainelHistoricoProgresso(Base):
 class PainelLog(Base):
     """Linha do log exibida no painel. Sem FK: o log sobrevive a limpeza das execucoes."""
 
-    __tablename__ = "painel_logs"
+    __tablename__ = f"{PREFIXO_TABELA}painel_logs"
     __table_args__ = (Index("ix_painel_logs_ts", "ts"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -175,7 +179,7 @@ class PainelLog(Base):
 class PainelComandoAplicado(Base):
     """Confirmacao de que um comando da API foi aplicado pelo executor."""
 
-    __tablename__ = "painel_comandos_aplicados"
+    __tablename__ = f"{PREFIXO_TABELA}painel_comandos_aplicados"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     aplicado_em: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)

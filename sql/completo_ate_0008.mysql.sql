@@ -1,13 +1,15 @@
--- Dataset 1.0 -- schema completo ate a migration 0007 (MySQL 8), em um arquivo so.
+-- Dataset 1.0 -- schema completo ate a migration 0008 (MySQL 8), em um arquivo so.
 -- Gerado por:
 --   DB_TARGET=mysql alembic upgrade base:head --sql   (modo offline, dialeto MySQL)
 --
--- Uso: banco VAZIO (sem tabelas do projeto). Banco ja na 0003: aplique so os
--- sql/0004_*, 0005_*, 0006_* e 0007_* (ou confira em alembic_version antes de rodar este arquivo).
---   SELECT version_num FROM alembic_version;   -- deve devolver '0007' ao fim
+-- Uso: banco VAZIO (sem tabelas do projeto). Banco ja na 0007: aplique so o
+-- sql/0008_prefixo_v1.mysql.sql. Banco ja na 0003: aplique so os
+-- sql/0004_*, 0005_*, 0006_*, 0007_* e 0008_* (ou confira em alembic_version antes de rodar este arquivo).
+--   SELECT version_num FROM alembic_version;   -- deve devolver '0008' ao fim
 --
--- As tabelas herdam o charset do database (deve ser utf8mb4; ver docs/MIGRACAO-MYSQL.md).
--- DDL no MySQL nao e transacional: se falhar no meio, as tabelas ja criadas ficam.
+-- Este arquivo cria as tabelas com o nome antigo e termina com os RENAME da 0008: o
+-- resultado final tem o prefixo `v1-` em 38 tabelas.
+--
 
 CREATE TABLE alembic_version (
     version_num VARCHAR(32) NOT NULL, 
@@ -616,4 +618,84 @@ ALTER TABLE raw_ipe_docs MODIFY especie VARCHAR(255) NULL;
 ALTER TABLE raw_ipe_docs MODIFY tipo_apresentacao VARCHAR(64) NULL;
 
 UPDATE alembic_version SET version_num='0007' WHERE alembic_version.version_num = '0006';
+
+-- Running upgrade 0007 -> 0008
+
+ALTER TABLE raw_articles RENAME TO `v1-raw_articles`;
+
+ALTER TABLE raw_article_bodies RENAME TO `v1-raw_article_bodies`;
+
+ALTER TABLE raw_prices RENAME TO `v1-raw_prices`;
+
+ALTER TABLE raw_macro RENAME TO `v1-raw_macro`;
+
+ALTER TABLE raw_collection_runs RENAME TO `v1-raw_collection_runs`;
+
+ALTER TABLE staging_article_tickers RENAME TO `v1-staging_article_tickers`;
+
+ALTER TABLE staging_article_sentiment RENAME TO `v1-staging_article_sentiment`;
+
+ALTER TABLE raw_llm_prompts RENAME TO `v1-raw_llm_prompts`;
+
+ALTER TABLE raw_llm_runs RENAME TO `v1-raw_llm_runs`;
+
+ALTER TABLE staging_llm_noticias_empresas RENAME TO `v1-staging_llm_noticias_empresas`;
+
+ALTER TABLE staging_llm_noticias_macro RENAME TO `v1-staging_llm_noticias_macro`;
+
+ALTER TABLE staging_llm_acoes_sinais RENAME TO `v1-staging_llm_acoes_sinais`;
+
+ALTER TABLE staging_llm_mercados RENAME TO `v1-staging_llm_mercados`;
+
+ALTER TABLE painel_comandos RENAME TO `v1-painel_comandos`;
+
+ALTER TABLE painel_heartbeat RENAME TO `v1-painel_heartbeat`;
+
+ALTER TABLE painel_execucoes RENAME TO `v1-painel_execucoes`;
+
+ALTER TABLE painel_etapas RENAME TO `v1-painel_etapas`;
+
+ALTER TABLE painel_historico RENAME TO `v1-painel_historico`;
+
+ALTER TABLE painel_historico_progresso RENAME TO `v1-painel_historico_progresso`;
+
+ALTER TABLE painel_logs RENAME TO `v1-painel_logs`;
+
+ALTER TABLE painel_comandos_aplicados RENAME TO `v1-painel_comandos_aplicados`;
+
+ALTER TABLE raw_ipe_docs RENAME TO `v1-raw_ipe_docs`;
+
+ALTER TABLE raw_cvm_balancos RENAME TO `v1-raw_cvm_balancos`;
+
+ALTER TABLE raw_cvm_acoes RENAME TO `v1-raw_cvm_acoes`;
+
+ALTER TABLE raw_cvm_cadastro RENAME TO `v1-raw_cvm_cadastro`;
+
+ALTER TABLE raw_b3_cadastro RENAME TO `v1-raw_b3_cadastro`;
+
+ALTER TABLE raw_b3_proventos RENAME TO `v1-raw_b3_proventos`;
+
+ALTER TABLE raw_b3_suplemento RENAME TO `v1-raw_b3_suplemento`;
+
+ALTER TABLE raw_llm_juiza_runs RENAME TO `v1-raw_llm_juiza_runs`;
+
+ALTER TABLE staging_noticias_julgamento RENAME TO `v1-staging_noticias_julgamento`;
+
+ALTER TABLE noticias RENAME TO `v1-noticias`;
+
+ALTER TABLE precos RENAME TO `v1-precos`;
+
+ALTER TABLE cadastro RENAME TO `v1-cadastro`;
+
+ALTER TABLE mudancas_ticker RENAME TO `v1-mudancas_ticker`;
+
+ALTER TABLE balancos RENAME TO `v1-balancos`;
+
+ALTER TABLE acoes_emitidas RENAME TO `v1-acoes_emitidas`;
+
+ALTER TABLE proventos RENAME TO `v1-proventos`;
+
+ALTER TABLE indices RENAME TO `v1-indices`;
+
+UPDATE alembic_version SET version_num='0008' WHERE alembic_version.version_num = '0007';
 

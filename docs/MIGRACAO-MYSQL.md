@@ -124,14 +124,14 @@ schema (migrations 0001 e 0002); as tabelas de LLM, painel, fontes e entrega vê
 0003 a 0006.
 
 ```
-raw_articles              raw_prices              staging_article_tickers
-raw_article_bodies        raw_macro               staging_article_sentiment
-raw_collection_runs                               features_dataset_v1
+v1-raw_articles              v1-raw_prices              v1-staging_article_tickers
+v1-raw_article_bodies        v1-raw_macro               v1-staging_article_sentiment
+v1-raw_collection_runs                               features_dataset_v1
 ```
 
-Sem Alembic no servidor, o schema inteiro até a migration 0007 está em
-`sql/completo_ate_0007.mysql.sql`, gerado com `DB_TARGET=mysql alembic upgrade base:head --sql`.
-Banco vazio: rode esse arquivo. Banco já na 0003: aplique só `sql/0004_*`, `0005_*`, `0006_*` e `0007_*`.
+Sem Alembic no servidor, o schema inteiro até a migration 0008 está em
+`sql/completo_ate_0008.mysql.sql`, gerado com `DB_TARGET=mysql alembic upgrade base:head --sql`.
+Banco vazio: rode esse arquivo. Banco já na 0003: aplique só `sql/0004_*`, `0005_*`, `0006_*`, `0007_*` e `0008_*`.
 Antes, confira `SELECT version_num FROM alembic_version;`.
 
 As camadas são **prefixo no nome**, não schema separado, porque o MySQL não tem
@@ -200,7 +200,7 @@ os mesmos dados. O conteúdo é idêntico; o que muda é a comparação. Para bu
 acento no MySQL, force a collation:
 
 ```sql
-SELECT * FROM raw_articles WHERE title LIKE '%ã%' COLLATE utf8mb4_0900_as_cs;
+SELECT * FROM `v1-raw_articles` WHERE title LIKE '%ã%' COLLATE utf8mb4_0900_as_cs;
 ```
 
 Isso **não afeta o dataset** — nenhuma query do pipeline depende de `LIKE`.

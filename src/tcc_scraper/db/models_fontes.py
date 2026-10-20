@@ -23,13 +23,13 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from tcc_scraper.db.models import Base, LongText, UTCDateTime
+from tcc_scraper.db.models import PREFIXO_TABELA, Base, LongText, UTCDateTime
 
 
 class RawIpeDoc(Base):
     """Documento do IPE (fato relevante, comunicado etc.) da CVM, uma linha por protocolo."""
 
-    __tablename__ = "raw_ipe_docs"
+    __tablename__ = f"{PREFIXO_TABELA}raw_ipe_docs"
     __table_args__ = (Index("ix_raw_ipe_docs_cd_cvm", "cd_cvm"),)
 
     protocolo_entrega: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -54,7 +54,7 @@ class RawCvmBalanco(Base):
     BPP nao tem inicio de exercicio: o coletor grava dt_ini_exerc = dt_fim_exerc.
     """
 
-    __tablename__ = "raw_cvm_balancos"
+    __tablename__ = f"{PREFIXO_TABELA}raw_cvm_balancos"
     __table_args__ = (Index("ix_raw_cvm_balancos_cd_cvm", "cd_cvm"),)
 
     cnpj: Mapped[str] = mapped_column(String(14), primary_key=True)
@@ -77,7 +77,7 @@ class RawCvmBalanco(Base):
 class RawCvmAcoes(Base):
     """Quantidade de ações emitidas por companhia e data de referência da CVM."""
 
-    __tablename__ = "raw_cvm_acoes"
+    __tablename__ = f"{PREFIXO_TABELA}raw_cvm_acoes"
 
     cnpj: Mapped[str] = mapped_column(String(14), primary_key=True)
     tipo_documento: Mapped[str] = mapped_column(String(3), primary_key=True)
@@ -94,7 +94,7 @@ class RawCvmAcoes(Base):
 class RawCvmCadastro(Base):
     """Cadastro da companhia aberta na CVM (uma linha por CNPJ)."""
 
-    __tablename__ = "raw_cvm_cadastro"
+    __tablename__ = f"{PREFIXO_TABELA}raw_cvm_cadastro"
     __table_args__ = (Index("ix_raw_cvm_cadastro_cd_cvm", "cd_cvm"),)
 
     cnpj: Mapped[str] = mapped_column(String(14), primary_key=True)
@@ -108,7 +108,7 @@ class RawCvmCadastro(Base):
 class RawB3Cadastro(Base):
     """Cadastro da companhia no listedCompaniesProxy da B3, chaveado pelo código CVM."""
 
-    __tablename__ = "raw_b3_cadastro"
+    __tablename__ = f"{PREFIXO_TABELA}raw_b3_cadastro"
 
     cd_cvm: Mapped[int] = mapped_column(Integer, primary_key=True)
     cnpj: Mapped[str | None] = mapped_column(String(14))
@@ -123,7 +123,7 @@ class RawB3Cadastro(Base):
 class RawB3Proventos(Base):
     """Evento de provento (dividendo, JCP etc.) da B3. Chave: hash do registro original."""
 
-    __tablename__ = "raw_b3_proventos"
+    __tablename__ = f"{PREFIXO_TABELA}raw_b3_proventos"
     __table_args__ = (Index("ix_raw_b3_proventos_issuing_company", "issuing_company"),)
 
     registro_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -143,7 +143,7 @@ class RawB3Proventos(Base):
 class RawB3Suplemento(Base):
     """Suplemento da B3 (eventos de dinheiro ou de ações). Chave: hash do registro original."""
 
-    __tablename__ = "raw_b3_suplemento"
+    __tablename__ = f"{PREFIXO_TABELA}raw_b3_suplemento"
     __table_args__ = (Index("ix_raw_b3_suplemento_issuing_company", "issuing_company"),)
 
     registro_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -157,12 +157,12 @@ class RawB3Suplemento(Base):
 class RawLlmJuizaRun(Base):
     """Uma chamada da juíza ao Gemini, inclusive as que falharam. Append-only."""
 
-    __tablename__ = "raw_llm_juiza_runs"
+    __tablename__ = f"{PREFIXO_TABELA}raw_llm_juiza_runs"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     prompt_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("raw_llm_prompts.id", name="fk_raw_llm_juiza_runs_prompt_id"),
+        ForeignKey(f"{PREFIXO_TABELA}raw_llm_prompts.id", name="fk_raw_llm_juiza_runs_prompt_id"),
         nullable=False,
     )
     modelo: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -180,13 +180,13 @@ class RawLlmJuizaRun(Base):
 class StagingNoticiaJulgamento(Base):
     """Julgamento da juíza para um par (artigo, ticker) em uma versão do prompt."""
 
-    __tablename__ = "staging_noticias_julgamento"
+    __tablename__ = f"{PREFIXO_TABELA}staging_noticias_julgamento"
     __table_args__ = (Index("ix_staging_noticias_julgamento_ticker", "ticker"),)
 
     article_id: Mapped[int] = mapped_column(
         BigInteger,
         ForeignKey(
-            "raw_articles.id", ondelete="CASCADE",
+            f"{PREFIXO_TABELA}raw_articles.id", ondelete="CASCADE",
             name="fk_staging_noticias_julgamento_article_id",
         ),
         primary_key=True,
@@ -195,7 +195,10 @@ class StagingNoticiaJulgamento(Base):
     prompt_versao: Mapped[int] = mapped_column(Integer, primary_key=True)
     run_id: Mapped[int | None] = mapped_column(
         BigInteger,
-        ForeignKey("raw_llm_juiza_runs.id", name="fk_staging_noticias_julgamento_run_id"),
+        ForeignKey(
+            f"{PREFIXO_TABELA}raw_llm_juiza_runs.id",
+            name="fk_staging_noticias_julgamento_run_id",
+        ),
     )
     modelo: Mapped[str] = mapped_column(String(64), nullable=False)
     papel: Mapped[str] = mapped_column(String(24), nullable=False)

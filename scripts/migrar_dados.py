@@ -71,8 +71,8 @@ def migrar(origem_url: str, destino_url: str, *, dry_run: bool = False) -> int:
                 continue
 
             colunas = [c.name for c in tabela.columns]
-            # A PK autoincremento e copiada de proposito: `staging_article_tickers`
-            # e `raw_article_bodies` apontam para `raw_articles.id`, e renumerar
+            # A PK autoincremento e copiada de proposito: `v1-staging_article_tickers`
+            # e `v1-raw_article_bodies` apontam para `v1-raw_articles.id`, e renumerar
             # quebraria os vinculos.
             copiadas = 0
             for offset in range(0, n, LOTE):

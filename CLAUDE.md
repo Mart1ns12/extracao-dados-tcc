@@ -174,6 +174,11 @@ o que se perdeu com isso.**
 - **A camada `raw` é imutável e append-only.** Reprocessamento sempre parte dela — nunca da rede.
 - **Deduplicação por `url_hash`**, nunca pela URL crua (querystrings de tracking variam).
 - **Toda alteração de schema passa por Alembic.** Nada de `CREATE TABLE` solto.
+- **Prefixo `v1-` em toda tabela da pipeline nova** (`PREFIXO_TABELA` em `db/models.py`, migration
+  0008). O nome real é `v1-raw_articles`, `v1-painel_logs` etc.; as 8 de entrega são `v1-noticias` …
+  `v1-indices` (o CSV continua com o nome da spec). Ficam sem prefixo só `features_dataset_v1`
+  (dataset v1 congelado) e `alembic_version`. O hífen exige aspas em SQL escrito à mão: `"v1-raw_articles"`
+  no PostgreSQL, `` `v1-raw_articles` `` no MySQL. No código, prefira `Model.__table__`.
 - **Segredos só em `.env`** (nunca commitado). `.env.example` documenta as chaves.
 - **Vazamento temporal é bug de corretude**, não detalhe: features em `t` só usam dados com
   timestamp `<= t`. O `target` é o único campo que olha `t+1`. Há teste dedicado para isso.
@@ -251,7 +256,7 @@ Três decisões tornam isso possível, e nenhuma é cosmética:
 
 | Ponto | Por quê |
 |---|---|
-| **Camadas viram prefixo** (`raw_articles`), não schema | MySQL não tem schemas — lá "schema" e "database" são a mesma coisa |
+| **Camadas viram prefixo** (`v1-raw_articles`), não schema | MySQL não tem schemas — lá "schema" e "database" são a mesma coisa |
 | **`Double`, nunca `Float`** | `sa.Float()` vira 4 bytes no MySQL: `0.7766114473342896` voltava `0.776611` |
 | **`UTCDateTime`** em vez de `DateTime(timezone=True)` | MySQL não guarda fuso; sem isso, matéria das 22h cairia em dias diferentes conforme o banco |
 
@@ -272,8 +277,8 @@ afeta o pipeline (nenhuma query dele usa `LIKE`), mas afeta consultas de anális
 
 Camada **independente do scraper**: 1 chamada/dia ao Gemini com grounding do Google Search e
 JSON schema **na mesma chamada** (só Gemini 3+ aceita os dois juntos). Modelo em
-`GEMINI_MODEL` (padrão `gemini-3.8-flash`). Tabelas: `raw_llm_prompts` (prompt versionado),
-`raw_llm_runs` (append-only, uma linha por tentativa, mesmo em erro) e `staging_llm_*`
+`GEMINI_MODEL` (padrão `gemini-3.8-flash`). Tabelas: `v1-raw_llm_prompts` (prompt versionado),
+`v1-raw_llm_runs` (append-only, uma linha por tentativa, mesmo em erro) e `v1-staging_llm_*`
 (substituídas por dia). O `features_dataset_v1` **fica intacto**.
 
 **Exceção aprovada à regra de custo:** é a única dependência paga do projeto, com teto de

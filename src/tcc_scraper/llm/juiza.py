@@ -1,8 +1,8 @@
 """Juiza de noticias: julga pares (artigo, ticker) ja coletados, sem busca na web.
 
 Ordem por par pendente: regra barata (sem custo) -> Jev (opcional, desligado) -> Gemini.
-Grava em `raw_llm_juiza_runs` cada chamada ao Gemini, inclusive as que falharam, e em
-`staging_noticias_julgamento` so o julgamento aceito. Retomavel: par sem linha de julgamento
+Grava em `v1-raw_llm_juiza_runs` cada chamada ao Gemini, inclusive as que falharam, e em
+`v1-staging_noticias_julgamento` so o julgamento aceito. Retomavel: par sem linha de julgamento
 para a versao do prompt volta como pendente na proxima execucao.
 """
 from __future__ import annotations

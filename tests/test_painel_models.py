@@ -12,30 +12,30 @@ from tcc_scraper.db import models_painel  # noqa: F401  (registra as tabelas no 
 from tcc_scraper.db.models import Article, Base
 
 TABELAS_PAINEL = {
-    "painel_comandos",
-    "painel_heartbeat",
-    "painel_execucoes",
-    "painel_etapas",
-    "painel_historico",
-    "painel_historico_progresso",
-    "painel_logs",
-    "painel_comandos_aplicados",
+    "v1-painel_comandos",
+    "v1-painel_heartbeat",
+    "v1-painel_execucoes",
+    "v1-painel_etapas",
+    "v1-painel_historico",
+    "v1-painel_historico_progresso",
+    "v1-painel_logs",
+    "v1-painel_comandos_aplicados",
 }
 
 PKS_ESPERADAS = {
-    "painel_comandos": ["id"],
-    "painel_heartbeat": ["host"],
-    "painel_execucoes": ["id"],
-    "painel_etapas": ["execucao_id", "etapa_id"],
-    "painel_historico": ["id"],
-    "painel_historico_progresso": ["ano", "coletor"],
-    "painel_logs": ["id"],
-    "painel_comandos_aplicados": ["id"],
+    "v1-painel_comandos": ["id"],
+    "v1-painel_heartbeat": ["host"],
+    "v1-painel_execucoes": ["id"],
+    "v1-painel_etapas": ["execucao_id", "etapa_id"],
+    "v1-painel_historico": ["id"],
+    "v1-painel_historico_progresso": ["ano", "coletor"],
+    "v1-painel_logs": ["id"],
+    "v1-painel_comandos_aplicados": ["id"],
 }
 
 
 def test_todas_as_tabelas_painel_estao_no_metadata() -> None:
-    encontradas = {nome for nome in Base.metadata.tables if nome.startswith("painel_")}
+    encontradas = {nome for nome in Base.metadata.tables if nome.startswith("v1-painel_")}
     assert encontradas == TABELAS_PAINEL
 
 
@@ -55,23 +55,23 @@ def test_nenhuma_coluna_float_nas_tabelas_painel() -> None:
 
 
 def test_itens_por_min_e_double() -> None:
-    coluna = Base.metadata.tables["painel_historico"].c.itens_por_min
+    coluna = Base.metadata.tables["v1-painel_historico"].c.itens_por_min
     assert isinstance(coluna.type, Double)
 
 
 def test_etapas_tem_fk_com_cascata_para_execucoes() -> None:
-    tabela = Base.metadata.tables["painel_etapas"]
+    tabela = Base.metadata.tables["v1-painel_etapas"]
     fks = list(tabela.foreign_keys)
     assert len(fks) == 1
     fk = fks[0]
-    assert fk.column.table.name == "painel_execucoes"
+    assert fk.column.table.name == "v1-painel_execucoes"
     assert fk.column.name == "id"
     assert fk.ondelete == "CASCADE"
 
 
 def test_logs_nao_tem_fk() -> None:
-    assert not list(Base.metadata.tables["painel_logs"].foreign_keys)
-    assert not list(Base.metadata.tables["painel_comandos_aplicados"].foreign_keys)
+    assert not list(Base.metadata.tables["v1-painel_logs"].foreign_keys)
+    assert not list(Base.metadata.tables["v1-painel_comandos_aplicados"].foreign_keys)
 
 
 def test_raw_articles_tem_origem_e_precisao_com_default_de_google_news() -> None:

@@ -259,6 +259,19 @@ Escolhido apagar de `noticias` (entrega) o que foi reprovado, e só artigos que 
 (`entrega/builder.py`, `_apagar_reprovadas`). A camada `raw` não muda. Custo: a entrega muda quando a
 juíza reprova, e um novo julgamento pode devolver o artigo.
 
+**Prefixo `v1-` nas tabelas da pipeline nova.** Problema: a pipeline nova (camadas `raw_`, `staging_`,
+`painel_` e as 8 tabelas de entrega) compartilha o banco com o dataset v1 congelado (`features_dataset_v1`),
+e o dono pediu que toda tabela usada pela pipeline nova tenha `v1-` na frente do nome. Opções: (a) prefixo
+literal `v1-` no nome, com hífen; (b) schema separado, rejeitado porque o MySQL não tem schemas (ver a ADR
+de camadas); (c) renomear só no código, sem tocar o banco, rejeitado porque o nome real precisa bater com
+o que a API lê. Escolhido (a): `PREFIXO_TABELA = "v1-"` em `db/models.py`, migration 0008 com 38
+`rename_table` (PostgreSQL e MySQL), `tabela_do_projeto` que tira o prefixo antes de comparar, e
+`ENTREGA_TABLES` com os nomes prefixados. Custo: o hífen obriga aspas em SQL escrito à mão (`"v1-raw_articles"`
+no PostgreSQL, crase no MySQL). As constraints, índices e sequências existentes mantêm o nome antigo; só a
+constraint `uq_raw_articles_url_hash` teve de ganhar nome explícito no modelo, porque a naming_convention
+geraria `uq_v1-raw_articles_url_hash` e o `alembic check` acusaria divergência. A convenção de nomes passa a
+gerar `v1-` nos índices e constraints criados a partir de agora. O CSV de entrega continua sem prefixo.
+
 ---
 
 ## PHILOSOPHY

@@ -2,17 +2,17 @@
 
 O scraper roda no Railway como **worker sempre ligado**: `python -m tcc_scraper.cli executor` (ou
 `tcc-scraper executor`). Não é um cron. O executor recebe comandos do painel, roda o `daily` de 9 etapas
-(agenda das 18:30 BRT) e a carga histórica, e grava o progresso em tabelas `painel_*` do MySQL, que a API
+(agenda das 18:30 BRT) e a carga histórica, e grava o progresso em tabelas `v1-painel_*` do MySQL, que a API
 do painel lê.
 
 ## 1. Fluxo
 
 ```
-painel -> API do painel -> painel_comandos (fila)
+painel -> API do painel -> v1-painel_comandos (fila)
                                  | POST /api/executor/comandos (a cada EXECUTOR_POLL_S)
                             executor -> daily / etapa / historico
                                  | grava
-                            MySQL painel_* -> lido pela API -> painel
+                            MySQL v1-painel_* -> lido pela API -> painel
 ```
 
 - Contrato: `interface-acompanhamento/docs/contrato-api.md`. As três rotas do executor são `POST`.
@@ -20,9 +20,9 @@ painel -> API do painel -> painel_comandos (fila)
   `POST /api/executor/comandos` (corpo `{}`) e confirma com `POST /api/executor/comandos/ack`
   (`id`, `ok`, `erro` no corpo). `204` confirma; `404` e `409` contam como já tratado e não são
   reenviados. Decisão registrada em [ADR.md](ADR.md).
-- Entrega "pelo menos uma vez": o mesmo comando pode voltar. Ids já aplicados (`painel_comandos_aplicados`)
+- Entrega "pelo menos uma vez": o mesmo comando pode voltar. Ids já aplicados (`v1-painel_comandos_aplicados`)
   são ignorados e reconfirmados com `ok: true`.
-- Heartbeat a cada `EXECUTOR_HEARTBEAT_S` em `POST /api/executor/heartbeat`, espelhado em `painel_heartbeat`.
+- Heartbeat a cada `EXECUTOR_HEARTBEAT_S` em `POST /api/executor/heartbeat`, espelhado em `v1-painel_heartbeat`.
 - Autenticação: `Authorization: Bearer <EXECUTOR_TOKEN>`.
 
 ## 2. Variáveis do serviço
@@ -45,7 +45,7 @@ painel -> API do painel -> painel_comandos (fila)
 | `ENTREGA_FILTRO_JUIZA` | Se `true`, a entrega filtra pela juíza (padrão `false`) |
 | `EXPORT_DIR` | Pasta do Parquet e dos CSVs (padrão `exports/`). Efêmera no Railway |
 | `JEV_ENABLED`, `JEV_API_KEY`, `JEV_MODELO` | Fonte JEV; desligada por padrão (`JEV_ENABLED=false`) |
-| `PAINEL_LOGS_DIAS` | Dias de `painel_logs` mantidos (padrão 7) |
+| `PAINEL_LOGS_DIAS` | Dias de `v1-painel_logs` mantidos (padrão 7) |
 
 ## 3. Comandos, prioridade e agenda
 
@@ -79,11 +79,11 @@ Dispara pelo painel (`historico`) ou pela CLI: `python -m tcc_scraper.cli histor
   `cvm_cadastro`, `b3_cadastro`, `b3_proventos`, `cvm_itr_dfp`. Depois, ano a ano: `google_news`,
   `cvm_ipe`, `enriquecimento`, `finbert`, `juiza`, `build_entrega`.
 - **Unidades e progresso.** A unidade de trabalho é coletor × ano. O progresso fica em
-  `painel_historico_progresso` (um registro por ano e coletor); a posição atual, em `painel_historico`.
+  `v1-painel_historico_progresso` (um registro por ano e coletor); a posição atual, em `v1-painel_historico`.
 - **Pausa e cancelamento.** Checados **entre** unidades, nunca no meio de uma requisição. `pausar` vai para
   `pausando` e termina em `pausada`. `cancelar` vai para `cancelando` e termina em `cancelada`; numa carga
   já `pausada` (sem thread rodando), vai direto para `cancelada`. Os coletores são retomáveis por checkpoint
-  (`raw_collection_runs`), então retomar recomeça a unidade interrompida.
+  (`v1-raw_collection_runs`), então retomar recomeça a unidade interrompida.
 - **Modos.** `pendentes` roda o que falta. `reprocessar_erros` refaz as unidades com erro.
 - **Ritmo.** `itens_por_min` é uma média móvel de 10 minutos.
 - **Retomada após reinício.** Ao subir, o executor retoma sozinho uma carga `em_andamento` ou `pausando`
@@ -91,33 +91,38 @@ Dispara pelo painel (`historico`) ou pela CLI: `python -m tcc_scraper.cli histor
   pausada até um comando `retomar`.
 - **Id.** Formato `hist-20261019-2105` (data e hora de criação).
 
-## 4. Tabelas `painel_*`
+## 4. Tabelas `v1-painel_*`
 
-Fonte: `db/models_painel.py` (migration 0004). O executor grava tudo, exceto `painel_comandos`, que a API
+No banco, estas tabelas se chamam `v1-painel_*` (prefixo `v1-`, migration 0008). Em SQL escrito à mão, o
+nome precisa de aspas: `SELECT * FROM "v1-painel_logs"` no PostgreSQL e ``SELECT * FROM `v1-painel_logs` ``
+no MySQL. As 8 tabelas de entrega (`v1-noticias` … `v1-indices`) seguem a mesma regra; o CSV de entrega
+continua com o nome de arquivo da spec, sem prefixo.
+
+Fonte: `db/models_painel.py` (migration 0004). O executor grava tudo, exceto `v1-painel_comandos`, que a API
 cria e confirma (`ack_em`, `ok`, `erro`). Ponto flutuante é `Double`; datas são `UTCDateTime` (UTC); status são
 strings, sem Enum do banco.
 
-- `painel_comandos` (escreve a API): `id` PK String(36), `tipo` String(16), `parametros` JSON, `criado_em`,
+- `v1-painel_comandos` (escreve a API): `id` PK String(36), `tipo` String(16), `parametros` JSON, `criado_em`,
   `ack_em`, `ok`, `erro`. Índice em `ack_em`.
-- `painel_comandos_aplicados` (executor): `id` PK String(36), `aplicado_em`, `ok`, `erro`. Idempotência.
-- `painel_heartbeat` (executor): `host` PK String(64), `versao`, `ocupado_com` (`daily` | `historico` | null),
+- `v1-painel_comandos_aplicados` (executor): `id` PK String(36), `aplicado_em`, `ok`, `erro`. Idempotência.
+- `v1-painel_heartbeat` (executor): `host` PK String(64), `versao`, `ocupado_com` (`daily` | `historico` | null),
   `visto_em`.
-- `painel_execucoes` (executor): `id` PK String(48), `tipo` (`daily` | `etapa`), `etapa_alvo`, `origem`
+- `v1-painel_execucoes` (executor): `id` PK String(48), `tipo` (`daily` | `etapa`), `etapa_alvo`, `origem`
   (`cron` | `manual`), `status` (`agendada` | `em_andamento` | `concluida` | `parcial` | `falhou`),
   `aguardando` (null | `historico`), `iniciada_em`, `finalizada_em`, `prazo_em`, `erro`, `atualizada_em`.
   Índice em `iniciada_em`.
-- `painel_etapas` (executor): PK (`execucao_id`, `etapa_id`); FK `execucao_id` → `painel_execucoes.id`
+- `v1-painel_etapas` (executor): PK (`execucao_id`, `etapa_id`); FK `execucao_id` → `v1-painel_execucoes.id`
   `ON DELETE CASCADE`. `ordem`, `status` (`pendente` | `em_andamento` | `concluida` | `falhou` | `pulada`),
   `unidades_total` (null até o plano), `unidades_feitas`, `unidades_erro`, `unidades_saturadas`, `itens`,
   `iniciada_em`, `finalizada_em`, `ultimo_erro_unidade`, `ultimo_erro_mensagem`, `atualizada_em`.
-- `painel_historico` (executor): `id` PK String(32) (ex.: `hist-20261019-2105`), `status`
+- `v1-painel_historico` (executor): `id` PK String(32) (ex.: `hist-20261019-2105`), `status`
   (`em_andamento` | `pausando` | `pausada` | `cancelando` | `cancelada` | `concluida` | `falhou`), `modo`
   (`pendentes` | `reprocessar_erros`), `anos` JSON, `ano_atual`, `coletor_atual`, `unidade_atual`,
   `iniciada_em`, `finalizada_em`, `itens_por_min`, `erro`, `atualizada_em`.
-- `painel_historico_progresso` (executor): PK (`ano`, `coletor`); `unidades_total`, `unidades_feitas`,
+- `v1-painel_historico_progresso` (executor): PK (`ano`, `coletor`); `unidades_total`, `unidades_feitas`,
   `unidades_erro`, `itens`, `status_segmento` (`concluido` | `em_andamento` | `pausado` | `pendente` |
   `falhou`), `atualizado_em`.
-- `painel_logs` (executor): `id` BigInteger PK autoincrement, `ts`, `nivel` (`info` | `aviso` | `erro`),
+- `v1-painel_logs` (executor): `id` BigInteger PK autoincrement, `ts`, `nivel` (`info` | `aviso` | `erro`),
   `origem` (`daily` | `historico`), `etapa`, `mensagem`. Índice em `ts`. Sem FK: o log sobrevive à limpeza.
   Retenção por `PAINEL_LOGS_DIAS`.
 
@@ -159,7 +164,7 @@ python -m tcc_scraper.cli daily --etapa precos   # atalho sem painel
   `/app/.hf_cache` (`HF_CACHE_DIR`), então a subida do serviço não baixa modelo.
 - Variáveis: no painel do Railway, nunca no repositório. `EXECUTOR_TOKEN` tem que ser igual ao da API do painel.
 - Migrations: `alembic upgrade head` roda da máquina local, com um usuário que tem DDL. O usuário do executor
-  não tem DDL; nunca rode migration no serviço. Banco vazio sem Alembic: ver `sql/completo_ate_0006.mysql.sql`.
+  não tem DDL; nunca rode migration no serviço. Banco vazio sem Alembic: ver `sql/completo_ate_0008.mysql.sql`.
 - MySQL remoto e usuário: ver [MIGRACAO-MYSQL.md](MIGRACAO-MYSQL.md).
 
 ## 8. Limitações
