@@ -39,7 +39,7 @@ painel -> API do painel -> v1-painel_comandos (fila)
 | `DAILY_ORCAMENTO_MIN` | Orçamento, em minutos, para as etapas de coleta (padrão 90) |
 | `DAILY_PRAZO_HORA` | Hora limite, no `DAILY_TZ`, para publicar o dia (padrão 20) |
 | `DATA_FIM_COLETA` | Deixar **vazio**: o fim da coleta é hoje. Fixar só para reproduzir um dia. Não muda a janela do v1 (`DATA_START`/`DATA_END`) |
-| `DB_TARGET=mysql` + `IP_BANCO`, `USER_BANCO`, `SENHA_BANCO`, `PORTA_BANCO`, `NOME_BANCO` | Banco do painel e do dataset |
+| `IP_BANCO`, `USER_BANCO`, `SENHA_BANCO`, `PORTA_BANCO`, `NOME_BANCO` | Banco do painel e do dataset (o único do projeto: MySQL 8) |
 | `GEMINI_API_KEY`, `GEMINI_MODEL` | Etapa `analise`; sem chave, ela sai `pulada` |
 | `JUIZA_MODELO`, `JUIZA_MAX_ITENS_DIA`, `JUIZA_LOTE`, `JUIZA_CONFIANCA_MINIMA` | Juíza de qualidade (etapa `juiza`) |
 | `ENTREGA_FILTRO_JUIZA` | Se `true`, a entrega filtra pela juíza (padrão `false`) |
@@ -94,8 +94,7 @@ Dispara pelo painel (`historico`) ou pela CLI: `python -m tcc_scraper.cli histor
 ## 4. Tabelas `v1-painel_*`
 
 No banco, estas tabelas se chamam `v1-painel_*` (prefixo `v1-`, migration 0008). Em SQL escrito à mão, o
-nome precisa de aspas: `SELECT * FROM "v1-painel_logs"` no PostgreSQL e ``SELECT * FROM `v1-painel_logs` ``
-no MySQL. As 8 tabelas de entrega (`v1-noticias` … `v1-indices`) seguem a mesma regra; o CSV de entrega
+nome precisa de crases: ``SELECT * FROM `v1-painel_logs` ``. As 8 tabelas de entrega (`v1-noticias` … `v1-indices`) seguem a mesma regra; o CSV de entrega
 continua com o nome de arquivo da spec, sem prefixo.
 
 Fonte: `db/models_painel.py` (migration 0004). O executor grava tudo, exceto `v1-painel_comandos`, que a API
@@ -148,13 +147,15 @@ A carga histórica (seção 3.1) usa os mesmos coletores desta tabela, com os no
 ## 6. Ambiente de desenvolvimento
 
 ```
-docker compose up -d postgres            # ou powershell scripts\pg-start.ps1
-cp .env.example .env                     # DB_TARGET=postgres; PAINEL_API_URL=http://localhost:8077; EXECUTOR_TOKEN=dev-executor
-pip install -e ".[dev,mysql,llm]"        # [sentiment] opcional local
-alembic upgrade head && python -m tcc_scraper.cli db-info
+cp .env.example .env                     # IP_BANCO etc. do MySQL do projeto; PAINEL_API_URL=http://localhost:8077; EXECUTOR_TOKEN=dev-executor
+pip install -e ".[dev,llm]"              # [sentiment] opcional local
+python -m tcc_scraper.cli db-info        # confere o banco (so leitura)
 python -m tcc_scraper.cli executor       # worker; em outro terminal, a API do painel (MODO=live, mesmo banco, mesmo EXECUTOR_TOKEN)
 python -m tcc_scraper.cli daily --etapa precos   # atalho sem painel
 ```
+
+Não há banco de desenvolvimento: o executor local grava no MySQL do `.env`, que é o banco real
+do TCC. Migrations só com `alembic upgrade head`, seguindo [MIGRACAO-MYSQL.md](MIGRACAO-MYSQL.md), seção 4.
 
 ## 7. Deploy no Railway
 

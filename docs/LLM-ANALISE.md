@@ -18,13 +18,13 @@ grounding do Google Search e grava o resultado de forma estruturada:
 
 - uma alteração do Dataset 1.0. `features_dataset_v1` fica intacta. O cruzamento com ela, por
   `(data, ticker)`, é trabalho futuro;
-- uma fonte que usa `raw_articles`. A própria LLM pesquisa via Google Search;
+- uma fonte que usa `v1-raw_articles`. A própria LLM pesquisa via Google Search;
 - um loop. O processo sobe, roda uma vez, grava e encerra;
 - reprodutível bit a bit. A busca muda de um dia para o outro; por isso o JSON bruto, o prompt
-  renderizado, as buscas e as citações ficam em `raw_llm_runs`.
+  renderizado, as buscas e as citações ficam em `v1-raw_llm_runs`.
 
-Tabelas: `raw_llm_prompts` (prompt versionado), `raw_llm_runs` (append-only, uma linha por
-tentativa, inclusive em erro) e `staging_llm_*` (normalizadas, substituídas por dia).
+Tabelas: `v1-raw_llm_prompts` (prompt versionado), `v1-raw_llm_runs` (append-only, uma linha por
+tentativa, inclusive em erro) e `v1-staging_llm_*` (normalizadas, substituídas por dia).
 
 ## 2. Variáveis no Railway
 
@@ -37,7 +37,6 @@ Configure no serviço do executor no Railway (Variables). Nunca commite a chave.
 | `LLM_TIMEOUT_S` | não | `180` | Timeout da chamada, em segundos |
 | `LLM_MAX_ATTEMPTS` | não | `3` | Tentativas com backoff em 429, 5xx e timeout |
 | `LLM_TZ` | não | `America/Sao_Paulo` | Fuso que define `data_referencia` |
-| `DB_TARGET` | sim | `postgres` | `mysql` no Railway |
 | `IP_BANCO`, `USER_BANCO`, `SENHA_BANCO`, `PORTA_BANCO`, `NOME_BANCO` | sim | — | MySQL remoto (seção 3) |
 
 ## 3. MySQL remoto
@@ -50,7 +49,7 @@ CREATE USER 'tcc_railway'@'%' IDENTIFIED BY '...';
 GRANT SELECT, INSERT, UPDATE, DELETE ON tcc_scraper.* TO 'tcc_railway'@'%';
 ```
 
-- `DELETE` é necessário: as tabelas `staging_llm_*` são substituídas por dia (`DELETE` + upsert).
+- `DELETE` é necessário: as tabelas `v1-staging_llm_*` são substituídas por dia (`DELETE` + upsert).
 - Não há `CREATE` nem `ALTER`: a migração roda da sua máquina, com o usuário `tcc` (seção 4).
 - O host é `'%'` porque o Railway, no plano básico, não tem IP de saída fixo. Por isso a senha
   precisa ser forte e única (32 caracteres aleatórios ou mais).
@@ -65,8 +64,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON tcc_scraper.* TO 'tcc_railway'@'%';
 
 ## 4. Migração (uma vez, da sua máquina)
 
-A migração cria as tabelas `raw_llm_*` e `staging_llm_*` via Alembic. Rode **uma vez**, da sua
-máquina, com `DB_TARGET=mysql` no `.env` local:
+A migração cria as tabelas `v1-raw_llm_*` e `v1-staging_llm_*` via Alembic. Rode **uma vez**, da sua
+máquina, com o `.env` apontando para o MySQL do projeto:
 
 ```bash
 alembic upgrade head
@@ -98,7 +97,7 @@ Antes de subir, valide na sua máquina, nesta ordem:
    ```bash
    python -m tcc_scraper.cli analyze-llm --dry-run
    ```
-2. **Execução real no PostgreSQL local** (`DB_TARGET=postgres`, com `GEMINI_API_KEY` no `.env`):
+2. **Execução real no MySQL do `.env`** (com `GEMINI_API_KEY` no `.env`):
    ```bash
    python -m tcc_scraper.cli analyze-llm
    ```
@@ -123,27 +122,26 @@ Confirme que a imagem contém o template `prompts/*.txt`: o wheel inclui o diret
 
 ```sql
 SELECT id, data_referencia, pregao_referencia, status, tokens_entrada, tokens_saida, latencia_ms
-  FROM raw_llm_runs ORDER BY id DESC LIMIT 10;
+  FROM `v1-raw_llm_runs` ORDER BY id DESC LIMIT 10;
 ```
 
 Sinais do dia por ação:
 
 ```sql
-SELECT ticker, direcao_esperada, confianca, motivo FROM staging_llm_acoes_sinais
+SELECT ticker, direcao_esperada, confianca, motivo FROM `v1-staging_llm_acoes_sinais`
  WHERE data_referencia = CURDATE() ORDER BY confianca DESC;
 ```
 
 Notícias de uma empresa no dia:
 
 ```sql
-SELECT ticker, titulo, fonte, url, sentimento, relevancia FROM staging_llm_noticias_empresas
+SELECT ticker, titulo, fonte, url, sentimento, relevancia FROM `v1-staging_llm_noticias_empresas`
  WHERE data_referencia = CURDATE() AND ticker = 'PETR4';
 ```
 
 Atenção ao fuso: `CURDATE()` usa o fuso do **servidor MySQL**, enquanto `data_referencia` é o
 calendário de `LLM_TZ`. Entre 21:00 e 23:59 de Brasília (00:00 a 02:59 UTC) as duas datas podem
-diferir. Para consultar um dia específico, troque `CURDATE()` por uma data literal. No PostgreSQL
-local, use `CURRENT_DATE`.
+diferir. Para consultar um dia específico, troque `CURDATE()` por uma data literal.
 
 ## 8. Custo
 
@@ -202,7 +200,7 @@ com alertas em 50%, 90% e 100%.
 ## 9. Versionar o prompt
 
 O template fica em `src/tcc_scraper/llm/prompts/analise_diaria_v1.txt` e a versão em `VERSAO`, no
-módulo `llm/prompt.py`. Cada execução grava o prompt renderizado em `raw_llm_prompts`, então
+módulo `llm/prompt.py`. Cada execução grava o prompt renderizado em `v1-raw_llm_prompts`, então
 qualquer resultado antigo continua auditável.
 
 Para mudar o prompt:

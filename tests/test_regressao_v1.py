@@ -4,18 +4,16 @@
 so os vinculos de `staging_article_tickers`. Os julgamentos da juiza e os tickers adicionais
 que ela sugere NAO entram no v1: ele e um artefato congelado do TCC.
 
-Roda contra PostgreSQL e MySQL reais (skip se o banco nao estiver no ar). Os dados de teste
-usam URLs com prefixo reconhecivel e sao removidos antes e depois de cada teste.
+Roda contra o MySQL do .env (opt-in: TCC_TESTES_COM_BANCO=1). Os dados de teste usam URLs
+com prefixo reconhecivel e sao removidos antes e depois de cada teste.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import os
-from functools import cache
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from tcc_scraper.db import session as session_mod
@@ -25,14 +23,6 @@ from tcc_scraper.db.upsert import bulk_upsert
 from tcc_scraper.entrega.builder import modelos_finbert
 from tcc_scraper.features.build import carregar_entradas_v1
 
-PG_URL = os.environ.get(
-    "TEST_PG_URL", "postgresql+psycopg://tcc:tcc_local_dev@localhost:5433/tcc_scraper"
-)
-MYSQL_URL = os.environ.get(
-    "TEST_MYSQL_URL", "mysql+pymysql://root@127.0.0.1:3307/tcc_scraper"
-)
-_CONNECT_TIMEOUT = 2
-
 PREFIXO = "https://t27.regr.invalid/"
 URLS = {
     "prot": PREFIXO + "protagonista",
@@ -41,27 +31,6 @@ URLS = {
 }
 ORIGENS = {"prot": "google_news", "ipe": "cvm_ipe", "pan": "google_news"}
 DATA_PUB = dt.datetime(2099, 1, 5, 12, 0, tzinfo=dt.UTC)
-
-
-@cache
-def _tentar_engine(url: str):
-    args = {"connect_timeout": _CONNECT_TIMEOUT} if url.startswith(("mysql", "postgresql")) else {}
-    try:
-        engine = create_engine(url, pool_pre_ping=True, connect_args=args)
-        with engine.connect():
-            pass
-        return engine, None
-    except Exception as exc:
-        return None, str(exc)[:80]
-
-
-@pytest.fixture(params=["postgresql", "mysql"])
-def engine(request):
-    url, label = (PG_URL, "PostgreSQL") if request.param == "postgresql" else (MYSQL_URL, "MySQL")
-    eng, motivo = _tentar_engine(url)
-    if eng is None:
-        pytest.skip(f"{label} indisponivel: {motivo}")
-    return eng
 
 
 def _limpar(engine) -> None:

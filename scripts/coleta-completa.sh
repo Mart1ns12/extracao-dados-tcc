@@ -46,7 +46,7 @@ echo "# COLETA COMPLETA -- Dataset 1.0"
 echo "# inicio: $(date '+%F %T')"
 echo "##############################################################"
 
-$PY db-info || { echo "ERRO: banco inacessivel. Confira DB_TARGET e as credenciais no .env"; exit 1; }
+$PY db-info || { echo "ERRO: banco inacessivel. Confira IP_BANCO, USER_BANCO, SENHA_BANCO e PORTA_BANCO no .env"; exit 1; }
 
 # --- rapidas: precos, macro e indices -----------------------------------------
 etapa 01 precos    $PY collect-prices     # ~2 min   | 88 series do Yahoo

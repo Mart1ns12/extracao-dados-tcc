@@ -12,6 +12,6 @@ COPY pyproject.toml alembic.ini ./
 COPY src ./src
 COPY alembic ./alembic
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
- && pip install --no-cache-dir ".[mysql,llm,sentiment]"
+ && pip install --no-cache-dir ".[llm,sentiment]"
 RUN python -c "from tcc_scraper.sentiment.finbert import finbert_pt, finbert_en; finbert_pt()._load(); finbert_en()._load()"
 CMD ["python", "-m", "tcc_scraper.cli", "executor"]

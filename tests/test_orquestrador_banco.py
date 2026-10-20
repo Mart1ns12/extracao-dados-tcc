@@ -1,19 +1,17 @@
-"""RepositorioBanco contra PostgreSQL e MySQL reais (skip se o banco nao estiver no ar).
+"""RepositorioBanco contra o MySQL do .env (opt-in: TCC_TESTES_COM_BANCO=1).
 
 Padrao de tests/test_batch_regression.py. Os testes apontam o session_scope para o engine
-de teste (TEST_PG_URL / TEST_MYSQL_URL), nunca para o banco configurado do projeto. Dados
-de teste usam o prefixo TESTE- (ids e hosts) ou a mensagem "TESTE ..." e sao removidos.
+de teste (fixture `engine` de conftest.py). Dados de teste usam o prefixo TESTE- (ids e
+hosts) ou a mensagem "TESTE ..." e sao removidos.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import os
-from functools import cache
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from tcc_scraper.db import session as session_mod
@@ -27,38 +25,8 @@ from tcc_scraper.db.models_painel import (
 from tcc_scraper.orquestrador import etapas as E
 from tcc_scraper.orquestrador.repositorio import RepositorioBanco
 
-PG_URL = os.environ.get(
-    "TEST_PG_URL", "postgresql+psycopg://tcc:tcc_local_dev@localhost:5433/tcc_scraper"
-)
-MYSQL_URL = os.environ.get("TEST_MYSQL_URL", "mysql+pymysql://root@127.0.0.1:3307/tcc_scraper")
 SP = ZoneInfo("America/Sao_Paulo")
-_CONNECT_TIMEOUT = 2
 PREFIXO = "TESTE-"
-
-
-@cache
-def _tentar_engine(url: str):
-    args = (
-        {"connect_timeout": _CONNECT_TIMEOUT}
-        if url.startswith(("mysql", "postgresql"))
-        else {}
-    )
-    try:
-        engine = create_engine(url, pool_pre_ping=True, connect_args=args)
-        with engine.connect():
-            pass
-        return engine, None
-    except Exception as exc:
-        return None, str(exc)[:80]
-
-
-@pytest.fixture(params=["postgresql", "mysql"])
-def engine(request):
-    url, label = (PG_URL, "PostgreSQL") if request.param == "postgresql" else (MYSQL_URL, "MySQL")
-    eng, motivo = _tentar_engine(url)
-    if eng is None:
-        pytest.skip(f"{label} indisponivel: {motivo}")
-    return eng
 
 
 def _limpar(engine) -> None:

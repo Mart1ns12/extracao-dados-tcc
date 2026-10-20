@@ -20,7 +20,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Date,
-    DateTime,
     Double,
     ForeignKey,
     Index,
@@ -41,8 +40,7 @@ from sqlalchemy.types import TypeDecorator
 # `features_dataset_v1`, que e o dataset v1 congelado e fica com o nome antigo.
 PREFIXO_TABELA = "v1-"
 # As camadas viram PREFIXO no nome da tabela (raw_/staging_/features_), nao schema
-# separado: o MySQL nao tem schemas como o PostgreSQL -- la "schema" e "database"
-# sao a mesma coisa. Um unico esquema de nomes funciona nos dois bancos.
+# separado: no MySQL "schema" e "database" sao a mesma coisa.
 TABLE_PREFIXES = ("raw_", "staging_", "features_", "painel_")
 # Tabelas de entrega: nomes fixos pela spec da etapa seguinte do TCC, sem prefixo de camada
 # (o prefixo PREFIXO_TABELA continua valendo para elas no banco).
@@ -74,35 +72,26 @@ class Base(DeclarativeBase):
 
 
 class UTCDateTime(TypeDecorator):
-    """Timestamp sempre em UTC, nos dois bancos.
+    """Timestamp sempre em UTC.
 
-    O PostgreSQL guarda o fuso junto (TIMESTAMPTZ); o MySQL NAO -- um DATETIME volta
-    sem fuso nenhum. Sem este tipo, `published_at` chegaria aware do Postgres e naive
-    do MySQL, e a agregacao diaria (que converte para America/Sao_Paulo) mudaria de
-    resultado conforme o banco -- uma materia das 22h poderia cair no dia seguinte.
+    O MySQL nao guarda fuso: um DATETIME volta sem fuso nenhum. Sem este tipo, a
+    agregacao diaria (que converte para America/Sao_Paulo) veria horarios naive, e uma
+    materia das 22h poderia cair no dia seguinte.
 
     Contrato: entra aware (ou assume-se UTC), e gravado em UTC, volta sempre aware.
     """
 
-    impl = DateTime
+    # fsp=6 preserva microssegundos; o default do MySQL truncaria para segundos.
+    impl = mysql.DATETIME(fsp=6)
     cache_ok = True
-
-    def load_dialect_impl(self, dialect):
-        if dialect.name in ("mysql", "mariadb"):
-            # fsp=6 preserva microssegundos; o default do MySQL truncaria para segundos.
-            return dialect.type_descriptor(mysql.DATETIME(fsp=6))
-        return dialect.type_descriptor(DateTime(timezone=True))
 
     def process_bind_param(self, value, dialect):
         if value is None:
             return None
         if value.tzinfo is None:
             value = value.replace(tzinfo=dt.UTC)
-        value = value.astimezone(dt.UTC)
         # O MySQL rejeita datetime com tzinfo: grava-se o instante UTC ja "naive".
-        if dialect.name in ("mysql", "mariadb"):
-            return value.replace(tzinfo=None)
-        return value
+        return value.astimezone(dt.UTC).replace(tzinfo=None)
 
     def process_result_value(self, value, dialect):
         if value is None:
@@ -110,11 +99,9 @@ class UTCDateTime(TypeDecorator):
         return value.replace(tzinfo=dt.UTC) if value.tzinfo is None else value.astimezone(dt.UTC)
 
 
-# Double, nao Float: `sa.Float()` vira `double precision` (8 bytes) no PostgreSQL mas
-# `float` (4 bytes, ~7 digitos) no MySQL. Medido: a probabilidade 0.7766114473342896
-# voltava 0.776611 do MySQL, e o dataset mudava conforme o banco -- inaceitavel, ainda
-# mais porque o erro propaga para score_finbert e para os retornos. `Double` mapeia
-# para 8 bytes nos dois.
+# Double, nao Float: `sa.Float()` vira `float` de 4 bytes (~7 digitos) no MySQL.
+# Medido: a probabilidade 0.7766114473342896 voltava 0.776611, e o erro propagava para
+# score_finbert e para os retornos. `Double` mapeia para 8 bytes.
 
 # Parametros de rastreamento que mudam a URL sem mudar o artigo. Removidos antes do
 # hash, senao a mesma materia entra varias vezes vinda de queries diferentes.
@@ -345,7 +332,7 @@ class DatasetV1(Base):
 # --------------------------------------------------------------------------------------
 # `Text` e TEXT de 64 KB no MySQL: uma resposta de ~15 mil tokens passa de 60 KB e seria
 # truncada (ou rejeitada em modo estrito). LONGTEXT onde o tamanho e imprevisivel.
-LongText = Text().with_variant(mysql.LONGTEXT, "mysql")
+LongText = mysql.LONGTEXT()
 
 
 class LlmPrompt(Base):

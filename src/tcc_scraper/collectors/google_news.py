@@ -248,7 +248,7 @@ class GoogleNewsCollector(Collector):
         now = dt.datetime.now(dt.UTC)
 
         # A mesma materia pode vir repetida na resposta; o dict resolve antes de
-        # chegar ao banco (o PostgreSQL aborta lote com chave repetida).
+        # chegar ao banco (o lote nao pode trazer a mesma chave duas vezes).
         por_hash = {url_hash(item.google_url): item for item in items}
 
         artigos = [

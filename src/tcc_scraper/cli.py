@@ -26,7 +26,6 @@ from rich.progress import (
 from rich.table import Table
 
 from tcc_scraper.config import BENCHMARK_TICKER, IBOV_TICKERS
-from tcc_scraper.db.session import dialect_name
 from tcc_scraper.export.writers import summarize
 from tcc_scraper.features.build import SemPrecos, build_dataset_v1
 from tcc_scraper.sentiment.scoring import score_pending
@@ -66,7 +65,7 @@ def db_info() -> None:
     from tcc_scraper.db.session import get_engine
 
     engine = get_engine()
-    console.print(f"dialeto : [cyan]{dialect_name()}[/cyan]")
+    console.print(f"dialeto : [cyan]{engine.dialect.name}[/cyan]")
     console.print(f"destino : {engine.url.render_as_string(hide_password=True)}")
 
     existentes = set(inspect(engine).get_table_names())

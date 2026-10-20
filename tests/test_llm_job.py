@@ -1,19 +1,17 @@
-"""Testes do orquestrador da analise diaria (llm/job.py) contra banco real.
+"""Testes do orquestrador da analise diaria (llm/job.py) contra o MySQL do .env.
 
-Mesmo padrao de tests/test_upsert.py: PostgreSQL e MySQL reais, pulados se o banco
-estiver fora do ar. O Gemini e substituido por um cliente falso -- nenhum teste faz rede.
+Mesmo padrao de tests/test_upsert.py: opt-in via TCC_TESTES_COM_BANCO=1 (fixture `engine`
+de conftest.py). O Gemini e substituido por um cliente falso -- nenhum teste faz rede.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import json
-import os
-from functools import cache
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from tcc_scraper import config
@@ -32,50 +30,6 @@ from tcc_scraper.db.models import (
 from tcc_scraper.db.upsert import bulk_upsert
 from tcc_scraper.llm.gemini_client import RespostaGemini
 from tcc_scraper.llm.job import run_daily_analysis
-
-PG_URL = os.environ.get(
-    "TEST_PG_URL", "postgresql+psycopg://tcc:tcc_local_dev@localhost:5433/tcc_scraper"
-)
-MYSQL_URL = os.environ.get(
-    "TEST_MYSQL_URL", "mysql+pymysql://root@127.0.0.1:3307/tcc_scraper"
-)
-
-# Timeout curto e resultado em cache: a conclusao de "banco fora do ar" e tirada uma
-# vez por URL, sem esperar o timeout padrao do driver em cada teste.
-_CONNECT_TIMEOUT = 2
-
-
-@cache
-def _tentar_engine(url: str):
-    """Devolve (engine, None) se conectou, ou (None, motivo). Avaliado uma vez por URL."""
-    args = (
-        {"connect_timeout": _CONNECT_TIMEOUT}
-        if url.startswith(("mysql", "postgresql"))
-        else {}
-    )
-    try:
-        engine = create_engine(url, pool_pre_ping=True, connect_args=args)
-        with engine.connect():
-            pass
-        return engine, None
-    except Exception as exc:
-        return None, str(exc)[:80]
-
-
-def _engine_or_skip(url: str, label: str):
-    engine, motivo = _tentar_engine(url)
-    if engine is None:
-        pytest.skip(f"{label} indisponivel: {motivo}")
-    return engine
-
-
-@pytest.fixture(params=["postgresql", "mysql"])
-def engine(request):
-    """Roda cada teste nos dois dialetos."""
-    if request.param == "postgresql":
-        return _engine_or_skip(PG_URL, "PostgreSQL")
-    return _engine_or_skip(MYSQL_URL, "MySQL")
-
 
 DATA = dt.date(2099, 1, 5)              # data de teste: nunca colide com dado real
 PREGAO_SONDA = dt.date(2099, 1, 2)      # ultimo pregao <= DATA no preco-sonda

@@ -14,17 +14,18 @@ from tcc_scraper.config import get_settings
 
 @lru_cache
 def get_engine() -> Engine:
-    """Engine unica do processo.
+    """Engine unica do processo, sempre no MySQL do .env.
 
     pool_recycle existe por causa do MySQL: ele fecha conexoes ociosas por conta
     propria (wait_timeout, 8 h por padrao) e uma coleta de ~10 h esbarra nisso --
     a conexao morreria no meio sem o reciclo preventivo.
     """
-    settings = get_settings()
-    kwargs: dict = {"pool_pre_ping": True, "future": True}
-    if settings.effective_url.startswith(("mysql", "mariadb")):
-        kwargs["pool_recycle"] = 3600
-    return create_engine(settings.effective_url, **kwargs)
+    return create_engine(
+        get_settings().effective_url,
+        pool_pre_ping=True,
+        pool_recycle=3600,
+        future=True,
+    )
 
 
 @lru_cache
@@ -44,8 +45,3 @@ def session_scope() -> Iterator[Session]:
         raise
     finally:
         session.close()
-
-
-def dialect_name() -> str:
-    """Dialeto em uso ('postgresql' ou 'mysql'), derivado da DATABASE_URL."""
-    return get_engine().dialect.name

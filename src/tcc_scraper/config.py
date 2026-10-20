@@ -16,11 +16,11 @@ import socket
 from datetime import date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy import URL
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -36,13 +36,8 @@ class Settings(BaseSettings):
         env_ignore_empty=True,
     )
 
-    # Alvo do banco. "postgres" usa database_url; "mysql" monta a URL a partir de
-    # ip_banco/user_banco/senha_banco -- assim a senha do servidor fica em um lugar
-    # so no .env, em vez de repetida dentro de uma URL.
-    db_target: str = "postgres"
-
-    database_url: str = "postgresql+psycopg://tcc:tcc_local_dev@localhost:5433/tcc_scraper"
-
+    # Unico banco do projeto: o MySQL 8 do .env. Nao ha banco local. A URL e montada
+    # a partir destas variaveis (effective_url), para a senha ficar so no .env.
     ip_banco: str = ""
     user_banco: str = ""
     senha_banco: str = ""
@@ -160,16 +155,13 @@ class Settings(BaseSettings):
 
     @property
     def effective_url(self) -> str:
-        """URL que o SQLAlchemy realmente usa.
+        """URL que o SQLAlchemy realmente usa: sempre o MySQL do .env.
 
-        Com db_target=mysql, monta a partir das credenciais separadas. A senha passa
-        por quote_plus porque caracteres como @ e / a quebrariam dentro da URL.
-        charset=utf8mb4 nao e opcional: o `utf8` do MySQL guarda 3 bytes por
-        caractere e corrompe emoji e parte dos acentos das manchetes.
+        Montada por URL.create, que escapa a senha sozinho (caracteres como @ e / a
+        quebrariam dentro de uma string). charset=utf8mb4 nao e opcional: o `utf8` do
+        MySQL guarda 3 bytes por caractere e corrompe emoji e parte dos acentos das
+        manchetes.
         """
-        if self.db_target.lower() != "mysql":
-            return self.database_url
-
         faltando = [
             nome for nome, valor in (
                 ("IP_BANCO", self.ip_banco),
@@ -179,15 +171,18 @@ class Settings(BaseSettings):
             if not valor
         ]
         if faltando:
-            raise ValueError(
-                f"DB_TARGET=mysql exige {', '.join(faltando)} no .env"
-            )
+            raise ValueError(f"o .env precisa de {', '.join(faltando)} para conectar ao banco")
 
-        senha = quote_plus(self.senha_banco)
-        return (
-            f"mysql+pymysql://{self.user_banco}:{senha}"
-            f"@{self.ip_banco}:{self.porta_banco}/{self.nome_banco}?charset=utf8mb4"
+        url = URL.create(
+            "mysql+pymysql",
+            username=self.user_banco,
+            password=self.senha_banco,
+            host=self.ip_banco,
+            port=self.porta_banco,
+            database=self.nome_banco,
+            query={"charset": "utf8mb4"},
         )
+        return url.render_as_string(hide_password=False)
 
 
 @lru_cache

@@ -22,7 +22,7 @@ dominante: **custo financeiro zero**. Exceção única e aprovada: a análise di
 
 ## STACK
 
-Python 3.11+ · PostgreSQL 16 (schemas raw/staging/features) · SQLAlchemy 2.0 + Alembic ·
+Python 3.11+ · MySQL 8 (único banco; camadas por prefixo `v1-raw_`, `v1-staging_`) · SQLAlchemy 2.0 + Alembic ·
 httpx · lxml · trafilatura · pandas + pyarrow · transformers/torch (extra opcional) ·
 typer + rich · pytest + ruff · google-genai (extra opcional llm).
 
@@ -80,7 +80,7 @@ nativo. Detalhe crítico: a ordem dos rótulos difere entre checkpoints — o c�
 inteiro sem gerar erro.
 
 **PostgreSQL sobre SQLite.** Decisão do usuário; SQLite foi oferecido (zero infra) e
-recusado. Custo: exige servidor rodando.
+recusado. Custo: exige servidor rodando. *Superada pela ADR "Um banco só": o PostgreSQL saiu do projeto.*
 
 **Carteira do IBOV congelada em código.** Uma lista dinâmica tornaria o dataset
 irreprodutível meses depois. Validada contra o Yahoo: 88/88. 15 códigos corrigidos por
@@ -103,7 +103,26 @@ linhas do dataset no piloto, inflando os nulos de `volume_relativo` de 4% para 2
 `assemble_dataset` recebe `universe`.
 
 
-**Portabilidade PostgreSQL + MySQL 8.** O banco de produção do TCC é MySQL, e o
+**Um banco só: MySQL do `.env` (2026-10-20).** Supera a ADR de portabilidade logo abaixo. Problema:
+o projeto mantinha dois bancos com o mesmo código (PostgreSQL local para desenvolvimento e MySQL de
+produção), duas suítes de paridade e dois caminhos de configuração (`DB_TARGET`, `DATABASE_URL`). Isso
+dobrava a superfície de teste e de manutenção, e a paridade virou um teste que só comparava o
+dataset entre dois bancos. Opções: (a) manter PostgreSQL + MySQL; (b) um MySQL local em Docker;
+(c) um banco só, o MySQL do `.env`, que já tem os dados reais (88 mil artigos, preços, dataset v1).
+Escolhido (c): `Settings.effective_url` monta sempre `mysql+pymysql` a partir de `IP_BANCO`,
+`USER_BANCO`, `SENHA_BANCO`, `PORTA_BANCO` e `NOME_BANCO`; `db/session.py`, `db/upsert.py` e
+`UTCDateTime` ficam só com o caminho MySQL; `docker-compose.yml`, os scripts `pg-*` e a cópia
+`migrar_dados.py` saem do repositório. As decisões de tipo e SQL (`Double`, `UTCDateTime`, sem
+`RETURNING`, o `ON DUPLICATE KEY UPDATE` com deduplicação do lote) continuam valendo.
+Custo que se perde: (1) não há banco de desenvolvimento. O executor local e os testes com banco
+gravam no banco real; por isso os testes com banco são **opt-in** (`TCC_TESTES_COM_BANCO=1`) e cada
+um limpa só as linhas que criou; (2) a suíte padrão não exercita SQL de verdade, só o que roda sem
+banco; (3) DDL não tem rollback no MySQL, então uma migration ruim atinge produção. Por isso a
+migration é revisada antes (`alembic ... --sql`) e aplicada da máquina local com usuário com DDL,
+seguindo [MIGRACAO-MYSQL.md](MIGRACAO-MYSQL.md). As migrations 0001–0008 não foram editadas, e as
+que têm ramo `with_variant` seguem como histórico.
+
+**Portabilidade PostgreSQL + MySQL 8** *(superada pela ADR acima; mantida como registro).* O banco de produção do TCC é MySQL, e o
 desenvolvimento segue em PostgreSQL. Três incompatibilidades reais foram encontradas
 testando contra um MySQL 8.4 de verdade, não lendo documentação:
 
@@ -266,8 +285,7 @@ literal `v1-` no nome, com hífen; (b) schema separado, rejeitado porque o MySQL
 de camadas); (c) renomear só no código, sem tocar o banco, rejeitado porque o nome real precisa bater com
 o que a API lê. Escolhido (a): `PREFIXO_TABELA = "v1-"` em `db/models.py`, migration 0008 com 38
 `rename_table` (PostgreSQL e MySQL), `tabela_do_projeto` que tira o prefixo antes de comparar, e
-`ENTREGA_TABLES` com os nomes prefixados. Custo: o hífen obriga aspas em SQL escrito à mão (`"v1-raw_articles"`
-no PostgreSQL, crase no MySQL). As constraints, índices e sequências existentes mantêm o nome antigo; só a
+`ENTREGA_TABLES` com os nomes prefixados. Custo: o hífen obriga crase em SQL escrito à mão (`v1-raw_articles`). As constraints, índices e sequências existentes mantêm o nome antigo; só a
 constraint `uq_raw_articles_url_hash` teve de ganhar nome explícito no modelo, porque a naming_convention
 geraria `uq_v1-raw_articles_url_hash` e o `alembic check` acusaria divergência. A convenção de nomes passa a
 gerar `v1-` nos índices e constraints criados a partir de agora. O CSV de entrega continua sem prefixo.

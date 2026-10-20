@@ -1,8 +1,8 @@
 """Orquestracao da juiza: regra -> Jev (opcional) -> Gemini, com persistencia e retomada.
 
 Os testes puros trocam pendentes, sessao e bulk_upsert por versoes falsas: nada toca banco
-nem rede. O teste com banco (PG/MySQL, skip se fora do ar) usa o banco de teste, como em
-test_batch_regression.py, e filtra os pendentes para os artigos que ele cria.
+nem rede. O teste com banco (MySQL do .env, opt-in via TCC_TESTES_COM_BANCO=1) usa a
+fixture `engine` de conftest.py e filtra os pendentes para os artigos que ele cria.
 """
 
 from __future__ import annotations
@@ -11,26 +11,16 @@ import contextlib
 import csv
 import datetime as dt
 import json
-import os
-from functools import cache
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from tcc_scraper.config import get_settings
 from tcc_scraper.db.models import Article, ArticleBody, ArticleTicker, url_hash
 from tcc_scraper.db.models_fontes import RawLlmJuizaRun, StagingNoticiaJulgamento
 from tcc_scraper.llm import juiza
-
-PG_URL = os.environ.get(
-    "TEST_PG_URL", "postgresql+psycopg://tcc:tcc_local_dev@localhost:5433/tcc_scraper"
-)
-MYSQL_URL = os.environ.get(
-    "TEST_MYSQL_URL", "mysql+pymysql://root@127.0.0.1:3307/tcc_scraper"
-)
-
 
 # --------------------------------------------------------------------------------------
 # Fakes
@@ -347,35 +337,8 @@ def test_avaliar_conjunto_ouro_calcula_precisao_e_revocacao(
 
 
 # --------------------------------------------------------------------------------------
-# Com banco (PG/MySQL; skip se o banco nao estiver no ar)
+# Com banco (MySQL do .env; opt-in via TCC_TESTES_COM_BANCO=1, ver conftest.py)
 # --------------------------------------------------------------------------------------
-
-_CONNECT_TIMEOUT = 2
-
-
-@cache
-def _tentar_engine(url: str):
-    args = (
-        {"connect_timeout": _CONNECT_TIMEOUT}
-        if url.startswith(("mysql", "postgresql"))
-        else {}
-    )
-    try:
-        engine = create_engine(url, pool_pre_ping=True, connect_args=args)
-        with engine.connect():
-            pass
-        return engine, None
-    except Exception as exc:
-        return None, str(exc)[:80]
-
-
-@pytest.fixture(params=["postgresql", "mysql"])
-def engine(request):
-    url, label = (PG_URL, "PostgreSQL") if request.param == "postgresql" else (MYSQL_URL, "MySQL")
-    engine, motivo = _tentar_engine(url)
-    if engine is None:
-        pytest.skip(f"{label} indisponivel: {motivo}")
-    return engine
 
 
 def _artigo(n: int, title: str, dominio: str, ticker: str, origem: str = "google_news",

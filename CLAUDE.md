@@ -114,7 +114,7 @@ retorna resultados estruturados em ~500 tokens contra ~80k de um grep amplo.
 4. `get_architecture()` — visão de estrutura ao entrar em uma área nova
 5. `search_code(pattern=...)` — busca textual aumentada pelo grafo
 
-**Grep / Glob / Read continuam livres** (e preferíveis) para: `.env`, `docker-compose.yml`,
+**Grep / Glob / Read continuam livres** (e preferíveis) para: `.env`,
 `pyproject.toml`, migrations SQL, Markdown, fixtures de teste e qualquer arquivo não-Python.
 
 **Sempre `Read` um arquivo antes de editá-lo** — o grafo diz onde está, não substitui a leitura.
@@ -151,7 +151,7 @@ Decisões cujo *motivo* se perde se ficar só no código:
 
 - Rejeição de uma fonte de dados e o limite concreto que a inviabilizou
 - Resultado do spike de resolução de link do Google News (a taxa medida e a rota escolhida)
-- Escolha de PostgreSQL sobre SQLite
+- Escolha de MySQL como banco único (sem banco local)
 - Qualquer mudança na regra do `target` ou na definição de uma feature
 
 Um ADR bem escrito responde: **qual era o problema, quais opções existiam, o que foi escolhido e
@@ -163,22 +163,22 @@ o que se perdeu com isso.**
 
 - **Todo coletor herda de `collectors/base.Collector`.** Ele já resolve throttle por domínio,
   retry exponencial e checkpoint. Nunca chamar `requests`/`httpx` cru em um coletor.
-- **Persistência sempre por `db/upsert.bulk_upsert`.** Nunca `pg_insert`/`mysql_insert`
+- **Persistência sempre por `db/upsert.bulk_upsert`.** Nunca `mysql_insert`
   direto, e nunca um `execute` por linha dentro de laço — foi assim que o `_persist` do
   Google News chegou a ~450 mil idas ao banco na carga completa (hoje: ~8,6 mil).
 - **Tipo de ponto flutuante é `Double`, nunca `Float`.** `sa.Float()` vira 4 bytes no
   MySQL e truncaria as probabilidades do FinBERT em ~7 dígitos, mudando o dataset
   conforme o banco. Há teste de regressão.
-- **Timestamps usam `UTCDateTime`**, não `DateTime(timezone=True)`: o MySQL não guarda
-  fuso e o valor voltaria naive, deslocando a agregação diária.
+- **Timestamps usam `UTCDateTime`**: o MySQL não guarda fuso e, sem o tipo, o valor voltaria
+  naive, deslocando a agregação diária.
 - **A camada `raw` é imutável e append-only.** Reprocessamento sempre parte dela — nunca da rede.
 - **Deduplicação por `url_hash`**, nunca pela URL crua (querystrings de tracking variam).
 - **Toda alteração de schema passa por Alembic.** Nada de `CREATE TABLE` solto.
 - **Prefixo `v1-` em toda tabela da pipeline nova** (`PREFIXO_TABELA` em `db/models.py`, migration
   0008). O nome real é `v1-raw_articles`, `v1-painel_logs` etc.; as 8 de entrega são `v1-noticias` …
   `v1-indices` (o CSV continua com o nome da spec). Ficam sem prefixo só `features_dataset_v1`
-  (dataset v1 congelado) e `alembic_version`. O hífen exige aspas em SQL escrito à mão: `"v1-raw_articles"`
-  no PostgreSQL, `` `v1-raw_articles` `` no MySQL. No código, prefira `Model.__table__`.
+  (dataset v1 congelado) e `alembic_version`. O hífen exige crase em SQL escrito à mão: `` `v1-raw_articles` ``.
+  No código, prefira `Model.__table__`.
 - **Segredos só em `.env`** (nunca commitado). `.env.example` documenta as chaves.
 - **Vazamento temporal é bug de corretude**, não detalhe: features em `t` só usam dados com
   timestamp `<= t`. O `target` é o único campo que olha `t+1`. Há teste dedicado para isso.
@@ -189,10 +189,9 @@ o que se perdeu com isso.**
 ## 6. Comandos
 
 ```bash
-# Postgres local (instalado via conda em D:, NAO e servico do Windows --
-# nao sobe sozinho no boot):
-powershell scripts\pg-start.ps1           # sobe    | pg-stop.ps1 para
-alembic upgrade head                      # aplica migrations
+# Banco: MySQL 8 do .env, o UNICO do projeto (nao ha banco local).
+# Migrations contra ele: ver docs/MIGRACAO-MYSQL.md.
+alembic upgrade head                      # aplica migrations (usuario com DDL)
 python -m tcc_scraper.cli db-info         # confere dialeto e tabelas
 
 python -m tcc_scraper.cli collect-prices  # Fase 2: Yahoo + BCB
@@ -217,6 +216,7 @@ python -m tcc_scraper.cli daily [--etapa ID] [--origem manual]  # Daily de 9 eta
 python -m tcc_scraper.cli historico --anos 2025 --anos 2026 [--modo pendentes]  # carga historica (bloqueante)
 
 pytest                                    # testes (sem rede — usam fixtures)
+# Testes com banco sao opt-in (gravam no MySQL do .env): TCC_TESTES_COM_BANCO=1 pytest
 ```
 
 A coleta de notícias leva **6–9 h** na primeira execução (9.010 janelas + subdivisões).
@@ -247,29 +247,32 @@ Se o projeto não aparecer, rode `index_repository` antes de qualquer exploraç�
 
 ---
 
-## 8. Bancos suportados — PostgreSQL e MySQL 8
+## 8. Banco: MySQL 8, único
 
-O projeto roda nos dois e o **dataset sai bit a bit idêntico** (verificado por teste de
-paridade que monta o dataset a partir de cada banco e compara).
+O projeto tem **um banco só**: o MySQL do `.env` (`IP_BANCO`, `USER_BANCO`, `SENHA_BANCO`,
+`PORTA_BANCO`, `NOME_BANCO`). Não existe PostgreSQL nem banco local; a URL é montada sempre pelo
+`Settings.effective_url`. Decisão e custo em `docs/ADR.md` ("Um banco só").
 
-Três decisões tornam isso possível, e nenhuma é cosmética:
+Decisões de tipo e de SQL que continuam valendo:
 
 | Ponto | Por quê |
 |---|---|
 | **Camadas viram prefixo** (`v1-raw_articles`), não schema | MySQL não tem schemas — lá "schema" e "database" são a mesma coisa |
 | **`Double`, nunca `Float`** | `sa.Float()` vira 4 bytes no MySQL: `0.7766114473342896` voltava `0.776611` |
-| **`UTCDateTime`** em vez de `DateTime(timezone=True)` | MySQL não guarda fuso; sem isso, matéria das 22h cairia em dias diferentes conforme o banco |
+| **`UTCDateTime`** | MySQL não guarda fuso; sem isso, matéria das 22h cairia em dias diferentes |
 
 E o `RETURNING` **não existe no MySQL** — por isso `google_news._persist` grava em lote,
 relê os ids pelo `url_hash` e só então grava os vínculos: três queries por janela,
 independentemente do número de matérias.
 
-Roteiro completo de migração: **[docs/MIGRACAO-MYSQL.md](docs/MIGRACAO-MYSQL.md)**.
-Script de cópia de dados: `scripts/migrar_dados.py` (idempotente, com conferência).
+Roteiro de migrations e de acesso: **[docs/MIGRACAO-MYSQL.md](docs/MIGRACAO-MYSQL.md)**.
 
 **Pegadinha do MySQL:** a collation `utf8mb4_0900_ai_ci` ignora acentos em `LIKE` —
-`LIKE '%ã%'` deu 584 linhas no Postgres e 2.078 no MySQL sobre os mesmos dados. Não
-afeta o pipeline (nenhuma query dele usa `LIKE`), mas afeta consultas de análise.
+`LIKE '%ã%'` devolve linhas a mais do que o esperado. Não afeta o pipeline (nenhuma query dele
+usa `LIKE`), mas afeta consultas de análise.
+
+**Testes com banco são opt-in.** Gravam no banco real, por isso só rodam com
+`TCC_TESTES_COM_BANCO=1`; sem a variável são pulados. Cada um limpa só as linhas que criou.
 
 ---
 

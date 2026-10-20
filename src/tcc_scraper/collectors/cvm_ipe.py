@@ -164,8 +164,8 @@ def _persist(docs: list[IpeDocumento]) -> int:
         return 0
     agora = dt.datetime.now(dt.UTC)
 
-    # O mesmo protocolo ou link repetido no CSV e resolvido aqui: o PostgreSQL aborta lote
-    # com chave repetida.
+    # O mesmo protocolo ou link repetido no CSV e resolvido aqui: o lote nao pode trazer
+    # a mesma chave duas vezes (ver db/upsert.deduplicate).
     por_protocolo = {doc.protocolo: doc for doc in docs}
     por_hash = {url_hash(doc.link): doc for doc in por_protocolo.values()}
 
