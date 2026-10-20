@@ -98,6 +98,16 @@ def test_parse_chart_datas_ordenadas_e_unicas(yahoo_json: dict) -> None:
     assert len(datas) == len(set(datas))
 
 
+def test_parse_chart_indice_sem_adjclose_usa_close() -> None:
+    """Indice (IDIV) pode vir sem adjclose: a linha cai no close em vez de sumir."""
+    raw = json.loads((FIXTURES / "yahoo_chart_idiv.json").read_text(encoding="utf-8"))
+    del raw["chart"]["result"][0]["indicators"]["adjclose"]
+    rows = parse_chart(raw, ticker="IDIV")
+
+    assert rows
+    assert all(r.adj_close == r.close for r in rows)
+
+
 # --------------------------------------------------------------------------------------
 # Banco Central
 # --------------------------------------------------------------------------------------
