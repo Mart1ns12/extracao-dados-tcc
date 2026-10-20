@@ -3,11 +3,14 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from tcc_scraper.config import (
     APELIDOS,
     IBOV_TICKERS,
     MUDANCAS_TICKER,
     NOMES_EMPRESA,
+    TICKER_CODE_CVM,
     UNITS,
     UNIVERSO_HISTORICO,
     Settings,
@@ -72,3 +75,20 @@ def test_apelidos_chaves_no_universo_e_listas_nao_vazias():
     for ticker, marcas in APELIDOS.items():
         assert ticker in universo, ticker
         assert marcas, ticker
+
+
+def test_ticker_code_cvm_so_tem_tickers_do_universo_e_codigos_positivos():
+    assert set(TICKER_CODE_CVM) <= set(universo_coleta())
+    assert all(cvm > 0 for cvm in TICKER_CODE_CVM.values())
+
+
+FALTANDO_CVM = sorted(set(universo_coleta()) - set(TICKER_CODE_CVM))
+
+
+@pytest.mark.xfail(
+    bool(FALTANDO_CVM),
+    reason=f"sem codigo CVM (busca da B3 nao casou): {FALTANDO_CVM}",
+    strict=True,
+)
+def test_todo_ticker_do_universo_tem_codigo_cvm():
+    assert not FALTANDO_CVM
