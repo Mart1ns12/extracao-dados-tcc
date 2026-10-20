@@ -209,7 +209,27 @@ Sequência da mudança:
    presentes.
 
 A 0008 ainda não foi aplicada no MySQL de produção. A ordem de entrada está em [Operação e deploy](08-operacao-e-deploy.md),
-seção 5.
+seção 5. *(Nota de 2026-10-20: a pendência foi resolvida, e o schema já está aplicado no MySQL de produção. Ver 6.1.)*
+
+### 6.1 Alembic descontinuado e faxina (2026-10-20)
+
+Com o banco unificado e o schema já aplicado no MySQL de produção (estado equivalente à antiga 0008, aplicada pelo
+dono), o Alembic deixou de ter função e foi descontinuado. O ADR "Alembic descontinuado (2026-10-20)" está em
+[ADR](ADR.md).
+
+- **Removidos**: `alembic.ini`, a pasta `alembic/`, a dependência no `pyproject.toml` e os `sql/*.mysql.sql` gerados
+  pelo Alembic.
+- **Adicionados**: `sql/schema.mysql.sql`, com o schema completo do estado atual, para banco vazio (não cria
+  `alembic_version`). A regra de alteração passa a ser manual: muda o model em `src/tcc_scraper/db/`, atualiza
+  `sql/schema.mysql.sql` e escreve o ALTER em `sql/alteracoes/AAAA-MM-DD_descricao.mysql.sql`, aplicado à mão com
+  aprovação do dono.
+- **Código morto removido**: `NATIVE_FEEDS`, `COLETORES_HISTORICO` e `Settings.brapi_token` (`BRAPI_TOKEN`). Não havia
+  coletor Brapi nem de RSS nativo implementado. As duas fontes continuam aprovadas na decisão, sem implementação.
+- **`db-info`** sugere `sql/schema.mysql.sql` no lugar de `alembic upgrade head`.
+- **Documentação** atualizada: `CLAUDE.md`, `README.md`, e os docs 06, 07 e 08 e o ADR. O histórico anterior foi mantido.
+- **`alembic_version`** continua no MySQL de produção, sem uso. A remoção aguarda aprovação do dono.
+- **Reversão**: a reversão de uma alteração é escrita à mão. A da 0008, por exemplo, seria `RENAME TABLE` das 25 tabelas
+  de volta. O `alembic downgrade 0007` citado acima deixou de existir.
 
 ## 7. Decisões tomadas pelo agente
 
@@ -254,7 +274,7 @@ esteja errado. Onde o ledger não registra custo, a célula tem `-`.
 
 ## 8. Pendências do dono
 
-- **Aplicar a 0008 e remover a linha `0002`** junto com o deploy (passos 2 e 3 de [Operação e deploy](08-operacao-e-deploy.md), seção 5).
+- **Remover `alembic_version`**: o schema já está aplicado no MySQL de produção. Falta só `DROP TABLE alembic_version`, quando o dono aprovar (ver [Operação e deploy](08-operacao-e-deploy.md), seção 5, e [Banco de dados](06-banco-de-dados.md), seção 4.4).
 - **Conferir o `.env` local**: remover `DB_TARGET` e `DATABASE_URL`, variáveis do PostgreSQL.
 - **Deploy no Railway**: serviço do executor, variáveis e `EXECUTOR_TOKEN` igual ao da API do painel.
 - **Merge do `feat/executor-painel`** na `main`. Decisão do dono.
@@ -268,7 +288,7 @@ esteja errado. Onde o ledger não registra custo, a célula tem `-`.
 - **Acentos na coluna `empresa`**: decisão de dado, não de código. Hoje sai sem acento.
 - **`.cursor/rules/codebase-memory.mdc`, linha 56**: ainda cita PostgreSQL.
 - **Docs fora deste trabalho** (feito na etapa final de documentação): os documentos absorvidos foram removidos, os links foram corrigidos, as docstrings citadas passaram a usar `v1-`, o `CLAUDE.md` diz que a juíza compartilha o teto de US$ 5/mês do Gemini, e a entrada do Jev no ADR diz que aguarda aprovação do dono.
-- **Ajuste técnico**: `autoincrement=False` em `raw_b3_cadastro.cd_cvm`, no modelo e na migration (ver [Banco de dados](06-banco-de-dados.md), seção 7).
+- **Ajuste técnico**: `autoincrement=False` em `raw_b3_cadastro.cd_cvm`, no modelo e no ALTER correspondente em `sql/alteracoes/` (ver [Banco de dados](06-banco-de-dados.md), seção 7).
 
 ## 9. Lacunas
 

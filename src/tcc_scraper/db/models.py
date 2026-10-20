@@ -34,12 +34,12 @@ from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 
-# Prefixo das 25 tabelas CRIADAS pela pipeline nova (migrations 0004-0007), pedido do dono:
+# Prefixo das 25 tabelas CRIADAS pela pipeline nova (antigas migrations 0004-0007), pedido do dono:
 # `v1-painel_comandos`, `v1-raw_ipe_docs`, `v1-noticias`. As que ja existiam (0001-0003)
 # mantem o nome original, inclusive as que a pipeline nova le (`raw_articles`, `raw_prices`).
 # O hifen obriga aspas em SQL escrito a mao (`"v1-raw_ipe_docs"`); o SQLAlchemy ja quota.
-# Trocar o prefixo depois exige uma migration nova e esta linha. Nao vale para
-# `features_dataset_v1` (dataset v1 congelado) nem para `alembic_version`: ficam com o nome antigo.
+# Trocar o prefixo depois exige RENAME TABLE a mao em sql/alteracoes/ e esta linha. Nao vale para
+# `features_dataset_v1` (dataset v1 congelado): fica com o nome antigo.
 PREFIXO_TABELA = "v1-"
 # As camadas viram PREFIXO no nome da tabela (raw_/staging_/features_), nao schema
 # separado: no MySQL "schema" e "database" sao a mesma coisa.

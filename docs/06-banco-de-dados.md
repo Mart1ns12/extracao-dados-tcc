@@ -1,7 +1,7 @@
-# Banco de dados: MySQL 8 único, dicionário das 39 tabelas e migrations
+# Banco de dados: MySQL 8 único, dicionário das 39 tabelas e schema
 
-Este documento cobre o banco do projeto: o servidor, o dicionário de todas as tabelas, as migrations 0001 a 0008,
-as regras de tipo e de escrita e os testes que gravam no banco. Absorve o antigo roteiro de migração MySQL, que foi removido.
+Este documento cobre o banco do projeto: o servidor, o dicionário de todas as tabelas, o schema e as alterações de
+schema, as regras de tipo e de escrita e os testes que gravam no banco. Absorve o antigo roteiro de migração MySQL, que foi removido.
 
 ## 1. Banco único
 
@@ -15,7 +15,7 @@ configurações o `localhost` força conexão por socket Unix e ignora a porta.
 
 | Item | Exigência | Motivo |
 |---|---|---|
-| Versão do servidor | MySQL 8.0 ou superior | Em 5.7 a migration falha: o índice de `url_hash` com `utf8mb4` não cabe |
+| Versão do servidor | MySQL 8.0 ou superior | Em 5.7 o schema não sobe: o índice de `url_hash` com `utf8mb4` não cabe |
 | Charset do banco | `utf8mb4` | O `utf8` do MySQL guarda 3 bytes por caractere e corrompe emoji e parte dos acentos das manchetes |
 | Collation | `utf8mb4_0900_ai_ci` (padrão do MySQL 8) | Ignora acento em `LIKE`; ver seção 5 |
 | Driver | `pymysql` e `cryptography` | O `cryptography` é exigido pelo `caching_sha2_password`, padrão do MySQL 8 |
@@ -32,7 +32,7 @@ CREATE DATABASE tcc_scraper
   COLLATE utf8mb4_0900_ai_ci;
 ```
 
-Usuários. Migrations exigem DDL (`CREATE`, `ALTER`, `DROP`, `INDEX`). O executor e a coleta precisam só de
+Usuários. Criar o schema e alterá-lo exige DDL (`CREATE`, `ALTER`, `DROP`, `INDEX`). O executor e a coleta precisam só de
 `SELECT`, `INSERT`, `UPDATE` e `DELETE`. Para um servidor novo, restrinja o acesso ao IP de quem conecta:
 
 ```sql
@@ -54,9 +54,9 @@ As camadas são **prefixo no nome da tabela**, não schema: no MySQL, "schema" e
 | sem prefixo de camada | Tabelas de entrega, com nomes fixos pela spec | `noticias` (com `v1-`) |
 
 O prefixo `v1-` (`PREFIXO_TABELA` em `db/models.py`) marca as **25 tabelas criadas pela pipeline nova**
-(migrations 0004 a 0007), por pedido do dono: 8 `painel_*`, 9 de fontes e juíza e as 8 de entrega. As 14 tabelas
-que já existiam (0001 a 0003) mantêm o nome original. `features_dataset_v1` e `alembic_version` também não
-recebem o prefixo.
+(criadas nas antigas migrations 0004 a 0007), por pedido do dono: 8 `painel_*`, 9 de fontes e juíza e as 8 de entrega.
+As 14 tabelas que já existiam (antigas migrations 0001 a 0003) mantêm o nome original. `features_dataset_v1` também não
+recebe o prefixo.
 
 O hífen obriga crase em SQL escrito à mão:
 
@@ -156,62 +156,42 @@ Por padrão, o `bulk_upsert` (seção 5) grava só linhas novas: com `update_col
 Atenção: a regra de projeto "a camada `raw` é imutável e append-only" não vale literalmente para as linhas acima.
 Ver seção 7.
 
-## 4. Migrations
+## 4. Schema e alterações
 
-A cadeia tem oito revisões. A 0008 é a única que renomeia tabelas; a 0002 e a 0007 são ajustes de schema.
+Até 2026-10-20 o schema era versionado por Alembic (migrations 0001 a 0008). Com a unificação do banco, o Alembic foi
+descontinuado: o schema atual fica em um arquivo SQL, e cada alteração é escrita e aplicada à mão.
 
-| Migration | Data | O que faz |
-|---|---|---|
-| 0001 | 2026-09-07 (reescrita em 2026-09-21) | Estrutura inicial: 8 tabelas (`raw_articles`, `raw_article_bodies`, `raw_prices`, `raw_macro`, `raw_collection_runs`, `staging_article_tickers`, `staging_article_sentiment`, `features_dataset_v1`). Já usa `Double` e `UTCDateTime` |
-| 0002 | 2026-09-21 | `raw_collection_runs`: `items_found` e `hit_cap` passam a NOT NULL, como o modelo declara |
-| 0003 | 2026-10-15 | Análise diária por LLM: 6 tabelas (`raw_llm_prompts`, `raw_llm_runs`, `staging_llm_noticias_empresas`, `staging_llm_noticias_macro`, `staging_llm_acoes_sinais`, `staging_llm_mercados`). Textos longos em `LONGTEXT` |
-| 0004 | 2026-10-19 | Painel: 8 tabelas `painel_*`. `raw_articles` ganha `origem` (padrão `google_news`) e `published_precision` (padrão `datetime`) |
-| 0005 | 2026-10-19 | Fontes e juíza: 9 tabelas (`raw_ipe_docs`, `raw_cvm_balancos`, `raw_cvm_acoes`, `raw_cvm_cadastro`, `raw_b3_cadastro`, `raw_b3_proventos`, `raw_b3_suplemento`, `raw_llm_juiza_runs`, `staging_noticias_julgamento`) |
-| 0006 | 2026-10-19 | Entrega: 8 tabelas sem camada no nome. `noticias` leva 7 colunas extras do desenho (`data_publicacao`, `momento_pregao`, `origem`, `papel`, `tipo_conteudo`, `evento`, `qualidade`). `data_hora_*` são texto ISO com offset, porque o MySQL não guarda fuso |
-| 0007 | 2026-10-19 | Alarga colunas de texto de `raw_ipe_docs`, que estouravam com dados reais: `tipo_apresentacao` de 32 para 64, `categoria` de 64 para 128, `tipo` e `especie` de 128 para 255. `protocolo_entrega` fica em 32 (maior valor medido: 30 caracteres). O downgrade falha se houver valor acima do tamanho antigo |
-| 0008 | 2026-10-20 | Prefixo `v1-`: `RENAME TABLE` nas 25 tabelas criadas a partir da 0004. Chaves, índices e constraints mantêm o nome antigo; as FKs seguem a tabela. O downgrade desfaz os 25 renames |
+### 4.1 Banco vazio
 
-Após a 0008 o banco tem 39 tabelas: 14 sem prefixo e 25 com `v1-`.
+`sql/schema.mysql.sql` tem o schema completo do estado atual, com as 39 tabelas. Para criar um banco vazio, aplique esse
+arquivo com um usuário que tem DDL. Ele não cria a tabela `alembic_version`. Banco que já tem as tabelas não precisa dele.
 
-### 4.1 Como aplicar
+### 4.2 Alterar o schema
 
-Migrations rodam **da máquina local, contra o banco do `.env`**, com um usuário que tem DDL. O executor no Railway
-não tem DDL e nunca roda migration.
+Toda alteração segue estes passos:
 
-Antes de tudo, confira o estado do banco:
+1. Mude o model em `src/tcc_scraper/db/`.
+2. Atualize `sql/schema.mysql.sql` para refletir o estado novo.
+3. Escreva o ALTER em `sql/alteracoes/AAAA-MM-DD_descricao.mysql.sql`, uma alteração por arquivo.
+4. Com aprovação do dono (o banco é produção), aplique o ALTER à mão, da máquina local, com usuário que tem DDL, no
+   banco do `.env`.
 
-```sql
-SELECT version_num FROM alembic_version;
-```
+Não há mais `alembic check` para detectar divergência entre o model e o banco: a conferência é revisão manual.
+`db-info` mostra o destino e confere se as tabelas existem; não compara colunas com o model.
 
-No MySQL de produção, hoje, a tabela tem duas linhas (`0002` e `0007`). A linha `0002` é uma sobra antiga, e o
-cabeçalho de `sql/0008_prefixo_v1.mysql.sql` diz que ela faz o `UPDATE` da 0008 falhar. Remova-a antes de qualquer
-migration:
+**DDL não tem rollback no MySQL.** Uma alteração que quebra no meio deixa o banco parcialmente alterado, e o
+`RENAME TABLE` também não é transacional. Antes de aplicar em banco com dados, confira o SQL e tenha backup. Reverter é
+outra alteração escrita à mão (por exemplo, um `RENAME TABLE` de volta), com a mesma aprovação.
 
-```sql
-DELETE FROM alembic_version WHERE version_num = '0002';
-```
+### 4.3 Executor
 
-Depois, uma das duas vias:
+O executor no Railway não tem DDL e nunca aplica alteração de schema. Alterações saem sempre da máquina local.
 
-```bash
-# Via Alembic (recomendado): aplica o que faltar
-alembic upgrade head
-python -m tcc_scraper.cli db-info     # mostra o destino sem a senha e as tabelas; so leitura
-```
+### 4.4 Resquícios do Alembic
 
-```bash
-# Via SQL gerado: mesmo efeito da 0008, para quem prefere revisar o script antes.
-# Arquivo: sql/0008_prefixo_v1.mysql.sql (o cabecalho ja traz o DELETE acima)
-```
-
-Para banco vazio, sem nenhuma tabela do projeto, use `sql/completo_ate_0008.mysql.sql`. Ele cria o schema até a 0008
-em um arquivo só, com os nomes antigos e os `RENAME` no fim. Para banco já na 0003, aplique `sql/0004_*` a
-`sql/0008_*`, nessa ordem. O arquivo `sql/completo_ate_0003.mysql.sql` é histórico e não serve para banco novo.
-
-**DDL não tem rollback no MySQL.** Uma migration que quebra no meio deixa o banco parcialmente alterado. O
-`RENAME TABLE` da 0008 também não é transacional: se falhar no meio, parte das tabelas já foi renomeada. Antes de
-aplicar em banco com dados reais, confira o SQL gerado e tenha backup.
+- A tabela `alembic_version` ainda existe no MySQL de produção, sem uso. Pode ser removida com
+  `DROP TABLE alembic_version`, quando o dono aprovar. Ainda não foi removida.
+- As revisões antigas do Alembic estão no histórico do git, anteriores à remoção da pasta `alembic/`.
 
 ## 5. Regras de tipo e de escrita
 
@@ -224,8 +204,8 @@ aplicar em banco com dados reais, confira o SQL gerado e tenha backup.
 | Uma chave única relevante por tabela | `db/upsert.py` | O MySQL dispara o conflito em qualquer chave única violada, não só na indicada em `index_elements`. Uma segunda chave única exige revisar o módulo |
 | `update_columns=None` preserva a linha | `db/upsert.py` | O MySQL não tem "do nothing". O código atribui a primeira coluna da chave a si mesma, o que só neutraliza o conflito. `INSERT IGNORE` não é usado porque engole erro de truncagem |
 | Dedupe por `url_hash` | `db/models.py` (`canonical_url`, `url_hash`) | A URL crua varia por querystring de rastreamento |
-| Texto longo em `LONGTEXT` | 0003 e 0005 | `TEXT` no MySQL tem 64 KB; uma resposta do Gemini passa disso |
-| Índice em `url_hash` | 0001 e 0008 | Exige MySQL 8 com `utf8mb4` |
+| Texto longo em `LONGTEXT` | Antigas migrations 0003 e 0005 | `TEXT` no MySQL tem 64 KB; uma resposta do Gemini passa disso |
+| Índice em `url_hash` | Antigas migrations 0001 e 0008 | Exige MySQL 8 com `utf8mb4` |
 
 **Collation e `LIKE`.** A collation `utf8mb4_0900_ai_ci` ignora acento: `WHERE title LIKE '%ã%'` traz mais linhas
 que uma busca sensível a acento. Para busca sensível, force a collation:
@@ -253,12 +233,12 @@ Por isso, cada teste limpa só as linhas que criou, pelos prefixos `TESTE-`, `RE
 
 - **Preços: 48.564 em `raw_prices` e 48.561 em `v1-precos`.** `raw_prices` tem 48.564 linhas: é a coleta, que inclui IDIV, SMLL, IFIX e os símbolos macro. `v1-precos` tem 48.561 linhas, montadas na verificação de ponta a ponta, no Postgres local, antes da migração para o banco único.
 - **`raw_b3_cadastro.cd_cvm` vira `AUTO_INCREMENT`.** A PK é um `Integer` simples, e o SQLAlchemy gera
-  `AUTO_INCREMENT` no DDL (ver `sql/completo_ate_0008.mysql.sql`). É inofensivo, porque o coletor sempre informa
-  o `cd_cvm`. A correção certa é `autoincrement=False` no modelo e na migration. Não foi feita.
+  `AUTO_INCREMENT` no DDL (ver `sql/schema.mysql.sql`). É inofensivo, porque o coletor sempre informa
+  o `cd_cvm`. A correção certa é `autoincrement=False` no modelo e um ALTER em `sql/alteracoes/`. Não foi feita.
 - **"Raw append-only" não é literal.** Há UPDATEs em `raw_prices`, `raw_macro`, `raw_articles.resolved_url`, `v1-raw_cvm_cadastro` e `v1-raw_b3_cadastro` (seção 3.3). São reingestões e preenchimento de campo, não reescrita de histórico. O `CLAUDE.md` (seção 5) registra essa exceção.
-- **Nenhum servidor MySQL de teste.** Migrations e testes com banco rodam contra o MySQL do `.env`. A paridade do
+- **Nenhum servidor MySQL de teste.** Alterações de schema e testes com banco rodam contra o MySQL do `.env`. A paridade do
   dataset entre dois bancos, que existia com PostgreSQL, não foi reexecutada depois da migração para banco único.
 - **Números de linhas da seção 3.** Os valores vêm do ponta a ponta (T30), executado na noite de 2026-10-19 para
   2026-10-20 no PostgreSQL local, antes da migração para o MySQL único. Não foram lidos do MySQL de produção.
-- **Migrations 0004 a 0008 não aplicadas no MySQL de produção.** O banco está na 0007, com a linha `0002` a remover.
-  A 0008 foi conferida contra o MySQL (as 25 origens existem e as 14 tabelas antigas estão presentes), mas não aplicada.
+- **Schema de produção.** O MySQL de produção está com o schema atual, equivalente à antiga migration 0008, aplicada pelo
+  dono. A tabela `alembic_version` ainda existe, sem uso (seção 4.4).

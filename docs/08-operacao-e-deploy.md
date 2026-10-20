@@ -168,7 +168,6 @@ ali. Os caminhos de `EXPORT_DIR`, `ENTREGA_CSV_DIR` e `HF_CACHE_DIR` são padrõ
 | `DATA_END` | `2026-09-01` | sim | Fim da janela do dataset. Não muda com a coleta diária |
 | `PRICE_WARMUP_DAYS` | `400` | sim | Dias corridos antes de `DATA_START` para aquecer as janelas de 20 pregões |
 | `DATA_FIM_COLETA` | vazio = hoje | comentada | Fim rolante da coleta diária. Fixar só para reproduzir um dia |
-| `BRAPI_TOKEN` | vazio | sim | Token opcional da Brapi (fallback de preço). Funciona sem token |
 
 ### 3.3 Coleta e limites de requisição
 
@@ -256,8 +255,8 @@ O scraper roda no Railway como **worker sempre ligado**: o serviço executa `pyt
   - use senha forte e única (32 caracteres aleatórios ou mais) e nunca a grave em arquivo versionado.
 
   O usuário `tcc`, com DDL, continua sendo o da máquina local.
-- **Migrations não rodam no serviço.** O usuário do executor não tem DDL. As migrations saem da máquina local
-  (seção 5).
+- **Alterações de schema não rodam no serviço.** O usuário do executor não tem DDL. Os ALTERs de `sql/alteracoes/`
+  são aplicados da máquina local (seção 5).
 - **Um processo só.** O estado do daily e da carga histórica fica em memória. Não escale para mais de um executor no
   mesmo banco.
 - **Disco efêmero.** Parquet e CSV gerados no contêiner somem no próximo deploy.
@@ -268,42 +267,29 @@ Esta é a ordem. Cada passo depende do anterior.
 
 1. **Confirmar o servidor.** MySQL 8.0 ou superior, banco `tcc_scraper` com `utf8mb4`. Fazer backup antes de
    qualquer DDL. Ver [Banco de dados](06-banco-de-dados.md), seções 1 e 4.
-2. **Remover a linha `0002` do `alembic_version`.** Confirme antes com `SELECT version_num FROM alembic_version;`,
-   que deve devolver `0002` e `0007`:
-
-   ```sql
-   DELETE FROM alembic_version WHERE version_num = '0002';
-   ```
-
-3. **Aplicar a migration 0008 (prefixo `v1-`).** Da máquina local, com usuário que tem DDL:
-
-   ```bash
-   alembic upgrade head
-   python -m tcc_scraper.cli db-info
-   ```
-
-   Ou, em vez do Alembic, o SQL `sql/0008_prefixo_v1.mysql.sql`. Confirme `version_num = '0008'` e que o `db-info`
-   encontra as tabelas com `v1-`. O banco deve ter 39 tabelas.
-4. **Conferir o `.env` local.** Pendência do dono: remover `DB_TARGET` e `DATABASE_URL`, variáveis do antigo
-   PostgreSQL. O código não as lê, mas elas confundem.
-5. **Deploy do executor no Railway.** Variáveis da seção 4, com `EXECUTOR_TOKEN` igual ao da API. Confirme nos logs
+2. **Conferir o schema.** O schema atual já está aplicado no MySQL de produção, com as 39 tabelas (14 sem prefixo e 25
+   com `v1-`). Não há passo pendente. Confira com `python -m tcc_scraper.cli db-info`, que só lê. Para banco vazio, aplique
+   `sql/schema.mysql.sql` com usuário que tem DDL. Alterações futuras seguem [06](06-banco-de-dados.md), seção 4.2.
+3. **Conferir o `.env` local.** Pendência do dono: remover `DB_TARGET` e `DATABASE_URL`, variáveis do antigo
+   PostgreSQL. O código não as lê, mas elas confundem. O `.env` não é versionado.
+4. **Deploy do executor no Railway.** Variáveis da seção 4, com `EXECUTOR_TOKEN` igual ao da API. Confirme nos logs
    que o worker sobe e envia heartbeat.
-6. **Bloqueio do modo live.** Antes de ligar a API em `MODO=live`: no repositório do painel (`interface-acompanhamento`), as rotas `/api/executor/*` respondem `501`, porque `FilaComandosMySQL` (`api/app/fila.py`) e `fontes/mysql.py` (`api/app/fontes/mysql.py`) ainda são TODO. Enquanto isso, o executor não recebe comandos da API live: o loop segue rodando, sem aplicar nada. Só avance quando essas duas peças estiverem implementadas do lado do painel. Detalhes em [Executor e painel](07-executor-e-painel.md), seção 9.
-7. **API do painel em `MODO=live`.** Mesmo banco e mesmo `EXECUTOR_TOKEN`. Confirme `executor: ok` em
+5. **Bloqueio do modo live.** Antes de ligar a API em `MODO=live`: no repositório do painel (`interface-acompanhamento`), as rotas `/api/executor/*` respondem `501`, porque `FilaComandosMySQL` (`api/app/fila.py`) e `fontes/mysql.py` (`api/app/fontes/mysql.py`) ainda são TODO. Enquanto isso, o executor não recebe comandos da API live: o loop segue rodando, sem aplicar nada. Só avance quando essas duas peças estiverem implementadas do lado do painel. Detalhes em [Executor e painel](07-executor-e-painel.md), seção 9.
+6. **API do painel em `MODO=live`.** Mesmo banco e mesmo `EXECUTOR_TOKEN`. Confirme `executor: ok` em
    `/api/componentes`.
-8. **Primeiro daily pelo painel.** Dispare um daily (ou só a etapa `precos`) e confirme que a execução termina em `concluida` ou
+7. **Primeiro daily pelo painel.** Dispare um daily (ou só a etapa `precos`) e confirme que a execução termina em `concluida` ou
    `parcial`, com as 9 etapas e `unidades_total` preenchido. O daily automático roda às `DAILY_HORA` (18:30).
 
-Carga histórica: depois do passo 8, dispare `historico` pelo painel, com `--anos` dos anos desejados. Ela tem
+Carga histórica: depois do passo 7, dispare `historico` pelo painel, com `--anos` dos anos desejados. Ela tem
 prioridade sobre o daily, e o daily espera a carga pausar ou terminar.
 
 ## 6. Problemas conhecidos e soluções
 
 | Sintoma | Causa | Solução |
 |---|---|---|
-| `alembic upgrade` ou o `UPDATE` da 0008 falha | Linha `0002` sobrando em `alembic_version` | Remover a linha `0002` (passo 2 da seção 5) |
-| Erro de tamanho de coluna em `v1-raw_ipe_docs` | Dados reais da CVM maiores que os tamanhos da 0005 | Resolvido pela 0007. Se voltar, o valor é maior que os novos tamanhos: nova migration |
-| `IntegrityError` na chave de `raw_collection_runs` ao carregar dados antigos | Sequências do PostgreSQL atrás dos ids copiados | Não se aplica mais: o banco é só MySQL, com `AUTO_INCREMENT`, e o `migrar_dados.py` foi removido |
+| Falha ao aplicar um ALTER de `sql/alteracoes/` | Erro de SQL no meio, ou o ALTER não bate com o estado do banco | Confira o estado do banco antes de reexecutar. DDL não tem rollback: tenha backup (doc 06, seção 4) |
+| Erro de tamanho de coluna em `v1-raw_ipe_docs` | Dados reais da CVM maiores que os tamanhos antigos | Resolvido com o alargamento das colunas (antiga 0007). Se voltar, o valor é maior que os tamanhos atuais: novo ALTER em `sql/alteracoes/` |
+| `IntegrityError` na chave de `raw_collection_runs` ao carregar dados antigos | Sequências do PostgreSQL atrás dos ids copiados | Não se aplica mais: o banco é só MySQL, com `AUTO_INCREMENT` |
 | Busca em `LIKE` traz linhas a mais | A collation `utf8mb4_0900_ai_ci` ignora acento | Use `COLLATE utf8mb4_0900_as_cs` em consulta de análise. O pipeline não usa `LIKE` |
 | Conexão cai no meio de uma coleta longa | O MySQL fecha conexão ociosa | `pool_recycle=3600` já está em `get_engine()`. Não remover |
 | `enriquecimento` falha e o daily sai `parcial` | Instalação local sem o extra `[sentiment]` | Instale `pip install -e ".[sentiment]"`. A imagem do Railway já tem o extra |
@@ -316,7 +302,7 @@ prioridade sobre o daily, e o daily espera a carga pausar ou terminar.
 | `CRFB3` sem código CVM e sem CNPJ | Companhia fechou capital e saiu da B3 | Esperado. Fica no universo só para preço e notícia. `validate-cadastro` trata como aviso |
 | `historico --anos 2026 2025` não funciona | Opções repetíveis no Typer | Use `--anos 2026 --anos 2025` |
 | `analyze-llm` falha sem chave | `GEMINI_API_KEY` vazia | Preencha a chave. O job exige a chave e falha com mensagem clara |
-| `sql/completo_ate_0003.mysql.sql` não cria o schema atual | Arquivo histórico | Use `sql/completo_ate_0008.mysql.sql` para banco vazio |
+| `sql/completo_ate_*` ou `sql/0008_*` não existem mais | Arquivos gerados pelo Alembic, removidos na descontinuação | Use `sql/schema.mysql.sql` para banco vazio, e `sql/alteracoes/` para mudanças |
 | Testes com banco apagam ou sujam dados | Eles gravam no MySQL real do `.env` | Só rode com `TCC_TESTES_COM_BANCO=1` quando aceitar essa gravação. Limpeza restrita aos prefixos de teste |
 
 ### 6.1 Não verificado

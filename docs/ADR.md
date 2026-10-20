@@ -22,7 +22,7 @@ dominante: **custo financeiro zero**. Exceção única e aprovada: a análise di
 
 ## STACK
 
-Python 3.11+ · MySQL 8 (único banco; camadas por prefixo `raw_`, `staging_`, `painel_`) · SQLAlchemy 2.0 + Alembic ·
+Python 3.11+ · MySQL 8 (único banco; camadas por prefixo `raw_`, `staging_`, `painel_`) · SQLAlchemy 2.0 (schema em `sql/schema.mysql.sql`) ·
 httpx · lxml · trafilatura · pandas + pyarrow · transformers/torch (extra opcional) ·
 typer + rich · pytest + ruff · google-genai (extra opcional llm).
 
@@ -117,9 +117,9 @@ Escolhido (c): `Settings.effective_url` monta sempre `mysql+pymysql` a partir de
 Custo que se perde: (1) não há banco de desenvolvimento. O executor local e os testes com banco
 gravam no banco real; por isso os testes com banco são **opt-in** (`TCC_TESTES_COM_BANCO=1`) e cada
 um limpa só as linhas que criou; (2) a suíte padrão não exercita SQL de verdade, só o que roda sem
-banco; (3) DDL não tem rollback no MySQL, então uma migration ruim atinge produção. Por isso a
-migration é revisada antes (`alembic ... --sql`) e aplicada da máquina local com usuário com DDL,
-seguindo [Banco de dados](06-banco-de-dados.md), seção 4. As migrations 0001–0007 não foram editadas; a 0008 foi reescrita antes de
+banco; (3) DDL não tem rollback no MySQL, então um ALTER ruim atinge produção. Por isso cada alteração é
+revisada antes e aplicada à mão da máquina local, com usuário com DDL e aprovação do dono, seguindo
+[Banco de dados](06-banco-de-dados.md), seção 4. As antigas migrations 0001–0007 não foram editadas; a 0008 foi reescrita antes de
 ser aplicada em qualquer banco (ver a ADR do prefixo), e as que têm ramo `with_variant` seguem como histórico.
 
 **Portabilidade PostgreSQL + MySQL 8** *(superada pela ADR acima; mantida como registro).* O banco de produção do TCC é MySQL, e o
@@ -295,6 +295,20 @@ prefixo de camada com ou sem `v1-`, e as 8 de entrega só com `v1-`. Custo: o h�
 de origem); e as constraints, índices e sequências existentes mantêm o nome antigo. `uq_raw_articles_url_hash`
 tem nome explícito no modelo, igual ao da 0001. A naming_convention gera `v1-` só nas constraints das tabelas
 novas. O CSV de entrega continua sem prefixo.
+
+**Alembic descontinuado (2026-10-20).** Problema: com o banco unificado no MySQL do `.env`, já com todo o schema
+aplicado (estado equivalente à antiga migration 0008), o Alembic só custava: uma dependência, o `env.py`, a tabela de
+controle `alembic_version`, o SQL gerado duplicado em `sql/` e um executor sem DDL, que nunca roda migration. Opções:
+(a) manter o Alembic; (b) `create_all` a partir dos models, que cria banco vazio mas não altera banco existente;
+(c) SQL versionado à mão: `sql/schema.mysql.sql` com o schema completo do estado atual, para banco vazio, e cada
+alteração em `sql/alteracoes/AAAA-MM-DD_descricao.mysql.sql`, aplicada à mão com usuário com DDL e aprovação do dono.
+Escolhido (c). Removidos: `alembic.ini`, a pasta `alembic/`, a dependência no `pyproject.toml` e os `sql/*.mysql.sql`
+gerados. Custo que se perde: (1) downgrade automático: a reversão vira outra alteração escrita à mão, por exemplo um
+`RENAME TABLE` de volta; (2) autogenerate e `alembic check`, que detectavam divergência entre model e banco: hoje a
+conferência é revisão manual; (3) o histórico registrado na própria tabela de controle: passa a ser disciplina manual,
+em `sql/alteracoes/` e no [histórico de mudanças](09-historico-de-mudancas.md); (4) `db-info` só confere a existência
+das tabelas, não as colunas. A tabela `alembic_version` continua no MySQL de produção, sem uso, até o dono aprovar a
+remoção.
 ---
 
 ## PHILOSOPHY

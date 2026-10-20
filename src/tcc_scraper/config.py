@@ -78,8 +78,6 @@ class Settings(BaseSettings):
     # reproduz a coleta de um dia especifico; a janela do dataset (data_end) nao muda.
     data_fim_coleta: date | None = None
 
-    brapi_token: str = ""
-
     # Analise diaria por LLM (comando analyze-llm). A chave NAO e validada aqui:
     # o scraper local roda sem ela; so o job exige e falha com mensagem clara.
     gemini_api_key: str = ""
@@ -435,13 +433,6 @@ ARTICLE_ALLOWLIST: frozenset[str] = frozenset(
     }
 )
 
-# RSS proprios: entregam URL real e, em varios casos, content:encoded com o texto
-# completo -- sem depender do redirect opaco do Google News.
-NATIVE_FEEDS: dict[str, str] = {
-    "infomoney.com.br": "https://www.infomoney.com.br/feed/",
-    "moneytimes.com.br": "https://www.moneytimes.com.br/feed/",
-}
-
 GOOGLE_NEWS_LOCALES: tuple[dict[str, str], ...] = (
     {"lang": "pt", "hl": "pt-BR", "gl": "BR", "ceid": "BR:pt-419"},
     {"lang": "en", "hl": "en-US", "gl": "US", "ceid": "US:en"},
@@ -755,15 +746,4 @@ PADROES_PANORAMA: tuple[str, ...] = (
     r"\bveja as a[cç][oõ]es\b",
     r"\bfechamento\b.*\bbolsa\b",
     r"\bmaiores (altas|baixas|quedas)\b",
-)
-
-# Coletores que rodam na carga historica, na ordem de execucao.
-COLETORES_HISTORICO: tuple[str, ...] = (
-    "google_news",
-    "enriquecimento",
-    "finbert",
-    "yahoo",
-    "cvm_ipe",
-    "cvm_itr_dfp",
-    "b3_proventos",
 )

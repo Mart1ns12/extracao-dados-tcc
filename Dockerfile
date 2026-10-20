@@ -8,9 +8,8 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1 HF_HUB_DISABLE_TELEMETRY=1 \
     HF_CACHE_DIR=/app/.hf_cache
 WORKDIR /app
-COPY pyproject.toml alembic.ini ./
+COPY pyproject.toml ./
 COPY src ./src
-COPY alembic ./alembic
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
  && pip install --no-cache-dir ".[llm,sentiment]"
 RUN python -c "from tcc_scraper.sentiment.finbert import finbert_pt, finbert_en; finbert_pt()._load(); finbert_en()._load()"

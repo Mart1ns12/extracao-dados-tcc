@@ -74,7 +74,7 @@ def db_info() -> None:
 
     if faltando:
         console.print(f"[yellow]faltam {len(faltando)} tabelas[/yellow]: {', '.join(faltando)}")
-        console.print("rode: [bold]alembic upgrade head[/bold]")
+        console.print("banco vazio: aplique [bold]sql/schema.mysql.sql[/bold]; tabela faltando: ver [bold]sql/alteracoes/[/bold]")
     else:
         console.print(f"[green]as {len(esperadas)} tabelas existem[/green]")
 

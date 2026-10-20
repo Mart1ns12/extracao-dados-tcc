@@ -51,10 +51,10 @@ uma fonte rejeitada sem antes provar, com uma chamada real, que a limitação mu
 |---|---|---|
 | **Yahoo Finance chart API** | Preço **primário** | 5 anos com `adjclose`, sem chave. Cobre ações `.SA`, `^BVSP`, `BZ=F` (Brent), `USDBRL=X` |
 | **Google News RSS** | Notícias **históricas** | Único caminho grátis para 2 anos de histórico. Aceita `after:`/`before:` |
-| **RSS nativos dos veículos** | Notícias **correntes** | InfoMoney/MoneyTimes expõem `content:encoded` = corpo completo do artigo |
+| **RSS nativos dos veículos** | Notícias **correntes** (sem coletor implementado) | InfoMoney/MoneyTimes expõem `content:encoded` = corpo completo do artigo |
 | **BCB SGS série 432** | Selic | Oficial, sem chave, sem limite |
 | **BCB PTAX** | Dólar | Oficial, sem chave. Usar `cotacaoVenda` |
-| **Brapi** | *Fallback* de preço | Funciona sem token; free = 15.000 req/mês. Só 1 ano de histórico |
+| **Brapi** | *Fallback* de preço (sem coletor implementado) | Funciona sem token; free = 15.000 req/mês. Só 1 ano de histórico |
 
 ### Rejeitadas — e o motivo
 
@@ -117,7 +117,7 @@ retorna resultados estruturados em ~500 tokens contra ~80k de um grep amplo.
 5. `search_code(pattern=...)` — busca textual aumentada pelo grafo
 
 **Grep / Glob / Read continuam livres** (e preferíveis) para: `.env`,
-`pyproject.toml`, migrations SQL, Markdown, fixtures de teste e qualquer arquivo não-Python.
+`pyproject.toml`, arquivos SQL de `sql/`, Markdown, fixtures de teste e qualquer arquivo não-Python.
 
 **Sempre `Read` um arquivo antes de editá-lo** — o grafo diz onde está, não substitui a leitura.
 
@@ -175,12 +175,12 @@ o que se perdeu com isso.**
   naive, deslocando a agregação diária.
 - **A camada `raw` é append-only, com exceções de UPDATE.** Reprocessamento sempre parte dela — nunca da rede. As exceções reais são upserts que atualizam `raw_prices`, `raw_macro`, `raw_articles.resolved_url`, `v1-raw_cvm_cadastro` e `v1-raw_b3_cadastro` (ver [docs/06-banco-de-dados.md](docs/06-banco-de-dados.md), seção 3.3).
 - **Deduplicação por `url_hash`**, nunca pela URL crua (querystrings de tracking variam).
-- **Toda alteração de schema passa por Alembic.** Nada de `CREATE TABLE` solto.
-- **Prefixo `v1-` só nas tabelas criadas pela pipeline nova** (`PREFIXO_TABELA` em `db/models.py`,
-  migration 0008): as que nasceram a partir da 0004 (25 tabelas: `painel_*`, fontes/juíza e as 8 de
+- **Alteração de schema é manual:** muda o model em `src/tcc_scraper/db/`, atualiza `sql/schema.mysql.sql` e escreve o ALTER em `sql/alteracoes/AAAA-MM-DD_descricao.mysql.sql`. Quem aplica é o dono, com usuário com DDL, após aprovação. Nada de `CREATE TABLE` solto.
+- **Prefixo `v1-` só nas tabelas criadas pela pipeline nova** (`PREFIXO_TABELA` em `db/models.py`):
+  as que nasceram nas antigas migrations 0004–0007 (25 tabelas: `painel_*`, fontes/juíza e as 8 de
   entrega). O nome real é `v1-painel_logs`, `v1-raw_ipe_docs`, `v1-noticias` … `v1-indices` (o CSV
   continua com o nome da spec). As 14 antigas mantêm o nome, inclusive `raw_articles`, `raw_prices` e
-  `raw_llm_runs`; ficam sem prefixo também `features_dataset_v1` e `alembic_version`. O hífen exige
+  `raw_llm_runs`; ficam sem prefixo também `features_dataset_v1`. O hífen exige
   crase em SQL escrito à mão: `` `v1-raw_ipe_docs` ``.
   No código, prefira `Model.__table__`.
 - **Segredos só em `.env`** (nunca commitado). `.env.example` documenta as chaves.
@@ -193,8 +193,8 @@ o que se perdeu com isso.**
 ## 6. Comandos
 
 ```bash
-# Banco: MySQL 8 do .env, o UNICO do projeto (nao ha banco local). Migrations: docs/06-banco-de-dados.md, secao 4.
-alembic upgrade head                            # migrations (usuario com DDL)
+# Banco: MySQL 8 do .env, o UNICO do projeto (nao ha banco local). Schema e alteracoes: docs/06-banco-de-dados.md, secao 4.
+# banco vazio: aplicar sql/schema.mysql.sql (usuario com DDL)
 python -m tcc_scraper.cli db-info              # confere o banco e as tabelas (so leitura)
 python -m tcc_scraper.cli validate-tickers     # tickers do IBOV respondem no Yahoo
 python -m tcc_scraper.cli validate-cadastro    # ticker -> codigo CVM -> B3
@@ -266,7 +266,7 @@ E o `RETURNING` **não existe no MySQL** — por isso `google_news._persist` gra
 relê os ids pelo `url_hash` e só então grava os vínculos: três queries por janela,
 independentemente do número de matérias.
 
-Migrations e acesso: **[docs/06-banco-de-dados.md](docs/06-banco-de-dados.md)**.
+Schema e acesso: **[docs/06-banco-de-dados.md](docs/06-banco-de-dados.md)**.
 
 **Pegadinha do MySQL:** a collation `utf8mb4_0900_ai_ci` ignora acentos em `LIKE` —
 `LIKE '%ã%'` devolve linhas a mais do que o esperado. Não afeta o pipeline (nenhuma query dele

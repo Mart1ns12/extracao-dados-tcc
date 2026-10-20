@@ -27,14 +27,9 @@ cp .env.example .env              # preencha as variáveis do banco e, se usar, 
 python -m tcc_scraper.cli db-info # confere para qual banco o .env aponta e se as tabelas existem
 ```
 
-Em um banco novo, aplique o schema antes de coletar:
-
-```bash
-alembic upgrade head
-```
-
-Em um banco que já tem dados, leia antes [Banco de dados](docs/06-banco-de-dados.md). A migração
-0008 mexe na tabela `alembic_version` e tem um cuidado próprio.
+Em um banco novo (vazio), aplique o schema completo antes de coletar, com `sql/schema.mysql.sql`
+(usuário com permissão de DDL). Em um banco que já tem dados, leia antes
+[Banco de dados](docs/06-banco-de-dados.md), seção 4: alterações de schema são aplicadas à mão, com aprovação.
 
 Para testar uma etapa só:
 
@@ -55,7 +50,7 @@ Para a lista completa de comandos, use `python -m tcc_scraper.cli --help`. As op
 - [03 - Carga histórica](docs/03-carga-historica.md): anos passados, pausa e retomada
 - [04 - Juíza e LLM](docs/04-juiza-e-llm.md): julgamento das notícias e análise diária
 - [05 - Entrega](docs/05-entrega.md): as oito tabelas entregues, coluna por coluna
-- [06 - Banco de dados](docs/06-banco-de-dados.md): tabelas, migrações e regras de tipo
+- [06 - Banco de dados](docs/06-banco-de-dados.md): tabelas, schema e regras de tipo
 - [07 - Executor e painel](docs/07-executor-e-painel.md): worker, comandos e tabelas de progresso
 - [08 - Operação e deploy](docs/08-operacao-e-deploy.md): variáveis, Railway e checklist de produção
 - [09 - Histórico de mudanças](docs/09-historico-de-mudancas.md): o que foi feito e o que ficou pendente

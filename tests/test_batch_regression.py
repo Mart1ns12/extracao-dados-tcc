@@ -120,7 +120,7 @@ def test_probabilidades_sobrevivem_ao_round_trip(engine) -> None:
 
 
 def test_todas_as_tabelas_tem_prefixo_de_camada() -> None:
-    """Sem schemas, o prefixo e a unica marca de camada -- e o filtro do Alembic."""
+    """Sem schemas, o prefixo e a unica marca de camada -- e o filtro de tabela_do_projeto."""
     from tcc_scraper.db.models import tabela_do_projeto
 
     for tabela in Base.metadata.sorted_tables:
@@ -128,8 +128,9 @@ def test_todas_as_tabelas_tem_prefixo_de_camada() -> None:
         assert tabela.schema is None, f"{tabela.name} ainda declara schema (quebra no MySQL)"
 
 
-# Migration 0008: `v1-` so nas tabelas criadas a partir da 0004 (pipeline nova). As antigas
-# (0001-0003) mantem o nome original, mesmo as que a pipeline nova le.
+# RENAME da etapa 0008 de sql/schema.mysql.sql: `v1-` so nas tabelas criadas a partir da
+# etapa 0004 (pipeline nova). As antigas (etapas 0001-0003) mantem o nome original, mesmo as que
+# a pipeline nova le.
 TABELAS_COM_V1 = {
     "v1-painel_comandos", "v1-painel_heartbeat", "v1-painel_execucoes", "v1-painel_etapas",
     "v1-painel_historico", "v1-painel_historico_progresso", "v1-painel_logs",

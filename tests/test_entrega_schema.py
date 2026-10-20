@@ -1,6 +1,6 @@
 """Modelos das 8 tabelas de entrega, sem banco.
 
-Garante o contrato da migration 0006: nomes fixos pela spec, colunas na ordem da spec
+Garante o contrato do schema em sql/schema.mysql.sql: nomes fixos pela spec, colunas na ordem da spec
 (parte 2), chaves primarias compostas como na spec, indices uteis e nenhum Float (so Double).
 """
 

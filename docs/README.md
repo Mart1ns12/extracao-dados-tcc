@@ -12,7 +12,7 @@ Comece pelo [README da raiz](../README.md) se ainda não conhece o projeto.
 | [03 - Carga histórica](03-carga-historica.md) | Operador | Ao carregar anos passados, pausar, cancelar ou retomar uma carga |
 | [04 - Juíza e LLM](04-juiza-e-llm.md) | Operador e leitor do TCC | Para entender como as notícias são julgadas e como funciona a análise diária por Gemini, e o custo |
 | [05 - Entrega](05-entrega.md) | Quem consome as tabelas (etapa seguinte) | Para saber a origem, a chave e a regra de atualização de cada coluna das oito tabelas entregues |
-| [06 - Banco de dados](06-banco-de-dados.md) | Operador e quem consulta o banco | Para ver o dicionário de tabelas, as migrações e as regras de tipo |
+| [06 - Banco de dados](06-banco-de-dados.md) | Operador e quem consulta o banco | Para ver o dicionário de tabelas, o schema e as alterações, e as regras de tipo |
 | [07 - Executor e painel](07-executor-e-painel.md) | Operador | Para ligar o worker, entender os comandos do painel e conferir as tabelas de progresso |
 | [08 - Operação e deploy](08-operacao-e-deploy.md) | Operador | Ao preparar o ambiente, configurar variáveis, publicar no Railway ou resolver um problema conhecido |
 | [09 - Histórico de mudanças](09-historico-de-mudancas.md) | Orientador, banca e o próprio autor | Para saber o que foi feito, quando, por quê, e quais decisões e pendências ficaram abertas |

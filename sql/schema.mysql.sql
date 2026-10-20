@@ -1,23 +1,13 @@
--- Dataset 1.0 -- schema completo ate a migration 0008 (MySQL 8), em um arquivo so.
--- Gerado por:
---   alembic upgrade base:head --sql   (modo offline, dialeto MySQL; usa o MySQL do .env)
+-- Schema completo do MySQL (estado atual, equivalente às antigas migrations 0001-0008).
+-- Aplicar somente em banco VAZIO. O Alembic foi descontinuado em 2026-10-20; mudanças de schema:
+-- alterar o model em src/tcc_scraper/db/ E este arquivo, e escrever o ALTER em
+-- sql/alteracoes/AAAA-MM-DD_descricao.mysql.sql, aplicado à mão.
 --
--- Uso: banco VAZIO (sem tabelas do projeto). Banco ja na 0007: aplique so o
--- sql/0008_prefixo_v1.mysql.sql, com o pre-requisito do alembic_version descrito la.
--- Banco ja na 0003: aplique so os sql/0004_*, 0005_*, 0006_*, 0007_* e 0008_*, nessa ordem.
---   SELECT version_num FROM alembic_version;   -- deve devolver '0008' ao fim
---
--- Este arquivo cria as tabelas com o nome antigo e termina com os RENAME da 0008: o
--- resultado final tem o prefixo `v1-` em 25 tabelas (as criadas pela pipeline nova; lista
--- no cabecalho de sql/0008_prefixo_v1.mysql.sql). As 14 antigas mantem o nome.
+-- As tabelas criadas pela pipeline nova (25) saem com o prefixo `v1-` pelos RENAME da
+-- Etapa 0008, no fim do arquivo. As 14 antigas mantêm o nome.
 --
 
-CREATE TABLE alembic_version (
-    version_num VARCHAR(32) NOT NULL, 
-    CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
-);
-
--- Running upgrade  -> 0001
+-- Etapa 0001: estrutura inicial
 
 CREATE TABLE raw_articles (
     id BIGINT NOT NULL AUTO_INCREMENT, 
@@ -121,9 +111,7 @@ CREATE TABLE features_dataset_v1 (
     CONSTRAINT pk_features_dataset_v1 PRIMARY KEY (data, ticker)
 );
 
-INSERT INTO alembic_version (version_num) VALUES ('0001');
-
--- Running upgrade 0001 -> 0002
+-- Etapa 0002: raw_collection_runs NOT NULL
 
 UPDATE raw_collection_runs SET items_found = 0 WHERE items_found IS NULL;
 
@@ -133,9 +121,7 @@ ALTER TABLE raw_collection_runs MODIFY items_found INTEGER NOT NULL;
 
 ALTER TABLE raw_collection_runs MODIFY hit_cap BOOL NOT NULL;
 
-UPDATE alembic_version SET version_num='0002' WHERE alembic_version.version_num = '0001';
-
--- Running upgrade 0002 -> 0003
+-- Etapa 0003: analise LLM
 
 CREATE TABLE raw_llm_prompts (
     id BIGINT NOT NULL AUTO_INCREMENT, 
@@ -241,9 +227,7 @@ CREATE TABLE staging_llm_mercados (
     CONSTRAINT fk_staging_llm_mercados_run_id FOREIGN KEY(run_id) REFERENCES raw_llm_runs (id) ON DELETE CASCADE
 );
 
-UPDATE alembic_version SET version_num='0003' WHERE alembic_version.version_num = '0002';
-
--- Running upgrade 0003 -> 0004
+-- Etapa 0004: painel
 
 ALTER TABLE raw_articles ADD COLUMN origem VARCHAR(16) NOT NULL DEFAULT 'google_news';
 
@@ -356,9 +340,7 @@ CREATE TABLE painel_comandos_aplicados (
     CONSTRAINT pk_painel_comandos_aplicados PRIMARY KEY (id)
 );
 
-UPDATE alembic_version SET version_num='0004' WHERE alembic_version.version_num = '0003';
-
--- Running upgrade 0004 -> 0005
+-- Etapa 0005: fontes e juiza
 
 CREATE TABLE raw_ipe_docs (
     protocolo_entrega VARCHAR(32) NOT NULL, 
@@ -505,9 +487,7 @@ CREATE TABLE staging_noticias_julgamento (
 
 CREATE INDEX ix_staging_noticias_julgamento_ticker ON staging_noticias_julgamento (ticker);
 
-UPDATE alembic_version SET version_num='0005' WHERE alembic_version.version_num = '0004';
-
--- Running upgrade 0005 -> 0006
+-- Etapa 0006: entrega
 
 CREATE TABLE noticias (
     id VARCHAR(16) NOT NULL, 
@@ -606,9 +586,7 @@ CREATE TABLE indices (
 
 CREATE INDEX ix_indices_indice ON indices (indice);
 
-UPDATE alembic_version SET version_num='0006' WHERE alembic_version.version_num = '0005';
-
--- Running upgrade 0006 -> 0007
+-- Etapa 0007: IPE larguras
 
 ALTER TABLE raw_ipe_docs MODIFY categoria VARCHAR(128) NOT NULL;
 
@@ -618,9 +596,7 @@ ALTER TABLE raw_ipe_docs MODIFY especie VARCHAR(255) NULL;
 
 ALTER TABLE raw_ipe_docs MODIFY tipo_apresentacao VARCHAR(64) NULL;
 
-UPDATE alembic_version SET version_num='0007' WHERE alembic_version.version_num = '0006';
-
--- Running upgrade 0007 -> 0008
+-- Etapa 0008: prefixo v1-
 
 ALTER TABLE painel_comandos RENAME TO `v1-painel_comandos`;
 
@@ -671,6 +647,4 @@ ALTER TABLE acoes_emitidas RENAME TO `v1-acoes_emitidas`;
 ALTER TABLE proventos RENAME TO `v1-proventos`;
 
 ALTER TABLE indices RENAME TO `v1-indices`;
-
-UPDATE alembic_version SET version_num='0008' WHERE alembic_version.version_num = '0007';
 

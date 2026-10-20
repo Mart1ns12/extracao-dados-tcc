@@ -1,6 +1,6 @@
 """Modelos das fontes novas (CVM, B3) e da juíza, sem banco.
 
-Garante o contrato da migration 0005: nomes, chaves primárias, FKs com cascata e
+Garante o contrato do schema em sql/schema.mysql.sql: nomes, chaves primárias, FKs com cascata e
 nenhum Float (só Double) nas tabelas.
 """
 
@@ -50,7 +50,7 @@ def test_chaves_primarias_conferem() -> None:
 
 
 def test_nomes_de_tabela_passam_no_filtro_de_camada() -> None:
-    # O autogenerate do Alembic so enxerga tabelas que passam por tabela_do_projeto.
+    # Tabelas fora do filtro tabela_do_projeto ficariam de fora das checagens de schema.
     for nome in TABELAS_FONTES:
         assert tabela_do_projeto(nome), nome
 

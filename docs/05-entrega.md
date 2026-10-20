@@ -238,7 +238,7 @@ SELECT ticker, data_publicacao, titulo
 - **`qualidade` é número gerado pela LLM.** A coluna vem da nota de 0 a 1 da juíza. O `CLAUDE.md` diz que a LLM nunca gera número que vá para tabela entregue. Esse ponto precisa de decisão do dono: manter a coluna com essa ressalva ou tirá-la da entrega.
 - **Regra de atualização de `noticias` diferente da spec.** A spec diz que a regra diária só acrescenta e não reescreve `prob_*`. O código regrava todas as colunas que não são chave. A remoção de reprovadas é a única exceção.
 - **`--reprocessar` não existe.** A spec (seção 5.1) cita a opção para refazer o FinBERT ou a juíza quando a versão muda. O comando `build-entrega` tem só `--csv` e `--tabela`.
-- **`origem = 'rss_nativo'` não é gravado.** Nenhum coletor usa `NATIVE_FEEDS`. Hoje a tabela só tem `google_news` e `cvm_ipe`.
+- **`origem = 'rss_nativo'` não é gravado.** Não há coletor de RSS nativo (a constante `NATIVE_FEEDS`, sem uso, foi removida em 2026-10-20). Hoje a tabela só tem `google_news` e `cvm_ipe`.
 - **`data_mudanca` vazia em todas as mudanças de ticker.** Depende do levantamento nos avisos da B3.
 - **CRFB3 sem código CVM.** Não há código CVM em `TICKER_CODE_CVM`. A linha do CRFB3 em `v1-cadastro` sai com `cnpj` e setor vazios. Está registrado como caso de teste pendente (`xfail` em `tests/test_config.py`).
 - **Proventos de outros rótulos.** Rendimentos, restituições de capital e outros rótulos da B3 não entram. A spec previa listá-los no spike antes de decidir.

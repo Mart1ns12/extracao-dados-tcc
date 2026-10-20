@@ -187,7 +187,7 @@ Nomes de tabela com hífen exigem crase no MySQL, como nos exemplos acima.
 | `staging_llm_acoes_sinais` | Por ação: `direcao_esperada` (alta, baixa, neutra), `confianca`, `motivo`, `setor`, `noticias_relacionadas` | (`data_referencia`, `ticker`) | Substituída por dia |
 | `staging_llm_mercados` | Mercados em alta: `tipo` (indice, commodity, moeda, setor), `variacao_pct`, `motivo` | (`data_referencia`, `nome`) | Substituída por dia |
 
-Estas tabelas mantêm o nome original, sem o prefixo `v1-`. Foram criadas nas migrations 0001 a 0003, e a migração 0008 só renomeia as tabelas criadas a partir da 0004 (ver [06-banco-de-dados.md](06-banco-de-dados.md)).
+Estas tabelas mantêm o nome original, sem o prefixo `v1-`. Foram criadas nas etapas 0001 a 0003 de `sql/schema.mysql.sql`, e o RENAME da etapa 0008 só alcança as tabelas criadas a partir da 0004 (ver [06-banco-de-dados.md](06-banco-de-dados.md)).
 
 A gravação do dia (`_gravar_staging` em `llm/job.py`) apaga as linhas da `data_referencia` e grava as novas na mesma sessão.
 

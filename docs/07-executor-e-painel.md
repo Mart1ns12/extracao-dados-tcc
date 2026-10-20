@@ -180,14 +180,14 @@ python -m tcc_scraper.cli daily --etapa precos   # roda uma etapa sem painel
 - **Não há banco de desenvolvimento.** O executor local grava no MySQL do `.env`, que é o banco do TCC. Ver [06](06-banco-de-dados.md).
 - **Sem o extra `[sentiment]`**, a etapa `enriquecimento` falha e o daily sai `parcial`.
 - **Teste ponta a ponta com a API real** não é possível enquanto as rotas do executor estiverem em `501` (seção 9).
-- **Migrações** rodam da máquina local, com `alembic upgrade head`. O usuário do executor não tem permissão de DDL (ver seção 12).
+- **Alterações de schema** são aplicadas à mão, da máquina local, a partir de `sql/alteracoes/`. O usuário do executor não tem permissão de DDL (ver seção 12).
 
 ## 12. Implantação no Railway
 
 - **Serviço.** Um worker criado a partir deste repositório. O `railway.json` manda construir pelo `Dockerfile`. Não há healthcheck, porque o worker não serve HTTP. A política de reinício é `ON_FAILURE`, com até 10 tentativas.
 - **Imagem.** `python:3.12-slim`, com torch da roda CPU do PyTorch. Os modelos do FinBERT (pt e en) são baixados no build, em `/app/.hf_cache`, e por isso a subida do serviço não baixa modelo.
 - **Variáveis.** Ficam no painel do Railway, nunca no repositório. `EXECUTOR_TOKEN` tem que ser igual ao da API do painel.
-- **Migrações.** Não rodam no serviço. Rode `alembic upgrade head` da máquina local, com um usuário que tem DDL. Ver [06](06-banco-de-dados.md) e [08](08-operacao-e-deploy.md).
+- **Alterações de schema.** Não rodam no serviço. Aplique o ALTER de `sql/alteracoes/` à mão, da máquina local, com um usuário que tem DDL e aprovação do dono. Ver [06](06-banco-de-dados.md) e [08](08-operacao-e-deploy.md).
 - **Disco efêmero.** Parquet e CSV gerados no contêiner somem no próximo deploy. Para gerar CSV, rode `build-entrega --csv` localmente.
 - **Checklist de entrada em produção.** Está em [08](08-operacao-e-deploy.md), na ordem em que deve ser feito.
 
