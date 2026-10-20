@@ -144,6 +144,7 @@ class Article(Base):
     __table_args__ = (
         Index("ix_articles_published_at", "published_at"),
         Index("ix_articles_source_domain", "source_domain"),
+        Index("ix_articles_origem", "origem"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -167,8 +168,18 @@ class Article(Base):
     source_domain: Mapped[str | None] = mapped_column(String(255))
 
     published_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+    # Precisao da data de publicacao: 'datetime' quando a fonte traz a hora (default).
+    published_precision: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="datetime", server_default="datetime"
+    )
     lang: Mapped[str] = mapped_column(String(5), nullable=False)
     collected_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+
+    # Origem do artigo: 'google_news' hoje; IPE e RSS nativo entram com outros valores.
+    # O dataset v1 filtra por 'google_news' (ver features/build.py).
+    origem: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="google_news", server_default="google_news"
+    )
 
     body = relationship("ArticleBody", back_populates="article", uselist=False)
     tickers = relationship("ArticleTicker", back_populates="article")

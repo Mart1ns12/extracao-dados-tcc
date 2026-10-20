@@ -39,7 +39,10 @@ class SemPrecos(RuntimeError):
 
 
 def carregar_entradas_v1() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Precos (ticker, date, adj_close, volume) e artigos pontuados por ticker."""
+    """Precos (ticker, date, adj_close, volume) e artigos pontuados por ticker.
+
+    O dataset v1 e um artefato congelado do TCC; IPE, RSS nativo e juiza nunca entram nele.
+    """
     with session_scope() as session:
         precos = pd.DataFrame(
             session.execute(
@@ -56,6 +59,7 @@ def carregar_entradas_v1() -> tuple[pd.DataFrame, pd.DataFrame]:
                 )
                 .join(ArticleTicker, ArticleTicker.article_id == Article.id)
                 .join(ArticleSentiment, ArticleSentiment.article_id == Article.id)
+                .where(Article.origem == "google_news")
             ).all(),
             columns=["article_id", "ticker", "published_at", "prob_pos", "prob_neu", "prob_neg"],
         )

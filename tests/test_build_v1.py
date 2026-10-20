@@ -7,6 +7,7 @@ um ticker real da carteira e ajusta a janela do settings, em vez de depender do 
 from __future__ import annotations
 
 import datetime as dt
+from contextlib import contextmanager
 
 import pandas as pd
 import pytest
@@ -62,3 +63,28 @@ def test_monta_as_14_colunas_sem_gravar_nem_exportar(monkeypatch) -> None:
     assert list(resultado.dataset.columns) == DATASET_COLUMNS
     assert set(resultado.dataset["ticker"]) == {TICKER}
     assert len(resultado.dataset) == 9, "o ultimo pregao sai sem target"
+
+
+class _ResultadoVazio:
+    def all(self) -> list:
+        return []
+
+
+def test_carregar_entradas_v1_so_le_artigos_google_news(monkeypatch) -> None:
+    sqls: list[str] = []
+
+    class _SessaoFalsa:
+        def execute(self, stmt):
+            sqls.append(str(stmt.compile(compile_kwargs={"literal_binds": True})))
+            return _ResultadoVazio()
+
+    @contextmanager
+    def _session_scope_falso():
+        yield _SessaoFalsa()
+
+    monkeypatch.setattr(build, "session_scope", _session_scope_falso)
+
+    build.carregar_entradas_v1()
+
+    sql_artigos = next(s for s in sqls if "staging_article_sentiment" in s)
+    assert "raw_articles.origem = 'google_news'" in sql_artigos
