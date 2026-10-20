@@ -76,6 +76,20 @@ def test_ler_csvs_do_zip_sufixo_sem_arquivo_vira_lista_vazia() -> None:
     assert resultado["BPP_con"] == [{"A": "1", "B": "2"}]
 
 
+def test_ler_csvs_do_zip_manter_descarta_linhas() -> None:
+    conteudo = _zip_com({"dfp_cia_aberta_BPP_con_2024.csv": "A;B\n1;x\n2;y\n"})
+    visto: list[str] = []
+
+    def manter(sufixo: str, linha: dict) -> bool:
+        visto.append(sufixo)
+        return linha["A"] == "2"
+
+    resultado = ler_csvs_do_zip(conteudo, ["BPP_con"], manter=manter)
+
+    assert resultado["BPP_con"] == [{"A": "2", "B": "y"}]
+    assert set(visto) == {"BPP_con"}
+
+
 def test_url_b3_codifica_os_parametros_em_base64_no_caminho() -> None:
     params = {"codeCVM": "9512", "language": "pt-br"}
 

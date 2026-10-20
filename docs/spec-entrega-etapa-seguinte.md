@@ -47,11 +47,15 @@ Arquivo: `mudancas_ticker.csv`. Código antigo, código novo e data da mudança
 ### 5. Balanços das empresas (ITR e DFP, da CVM)
 Arquivo: `balancos.csv`. CNPJ da empresa; tipo do documento (ITR ou DFP); data de início e
 de fim do período de cada valor (para saber se é do trimestre ou acumulado no ano); data de
-entrega de cada balanço; receita líquida; lucro bruto (em bancos e seguradoras, em branco);
-lucro líquido; patrimônio líquido; sempre o balanço consolidado; período: pelo menos 2 anos
-(ideal: 5 anos, igual aos proventos, para o gráfico de payout).
+entrega de cada balanço; receita líquida; lucro bruto; EBIT; depreciação e amortização do período; empréstimos e
+debêntures de curto e de longo prazo (sem arrendamento); caixa e aplicações financeiras
+(em bancos e seguradoras, lucro bruto, EBIT, depreciação, empréstimos, caixa e aplicações
+ficam em branco); lucro líquido; patrimônio líquido; sempre o balanço consolidado; período:
+pelo menos 2 anos (ideal: 5 anos, igual aos proventos, para o gráfico de payout).
 Colunas: `cnpj, tipo_documento, data_inicio_periodo, data_fim_periodo, data_entrega,
-receita_liquida, lucro_bruto, lucro_liquido, patrimonio_liquido`
+receita_liquida, lucro_bruto, lucro_liquido, patrimonio_liquido, ebit,
+depreciacao_amortizacao, emprestimos_curto_prazo, emprestimos_longo_prazo, caixa,
+aplicacoes_financeiras`
 
 ### 6. Quantidade de ações
 Arquivo: `acoes_emitidas.csv`. CNPJ da empresa, data de referência, número de ações ON e
@@ -141,6 +145,12 @@ Arquivo: `indices.csv`. CDI diário e IPCA mensal (Banco Central); IDIV, SMLL e 
 | | lucro_bruto | | Receita menos o custo do que foi vendido, em reais (em branco em bancos e seguradoras) | 58300000000 |
 | | lucro_liquido | | Lucro final, depois de tudo, em reais | 26700000000 |
 | | patrimonio_liquido | | O que pertence aos acionistas no fim do período, em reais | 412000000000 |
+| | ebit | | Resultado antes do resultado financeiro e dos tributos, em reais (em branco em bancos e seguradoras) | 38900000000 |
+| | depreciacao_amortizacao | | Depreciação e amortização do período, em reais, sempre positiva (em branco em bancos e seguradoras) | 9300000000 |
+| | emprestimos_curto_prazo | | Empréstimos, financiamentos e debêntures a pagar em até 1 ano, em reais (em branco em bancos e seguradoras) | 32100000000 |
+| | emprestimos_longo_prazo | | Empréstimos, financiamentos e debêntures a pagar depois de 1 ano, em reais (em branco em bancos e seguradoras) | 198400000000 |
+| | caixa | | Caixa e equivalentes de caixa no fim do período, em reais (em branco em bancos e seguradoras) | 41800000000 |
+| | aplicacoes_financeiras | | Aplicações financeiras de curto prazo no fim do período, em reais (em branco em bancos e seguradoras) | 12600000000 |
 | acoes_emitidas.csv | cnpj | Sim | CNPJ da empresa, só números | 33000167000101 |
 | | data_referencia | Sim | Data em que a contagem vale | 2026-06-30 |
 | | qtd_on | | Número de ações ordinárias | 7442454142 |

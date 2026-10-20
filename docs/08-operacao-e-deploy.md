@@ -100,7 +100,7 @@ python -m tcc_scraper.cli analyze-llm --data 2026-10-19
 
 | Comando | Opções | O que faz |
 |---|---|---|
-| `collect-cvm` | `--anos ANO` (repetível); `--resume` / `--no-resume` | ITR e DFP da CVM: grava `v1-raw_cvm_balancos` e `v1-raw_cvm_acoes` |
+| `collect-cvm` | `--anos ANO` (repetível); `--resume` / `--no-resume` | ITR e DFP da CVM: grava `v1-raw_cvm_balancos` e `v1-raw_cvm_acoes`. Ao mudar `CONTAS_CVM`, a ordem é: ALTER (se houver coluna nova), deploy, `collect-cvm --no-resume`, `build-entrega --tabela balancos` |
 | `collect-ipe` | `--anos ANO` (repetível); `--resume` / `--no-resume` | Fatos relevantes (IPE) da CVM: grava `v1-raw_ipe_docs` e os artigos correspondentes em `raw_articles` |
 | `collect-cadastro` | `--resume` / `--no-resume` | Cadastro das companhias: CVM (`cad_cia_aberta`) e B3 (GetDetail por código CVM). Grava `v1-raw_cvm_cadastro` e `v1-raw_b3_cadastro` |
 | `collect-proventos` | `--resume` / `--no-resume` | Proventos (dividendos, JCP e outros) da B3. Grava `v1-raw_b3_proventos` e `v1-raw_b3_suplemento` |

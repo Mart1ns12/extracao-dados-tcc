@@ -12,7 +12,7 @@ import io
 import logging
 import re
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
@@ -34,11 +34,17 @@ def last_modified(collector: Collector, url: str) -> str:
         return ""
 
 
-def ler_csvs_do_zip(conteudo: bytes, sufixos: Iterable[str]) -> dict[str, list[dict]]:
-    """Lê, em memória, os CSVs do zip cujo nome contenha algum dos sufixos.
+def ler_csvs_do_zip(
+    conteudo: bytes,
+    sufixos: Iterable[str],
+    manter: Callable[[str, dict], bool] | None = None,
+) -> dict[str, list[dict]]:
+    """Lê os CSVs do zip cujo nome contenha algum dos sufixos, linha a linha (streaming).
 
     A chave do resultado e o sufixo casado. Todo sufixo pedido aparece no resultado,
     mesmo sem arquivo correspondente (lista vazia), para o chamador nao precisar de KeyError.
+    `manter(sufixo, linha)`, se dado, descarta a linha ao ler: os CSVs de ITR chegam a
+    centenas de MB como dicts, e o universo e ~18% das linhas.
     """
     pedidos = list(sufixos)
     resultado: dict[str, list[dict]] = {sufixo: [] for sufixo in pedidos}
@@ -47,9 +53,11 @@ def ler_csvs_do_zip(conteudo: bytes, sufixos: Iterable[str]) -> dict[str, list[d
             casado = next((sufixo for sufixo in pedidos if sufixo in nome), None)
             if casado is None:
                 continue
-            texto = zf.read(nome).decode("latin-1")
-            linhas = list(csv.DictReader(io.StringIO(texto), delimiter=";"))
-            resultado[casado].extend(linhas)
+            with zf.open(nome) as bruto:
+                texto = io.TextIOWrapper(bruto, encoding="latin-1", newline="")
+                for linha in csv.DictReader(texto, delimiter=";"):
+                    if manter is None or manter(casado, linha):
+                        resultado[casado].append(linha)
     return resultado
 
 

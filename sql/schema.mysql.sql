@@ -554,7 +554,13 @@ CREATE TABLE balancos (
     receita_liquida DOUBLE, 
     lucro_bruto DOUBLE, 
     lucro_liquido DOUBLE, 
-    patrimonio_liquido DOUBLE, 
+    patrimonio_liquido DOUBLE,
+    ebit DOUBLE,
+    depreciacao_amortizacao DOUBLE,
+    emprestimos_curto_prazo DOUBLE,
+    emprestimos_longo_prazo DOUBLE,
+    caixa DOUBLE,
+    aplicacoes_financeiras DOUBLE,
     CONSTRAINT pk_balancos PRIMARY KEY (cnpj, tipo_documento, data_inicio_periodo, data_fim_periodo)
 );
 

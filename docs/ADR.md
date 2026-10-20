@@ -264,6 +264,23 @@ tipo de empresa ou também a descrição. Escolhido aceitar a conta pelo código
 (`ds_conta`, em `entrega/builder.py`, `_aceita_conta`), com o mapa de bancos em `config.py`. Custo: a
 descrição vem da CVM em texto livre e pode mudar de redação entre demonstrações.
 
+**Bancos e seguradoras por lista explícita, não pela descrição (2026-10-20).** Complementa a decisão
+acima: a descrição continua escolhendo a conta, mas não decide quem é banco. Problema: EBIT, D&A,
+empréstimos, caixa, aplicações e lucro bruto não se aplicam a bancos e seguradoras, e a descrição não
+separa essas empresas: BBSE3 e IRBR3 têm "Caixa e Equivalentes de Caixa" como a indústria, e PSSA3 usa o
+plano industrial inteiro. Opções: (a) inferir pela descrição; (b) lista explícita de códigos CVM em
+`CD_CVM_BANCOS_SEGURADORAS`, em `config.py`. Escolhida (b), conferida no ITR 2025 da CVM. Custo: a lista
+precisa de manutenção quando entrar um banco ou seguradora novo. ITSA4 (holding) e B3SA3 (bolsa) ficam de
+fora porque usam o plano industrial.
+
+**D&A trimestral do ITR pela diferença de acumulados.** Problema: a DFC do ITR é acumulada no ano, então o
+Q2 e o Q3 não têm D&A publicada. Opções: (a) só o período igual ao de uma DFC publicada (acumulado,
+primeiro trimestre e DFP), deixando o Q2 e o Q3 em branco; (b) derivar o trimestre pela diferença entre o
+acumulado até o fim do período e o acumulado até a véspera do início, usando o documento anterior do mesmo
+CNPJ. Escolhida (b), por decisão do dono (o plano inicial previa só (a)). Custo: a linha mistura dois
+documentos, cada um com a própria versão. Se falta o documento anterior, ou a diferença sai negativa
+(reapresentação), a coluna fica em branco.
+
 **Provento de UNIT composto de ON + PN.** Problema: a B3 não publica proventos de UNIT como um papel
 próprio; a UNIT é composta de ações ON e PN. Escolhido compor o provento da UNIT a partir de ON + PN. Custo:
 depende da composição vigente da UNIT; mudança na composição não é detectada sozinha.

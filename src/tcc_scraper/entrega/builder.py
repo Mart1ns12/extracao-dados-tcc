@@ -25,6 +25,7 @@ from tcc_scraper.collectors.b3_base import data_b3, decimal_b3
 from tcc_scraper.collectors.b3_cadastro import classificacao_b3
 from tcc_scraper.config import (
     BENCHMARK_TICKER,
+    CD_CVM_BANCOS_SEGURADORAS,
     CONTAS_CVM,
     INDICES_YAHOO,
     MACRO_ENTREGA,
@@ -32,6 +33,7 @@ from tcc_scraper.config import (
     NOMES_EMPRESA,
     TICKER_CODE_CVM,
     UNITS,
+    conta_ajuste_dfc,
     get_settings,
     universo_coleta,
 )
@@ -84,6 +86,19 @@ ROTULOS_AJUSTE = frozenset({"DESDOBRAMENTO", "BONIFICACAO", "GRUPAMENTO"})
 # Sufixo do ISIN de cada classe, usado quando o ISIN nao esta em otherCodes do cadastro.
 SUFIXO_ISIN = (("OR", "3"), ("PR", "4"), ("CDAM", "11"))
 PREFIXOS_LUCRO = ("lucro/prejuizo consolidado do periodo", "lucro/prejuizo do periodo")
+# Em branco para bancos e seguradoras (spec): contas operacionais, de divida e de caixa.
+COLUNAS_SEM_FINANCEIRAS = (
+    "lucro_bruto", "ebit", "depreciacao_amortizacao", "emprestimos_curto_prazo",
+    "emprestimos_longo_prazo", "caixa", "aplicacoes_financeiras",
+)
+# D&A na DFC indireta: termos que entram e falsos positivos reais da CVM que saem
+# (custo de transacao, captacao, juros, "custo amortizado" de ativo financeiro etc.).
+_DA_INCLUI = ("deprecia", "amortiz", "exaust", "deplec")
+_DA_EXCLUI = (
+    "custo de transacao", "custos de transacao", "captacao", "emprestimo", "debenture",
+    "juros", "encargos", "amortizado", "despesas antecipadas", "estoque",
+    "custo de aquisicao",
+)
 TOLERANCIA_TAXA = 1e-6
 _SUFIXO_NUMERICO = re.compile(r"(\d+)$")
 
@@ -372,6 +387,14 @@ def _aceita_conta(coluna: str, ds_conta: str | None) -> bool:
         return ds.startswith(PREFIXOS_LUCRO)
     if coluna == "patrimonio_liquido":
         return ds.startswith("patrimonio liquido")
+    if coluna == "ebit":
+        return ds.startswith("resultado antes do resultado financeiro")
+    if coluna == "caixa":
+        return ds.startswith("caixa e equivalentes")
+    if coluna == "aplicacoes_financeiras":
+        return ds.startswith("aplicacoes financeiras")
+    if coluna in ("emprestimos_curto_prazo", "emprestimos_longo_prazo"):
+        return ds.startswith(("emprestimos e financiamentos", "debentures"))
     return False
 
 
@@ -387,8 +410,61 @@ def _valor_da_conta(linhas: list[dict], demonstracao: str, coluna: str) -> float
     return None
 
 
+def _soma(valores: list[float]) -> float | None:
+    """Soma em Decimal (sem erro de ponto flutuante); None se nao houver valor."""
+    if not valores:
+        return None
+    return float(sum(Decimal(str(v)) for v in valores))
+
+
+def _soma_das_contas(linhas: list[dict], demonstracao: str, coluna: str) -> float | None:
+    """Soma todas as contas de CONTAS_CVM da coluna (ex.: emprestimos + debentures)."""
+    codigos = {cd for cd, col in CONTAS_CVM[demonstracao].items() if col == coluna}
+    return _soma([
+        linha["valor"] for linha in linhas
+        if linha["cd_conta"] in codigos and _aceita_conta(coluna, linha["ds_conta"])
+    ])
+
+
+def _e_depreciacao(ds_conta: str | None) -> bool:
+    ds = _norm(ds_conta)
+    return any(t in ds for t in _DA_INCLUI) and not any(t in ds for t in _DA_EXCLUI)
+
+
+def _depreciacao_amortizacao(linhas_dfc: list[dict]) -> float | None:
+    """D&A da DFC indireta: soma das linhas 6.01.01.NN de D&A, sempre positiva."""
+    total = _soma([
+        linha["valor"] for linha in linhas_dfc
+        if conta_ajuste_dfc(linha["cd_conta"]) and _e_depreciacao(linha["ds_conta"])
+    ])
+    return abs(total) if total is not None else None
+
+
+def _da_do_periodo(
+    da_acumulada: dict[tuple, float | None],
+    cnpj: str, inicio: dt.date, fim: dt.date, inicios_dfc: set[dt.date],
+) -> float | None:
+    """D&A do periodo da linha. Igual ao da DFC quando o periodo bate; no trimestre do
+    ITR, acumulado ate o fim menos acumulado ate a vespera do inicio (D5). None se faltar
+    um dos dois ou se a diferenca sair negativa (reapresentacao)."""
+    if (cnpj, inicio, fim) in da_acumulada:
+        return da_acumulada[(cnpj, inicio, fim)]
+    for inicio_ano in inicios_dfc:
+        if inicio_ano >= inicio:
+            continue
+        ate_fim = da_acumulada.get((cnpj, inicio_ano, fim))
+        ate_vespera = da_acumulada.get((cnpj, inicio_ano, inicio - dt.timedelta(days=1)))
+        if ate_fim is None or ate_vespera is None:
+            continue
+        diferenca = float(Decimal(str(ate_fim)) - Decimal(str(ate_vespera)))
+        return diferenca if diferenca >= 0 else None
+    return None
+
+
 def montar_balancos(balancos: list[dict]) -> list[dict]:
-    """Uma linha por (cnpj, tipo, inicio, fim) da DRE, com o PL do mesmo dt_refer copiado."""
+    """Uma linha por (cnpj, tipo, inicio, fim) da DRE. PL, caixa, aplicacoes e emprestimos
+    do mesmo dt_refer valem para todas as linhas do documento; a D&A segue o periodo.
+    Bancos e seguradoras (CD_CVM_BANCOS_SEGURADORAS) saem em branco nas colunas da spec."""
     validos = [dict(r, valor=_valor_escalado(r)) for r in balancos if _ultimo(r["ordem_exerc"])]
 
     maior: dict[tuple, int] = {}
@@ -402,16 +478,40 @@ def montar_balancos(balancos: list[dict]) -> list[dict]:
         if r["versao"] == maior[chave]:
             por_documento[chave].append(r)
 
+    # D&A acumulada no ano por (cnpj, inicio, fim), de cada documento. Serve para derivar
+    # o trimestre do ITR: a CVM so publica a DFC acumulada (D5).
+    da_acumulada: dict[tuple, float | None] = {}
+    for (cnpj, _tipo, refer), itens in por_documento.items():
+        dfc_doc: dict[tuple, list[dict]] = defaultdict(list)
+        for r in itens:
+            if r["demonstracao"] == "DFC":
+                dfc_doc[(r["dt_ini_exerc"], r["dt_fim_exerc"])].append(r)
+        for (inicio, fim), linhas in dfc_doc.items():
+            chave = (cnpj, inicio, fim)
+            # O documento cuja data de referencia e o fim do periodo e o dono do numero.
+            if chave not in da_acumulada or fim == refer:
+                da_acumulada[chave] = _depreciacao_amortizacao(linhas)
+
     saida: dict[tuple, dict] = {}
     for (cnpj, tipo, refer), itens in por_documento.items():
         dre = [r for r in itens if r["demonstracao"] == "DRE"]
+        bpa = [r for r in itens if r["demonstracao"] == "BPA" and r["dt_fim_exerc"] == refer]
         bpp = [r for r in itens if r["demonstracao"] == "BPP" and r["dt_fim_exerc"] == refer]
+        inicios_dfc = {r["dt_ini_exerc"] for r in itens if r["demonstracao"] == "DFC"}
+        financeira = itens[0].get("cd_cvm") in CD_CVM_BANCOS_SEGURADORAS
         patrimonio = _valor_da_conta(bpp, "BPP", "patrimonio_liquido")
+        # Posicoes no fim do periodo: copiadas para todas as linhas da DRE (como o PL).
+        posicoes = {
+            "emprestimos_curto_prazo": _soma_das_contas(bpp, "BPP", "emprestimos_curto_prazo"),
+            "emprestimos_longo_prazo": _soma_das_contas(bpp, "BPP", "emprestimos_longo_prazo"),
+            "caixa": _valor_da_conta(bpa, "BPA", "caixa"),
+            "aplicacoes_financeiras": _valor_da_conta(bpa, "BPA", "aplicacoes_financeiras"),
+        }
         grupos: dict[tuple, list[dict]] = defaultdict(list)
         for r in dre:
             grupos[(r["dt_ini_exerc"], r["dt_fim_exerc"])].append(r)
         for (inicio, fim), grupo in grupos.items():
-            saida[(cnpj, tipo, inicio, fim)] = {
+            linha = {
                 "cnpj": cnpj,
                 "tipo_documento": tipo,
                 "data_inicio_periodo": inicio,
@@ -421,7 +521,16 @@ def montar_balancos(balancos: list[dict]) -> list[dict]:
                 "lucro_bruto": _valor_da_conta(grupo, "DRE", "lucro_bruto"),
                 "lucro_liquido": _valor_da_conta(grupo, "DRE", "lucro_liquido"),
                 "patrimonio_liquido": patrimonio,
+                "ebit": _valor_da_conta(grupo, "DRE", "ebit"),
+                "depreciacao_amortizacao": _da_do_periodo(
+                    da_acumulada, cnpj, inicio, fim, inicios_dfc
+                ),
+                **posicoes,
             }
+            if financeira:
+                for coluna in COLUNAS_SEM_FINANCEIRAS:
+                    linha[coluna] = None
+            saida[(cnpj, tipo, inicio, fim)] = linha
     return [saida[k] for k in sorted(saida, key=lambda k: (k[0], k[1], k[2], k[3]))]
 
 
@@ -705,7 +814,7 @@ class _Fontes:
                 RawCvmBalanco.versao, RawCvmBalanco.demonstracao, RawCvmBalanco.cd_conta,
                 RawCvmBalanco.dt_ini_exerc, RawCvmBalanco.dt_fim_exerc, RawCvmBalanco.ds_conta,
                 RawCvmBalanco.ordem_exerc, RawCvmBalanco.escala_moeda, RawCvmBalanco.vl_conta,
-                RawCvmBalanco.dt_receb,
+                RawCvmBalanco.dt_receb, RawCvmBalanco.cd_cvm,
             )
         )
 

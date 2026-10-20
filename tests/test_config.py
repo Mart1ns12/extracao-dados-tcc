@@ -7,6 +7,9 @@ import pytest
 
 from tcc_scraper.config import (
     APELIDOS,
+    CD_CVM_BANCOS_SEGURADORAS,
+    CONTAS_CVM,
+    IBOV_SECTORS,
     IBOV_TICKERS,
     MUDANCAS_TICKER,
     NOMES_EMPRESA,
@@ -14,6 +17,7 @@ from tcc_scraper.config import (
     UNITS,
     UNIVERSO_HISTORICO,
     Settings,
+    conta_ajuste_dfc,
     universo_coleta,
 )
 
@@ -92,3 +96,34 @@ FALTANDO_CVM = sorted(set(universo_coleta()) - set(TICKER_CODE_CVM))
 )
 def test_todo_ticker_do_universo_tem_codigo_cvm():
     assert not FALTANDO_CVM
+
+
+def test_codigos_de_bancos_e_seguradoras_existem_em_ticker_code_cvm():
+    assert set(TICKER_CODE_CVM.values()) >= CD_CVM_BANCOS_SEGURADORAS
+
+
+def test_todo_seguro_do_ibov_esta_na_lista_de_bancos_e_seguradoras():
+    for ticker, setor in IBOV_SECTORS.items():
+        if setor == "seguros":
+            assert TICKER_CODE_CVM.get(ticker) in CD_CVM_BANCOS_SEGURADORAS, ticker
+
+
+def test_todo_banco_do_ibov_esta_na_lista_exceto_b3_e_itausa():
+    for ticker, setor in IBOV_SECTORS.items():
+        if setor == "bancos_financeiro" and ticker not in {"B3SA3", "ITSA4"}:
+            cd = TICKER_CODE_CVM.get(ticker)
+            if cd is None:
+                continue
+            assert cd in CD_CVM_BANCOS_SEGURADORAS, ticker
+
+
+def test_conta_ajuste_dfc_so_aceita_o_quarto_nivel_de_6_01_01():
+    assert conta_ajuste_dfc("6.01.01.04")
+    for cd in ("6.01.01", "6.01.01.04.01", "6.01.02.01"):
+        assert not conta_ajuste_dfc(cd), cd
+
+
+def test_contas_cvm_tem_bpa_e_os_quatro_codigos_de_emprestimo():
+    assert CONTAS_CVM["BPA"] == {"1.01.01": "caixa", "1.01.02": "aplicacoes_financeiras"}
+    emprestimos = {"2.01.04.01", "2.01.04.02", "2.02.01.01", "2.02.01.02"}
+    assert emprestimos <= set(CONTAS_CVM["BPP"])

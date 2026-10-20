@@ -44,6 +44,8 @@ COLUNAS: dict[str, list[str]] = {
     "balancos": [
         "cnpj", "tipo_documento", "data_inicio_periodo", "data_fim_periodo", "data_entrega",
         "receita_liquida", "lucro_bruto", "lucro_liquido", "patrimonio_liquido",
+        "ebit", "depreciacao_amortizacao", "emprestimos_curto_prazo", "emprestimos_longo_prazo",
+        "caixa", "aplicacoes_financeiras",
     ],
     "acoes_emitidas": ["cnpj", "data_referencia", "qtd_on", "qtd_pn"],
     "proventos": ["ticker", "tipo", "data_com", "valor_por_acao", "data_pagamento"],
@@ -126,6 +128,12 @@ class Balanco(Base):
     lucro_bruto: Mapped[float | None] = mapped_column(Double)
     lucro_liquido: Mapped[float | None] = mapped_column(Double)
     patrimonio_liquido: Mapped[float | None] = mapped_column(Double)
+    ebit: Mapped[float | None] = mapped_column(Double)
+    depreciacao_amortizacao: Mapped[float | None] = mapped_column(Double)
+    emprestimos_curto_prazo: Mapped[float | None] = mapped_column(Double)
+    emprestimos_longo_prazo: Mapped[float | None] = mapped_column(Double)
+    caixa: Mapped[float | None] = mapped_column(Double)
+    aplicacoes_financeiras: Mapped[float | None] = mapped_column(Double)
 
 
 class AcoesEmitida(Base):

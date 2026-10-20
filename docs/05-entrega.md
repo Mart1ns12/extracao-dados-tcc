@@ -137,7 +137,7 @@ Chave: (`ticker_antigo`). Fonte: `MUDANCAS_TICKER` em `config.py`.
 
 ## 6. Balanços: `v1-balancos`
 
-Chave: (`cnpj`, `tipo_documento`, `data_inicio_periodo`, `data_fim_periodo`). Fonte: `raw_cvm_balancos`, dos arquivos de DFP e ITR da CVM (dados abertos), nas demonstrações DRE e BPP.
+Chave: (`cnpj`, `tipo_documento`, `data_inicio_periodo`, `data_fim_periodo`). Fonte: `raw_cvm_balancos`, dos arquivos de DFP e ITR da CVM (dados abertos), nas demonstrações DRE, BPA, BPP e DFC (método indireto).
 
 | Coluna | Origem | Regra |
 |---|---|---|
@@ -145,16 +145,24 @@ Chave: (`cnpj`, `tipo_documento`, `data_inicio_periodo`, `data_fim_periodo`). Fo
 | `data_inicio_periodo`, `data_fim_periodo` | `DT_INI_EXERC`, `DT_FIM_EXERC` da DRE | No ITR, o trimestre e o acumulado do ano são linhas diferentes, e as duas são entregues |
 | `data_entrega` | `DT_RECEB` da DRE do período | |
 | `receita_liquida` | DRE, conta `3.01` | |
-| `lucro_bruto` | DRE, conta `3.03` | A descrição precisa começar com "resultado bruto" e não pode conter "intermediacao" nem "operacoes" |
+| `lucro_bruto` | DRE, conta `3.03` | A descrição precisa começar com "resultado bruto" e não pode conter "intermediacao" nem "operacoes". Em branco para bancos e seguradoras |
 | `lucro_liquido` | DRE, conta `3.11`, senão `3.09` | A descrição precisa começar com "lucro/prejuizo consolidado do periodo" ou "lucro/prejuizo do periodo" |
 | `patrimonio_liquido` | BPP, conta `2.08`, senão `2.03` | Linha com `DT_FIM_EXERC` igual à data da DRE. A descrição precisa começar com "patrimonio liquido" |
+| `ebit` | DRE, conta `3.05` | A descrição precisa começar com "resultado antes do resultado financeiro". Em branco para bancos e seguradoras |
+| `depreciacao_amortizacao` | DFC (método indireto), contas `6.01.01.NN` (4 níveis) | Soma das linhas cuja descrição contém "deprecia", "amortiz", "exaust" ou "deplec", sem termos de exclusão (custo de transação, captação, juros, estoque etc.). Valor sempre positivo. Em branco para bancos e seguradoras. Ver a regra do trimestre abaixo |
+| `emprestimos_curto_prazo` | BPP, contas `2.01.04.01` + `2.01.04.02` | Soma de empréstimos e debêntures a pagar em até 1 ano. A descrição precisa começar com "emprestimos e financiamentos" ou "debentures". O arrendamento (`2.01.04.03`) fica de fora. Em branco para bancos e seguradoras |
+| `emprestimos_longo_prazo` | BPP, contas `2.02.01.01` + `2.02.01.02` | Igual a `emprestimos_curto_prazo`, para o passivo de longo prazo. O arrendamento (`2.02.01.03`) fica de fora. Em branco para bancos e seguradoras |
+| `caixa` | BPA, conta `1.01.01` | A descrição precisa começar com "caixa e equivalentes". Linha com `DT_FIM_EXERC` igual à data de referência do documento. Em branco para bancos e seguradoras |
+| `aplicacoes_financeiras` | BPA, conta `1.01.02` | A descrição precisa começar com "aplicacoes financeiras". Linha com `DT_FIM_EXERC` igual à data de referência do documento. Em branco para bancos e seguradoras |
 
 **Regras especiais:**
 
 - Só entra a linha com `ORDEM_EXERC = ÚLTIMO`.
 - Para cada (CNPJ, tipo, `DT_REFER`), só a maior `VERSAO`.
 - Valores com escala `MIL` são multiplicados por 1.000. A multiplicação usa `Decimal`.
-- **Bancos** não têm regra à parte. Eles usam outro plano de contas: o lucro fica em `3.11` ou `3.09` e o patrimônio em `2.08` ou `2.03`. Por isso a função tenta primeiro o código de número maior e confere a descrição.
+- **Posições** (`caixa`, `aplicacoes_financeiras`, `emprestimos_*`) são saldos na data de referência do documento. Como o patrimônio, são copiadas para todas as linhas de DRE do documento.
+- **D&A no ITR.** A DFC do ITR é acumulada no ano. Na linha cujo período é igual ao de uma DFC (acumulado, primeiro trimestre ou DFP), a D&A é a dessa DFC. No trimestre seguinte, a D&A é a acumulada até o fim do período menos a acumulada até a véspera do início, ambas do mesmo CNPJ. Se o documento anterior não existir, ou a diferença sair negativa, a coluna fica em branco. Se houver mais de uma versão do documento anterior, vale a de maior `VERSAO`.
+- **Bancos e seguradoras** usam outro plano de contas: o lucro fica em `3.11` ou `3.09` e o patrimônio em `2.08` ou `2.03`. A descrição não basta para separá-los (há bancos com "Caixa e Equivalentes de Caixa", e a seguradora PSSA3 usa o plano industrial). Por isso a lista explícita `CD_CVM_BANCOS_SEGURADORAS`, em `config.py`, diz quem são. Para eles, `lucro_bruto`, `ebit`, `depreciacao_amortizacao`, os empréstimos, `caixa` e `aplicacoes_financeiras` ficam em branco. Lucro líquido e patrimônio seguem a regra normal.
 
 **Atualização.** Upsert pela chave.
 

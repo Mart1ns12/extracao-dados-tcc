@@ -715,16 +715,51 @@ MACRO_ENTREGA: dict[str, str] = {"^BVSP": "IBOV", "USDBRL=X": "USDBRL", "BZ=F": 
 
 # Contas das demonstracoes CVM usadas na entrega: demonstracao -> codigo -> coluna.
 # Bancos usam outro plano: lucro em 3.09 (3.11 nao existe) e PL em 2.08 (2.03 sao passivos).
-# Qual codigo vale para cada coluna e decidido pela descricao (builder.py).
+# Qual codigo vale para cada coluna e decidido pela descricao (builder.py). Emprestimos somam
+# emprestimos (.01) e debentures (.02); o arrendamento (.03) fica fora, como pede a spec.
 CONTAS_CVM: dict[str, dict[str, str]] = {
     "DRE": {
         "3.01": "receita_liquida",
         "3.03": "lucro_bruto",
+        "3.05": "ebit",
         "3.09": "lucro_liquido",
         "3.11": "lucro_liquido",
     },
-    "BPP": {"2.03": "patrimonio_liquido", "2.08": "patrimonio_liquido"},
+    "BPA": {"1.01.01": "caixa", "1.01.02": "aplicacoes_financeiras"},
+    "BPP": {
+        "2.03": "patrimonio_liquido",
+        "2.08": "patrimonio_liquido",
+        "2.01.04.01": "emprestimos_curto_prazo",
+        "2.01.04.02": "emprestimos_curto_prazo",
+        "2.02.01.01": "emprestimos_longo_prazo",
+        "2.02.01.02": "emprestimos_longo_prazo",
+    },
 }
+
+# DFC metodo indireto: ajustes ao lucro (6.01.01.NN) nao tem codigo padronizado; a D&A e
+# escolhida pela descricao no builder. So o 4o nivel, para nao somar pai e filho.
+PREFIXO_AJUSTES_DFC = "6.01.01."
+
+
+def conta_ajuste_dfc(cd_conta: str) -> bool:
+    """True para 6.01.01.NN (4 niveis): as linhas de ajuste ao lucro da DFC indireta."""
+    return cd_conta.startswith(PREFIXO_AJUSTES_DFC) and cd_conta.count(".") == 3
+
+
+# Bancos e seguradoras (codigo CVM): ebit, D&A, emprestimos, caixa, aplicacoes e lucro_bruto
+# ficam em branco (spec). Lista explicita porque a descricao nao basta: BBSE3 e IRBR3 tem
+# "Caixa e Equivalentes de Caixa" como a industria, e PSSA3 usa o plano industrial inteiro
+# (conferido no ITR 2025 da CVM). ITSA4 (holding) e B3SA3 (bolsa) usam o plano industrial.
+CD_CVM_BANCOS_SEGURADORAS: frozenset[int] = frozenset({
+    906,    # BBDC3/BBDC4 Bradesco
+    1023,   # BBAS3 Banco do Brasil
+    19348,  # ITUB4 Itau Unibanco
+    20532,  # SANB11 Santander
+    22616,  # BPAC11 BTG Pactual
+    23159,  # BBSE3 BB Seguridade
+    16659,  # PSSA3 Porto Seguro
+    24180,  # IRBR3 IRB
+})
 
 # Categorias de documentos IPE (CVM) que entram na entrega.
 IPE_CATEGORIAS = frozenset({"Fato Relevante", "Comunicado ao Mercado", "Aviso aos Acionistas"})

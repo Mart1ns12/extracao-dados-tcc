@@ -291,12 +291,12 @@ def test_mudancas_ticker_vem_do_config() -> None:
 # -- balancos e acoes emitidas ---------------------------------------------------------------
 
 def _bal(cd, ds, valor, *, demo="DRE", ini=dt.date(2025, 4, 1), fim=dt.date(2025, 6, 30),
-         refer=dt.date(2025, 6, 30), versao=1, escala="MIL", tipo="ITR"):
+         refer=dt.date(2025, 6, 30), versao=1, escala="MIL", tipo="ITR", cd_cvm=9512):
     return {
         "cnpj": PETROBRAS, "tipo_documento": tipo, "dt_refer": refer, "versao": versao,
         "demonstracao": demo, "cd_conta": cd, "dt_ini_exerc": ini, "dt_fim_exerc": fim,
         "ds_conta": ds, "ordem_exerc": "ÚLTIMO", "escala_moeda": escala, "vl_conta": valor,
-        "dt_receb": dt.date(2025, 8, 8),
+        "dt_receb": dt.date(2025, 8, 8), "cd_cvm": cd_cvm,
     }
 
 
@@ -368,6 +368,189 @@ def test_acoes_dfp_vence_itr_na_mesma_data_e_maior_versao_no_mesmo_tipo() -> Non
     (linha,) = linhas
     assert list(linha) == COLUNAS["acoes_emitidas"]
     assert linha["qtd_on"] == 30
+
+
+FIM_2024 = dt.date(2024, 12, 31)
+
+
+def _dfp_2024(cd: str, ds: str, valor: float, *, demo: str = "BPP", cd_cvm: int = 7617) -> dict:
+    """Linha da DFP 2024 (MIL). BPA e BPP sao saldo na data (ini = fim); DRE e DFC, o ano."""
+    ini = FIM_2024 if demo in ("BPA", "BPP") else dt.date(2024, 1, 1)
+    return _bal(cd, ds, valor, demo=demo, ini=ini, fim=FIM_2024, refer=FIM_2024, tipo="DFP",
+                cd_cvm=cd_cvm)
+
+
+def _por_periodo(linhas: list[dict]) -> dict[tuple, dict]:
+    return {(linha["data_inicio_periodo"], linha["data_fim_periodo"]): linha for linha in linhas}
+
+
+def _itr_q1_petrobras() -> list[dict]:
+    """ITR 1T25 da Petrobras (MIL). A DFC do ITR e acumulada: no 1T, o acumulado e o proprio."""
+    ini, fim = dt.date(2025, 1, 1), dt.date(2025, 3, 31)
+    return [
+        _bal("3.01", "Receita de vendas", 50000000.0, ini=ini, fim=fim, refer=fim),
+        _bal("6.01.01.04", "Depreciação, depleção e amortização", 19000000.0, demo="DFC",
+             ini=ini, fim=fim, refer=fim),
+    ]
+
+
+def _itr_q2_petrobras(da_ytd: float = 39928000.0) -> list[dict]:
+    """ITR 2T25 da Petrobras (MIL): DRE trimestral e acumulada, DFC acumulada, BPA em 30/06."""
+    ini_ano = dt.date(2025, 1, 1)
+    return [
+        _bal("3.01", "Receita de vendas", 30000000.0),
+        _bal("3.05", "Resultado Antes do Resultado Financeiro e dos Tributos", 30468000.0),
+        _bal("3.01", "Receita de vendas", 100000000.0, ini=ini_ano),
+        _bal("3.05", "Resultado Antes do Resultado Financeiro e dos Tributos", 73508000.0,
+             ini=ini_ano),
+        _bal("6.01.01.04", "Depreciação, depleção e amortização", da_ytd, demo="DFC",
+             ini=ini_ano),
+        _bal("1.01.01", "Caixa e Equivalentes de Caixa", 38177000.0, demo="BPA",
+             ini=dt.date(2025, 6, 30)),
+        _bal("1.01.02", "Aplicações Financeiras", 13670000.0, demo="BPA",
+             ini=dt.date(2025, 6, 30)),
+    ]
+
+
+def test_contas_novas_itr_q2_petrobras_valores_reais_mil() -> None:
+    linhas = _por_periodo(B.montar_balancos(_itr_q2_petrobras()))
+    acumulado = linhas[(dt.date(2025, 1, 1), dt.date(2025, 6, 30))]
+    trimestre = linhas[(dt.date(2025, 4, 1), dt.date(2025, 6, 30))]
+    assert acumulado["ebit"] == 73508000000.0
+    assert acumulado["depreciacao_amortizacao"] == 39928000000.0
+    assert acumulado["caixa"] == 38177000000.0
+    assert acumulado["aplicacoes_financeiras"] == 13670000000.0
+    assert trimestre["ebit"] == 30468000000.0
+    assert trimestre["depreciacao_amortizacao"] is None
+    assert trimestre["caixa"] == 38177000000.0
+    assert trimestre["aplicacoes_financeiras"] == 13670000000.0
+
+
+def test_da_do_trimestre_e_diferenca_dos_acumulados() -> None:
+    linhas = _por_periodo(B.montar_balancos(_itr_q1_petrobras() + _itr_q2_petrobras()))
+    q1 = linhas[(dt.date(2025, 1, 1), dt.date(2025, 3, 31))]
+    q2_tri = linhas[(dt.date(2025, 4, 1), dt.date(2025, 6, 30))]
+    q2_acum = linhas[(dt.date(2025, 1, 1), dt.date(2025, 6, 30))]
+    assert q1["depreciacao_amortizacao"] == 19000000000.0
+    assert q2_tri["depreciacao_amortizacao"] == 20928000000.0
+    assert q2_acum["depreciacao_amortizacao"] == 39928000000.0
+
+
+def test_da_do_trimestre_fica_none_se_diferenca_sair_negativa() -> None:
+    # Acumulado do 2T menor que o do 1T (reapresentacao): a diferenca sairia negativa.
+    dfc_menor = _itr_q2_petrobras(da_ytd=10000000.0)
+    linhas = _por_periodo(B.montar_balancos(_itr_q1_petrobras() + dfc_menor))
+    q2_tri = linhas[(dt.date(2025, 4, 1), dt.date(2025, 6, 30))]
+    assert q2_tri["depreciacao_amortizacao"] is None
+
+
+def test_emprestimos_somam_debentures_e_ignoram_arrendamento() -> None:
+    (linha,) = B.montar_balancos([
+        _dfp_2024("3.01", "Receita de vendas", 1000.0, demo="DRE"),
+        _dfp_2024("2.01.04.01", "Empréstimos e Financiamentos", 1293000.0),
+        _dfp_2024("2.01.04.02", "Debêntures", 80000.0),
+        _dfp_2024("2.01.04.03", "Financiamento por Arrendamento", 907000.0),
+        _dfp_2024("2.02.01.01", "Empréstimos e Financiamentos", 5347000.0),
+        _dfp_2024("2.02.01.02", "Debêntures", 4392000.0),
+    ])
+    assert linha["emprestimos_curto_prazo"] == 1373000000.0
+    assert linha["emprestimos_longo_prazo"] == 9739000000.0
+
+
+def test_sem_conta_de_emprestimo_fica_none_e_nao_zero() -> None:
+    (linha,) = B.montar_balancos([
+        _dfp_2024("3.01", "Receita de vendas", 1000.0, demo="DRE"),
+        _dfp_2024("2.03", "Patrimônio Líquido Consolidado", 500.0),
+    ])
+    assert linha["emprestimos_curto_prazo"] is None
+    assert linha["emprestimos_longo_prazo"] is None
+
+
+def test_depreciacao_soma_varias_linhas_e_fica_positiva() -> None:
+    (linha,) = B.montar_balancos([
+        _dfp_2024("3.01", "Receita de vendas", 1000.0, demo="DRE"),
+        _dfp_2024("6.01.01.02", "Depreciação e amortização", 1107622.0, demo="DFC"),
+        _dfp_2024("6.01.01.03", "Exaustão dos ativos biológicos", 1317945.0, demo="DFC"),
+    ])
+    assert linha["depreciacao_amortizacao"] == 2425567000.0
+
+
+def test_depreciacao_com_sinal_negativo_sai_positiva_e_sem_da_fica_none() -> None:
+    def conta(cd: str, ds: str, valor: float) -> dict:
+        return {"cd_conta": cd, "ds_conta": ds, "valor": valor}
+
+    negativas = [
+        conta("6.01.01.02", "Depreciação e amortização", -5.0),
+        conta("6.01.01.03", "Exaustão", -3.0),
+    ]
+    assert B._depreciacao_amortizacao(negativas) == 8.0
+    juros = [conta("6.01.01.05", "Juros e variações cambiais", 7.0)]
+    assert B._depreciacao_amortizacao(juros) is None
+
+
+@pytest.mark.parametrize(("ds", "esperado"), [
+    ("Depreciação, depleção e amortização", True),
+    ("Depreciação, amortização e exaustão", True),
+    ("Exaustão dos ativos biológicos", True),
+    ("Amortiz. de ativos de contratos com clientes  "
+     "- direitos de exclusividade e direito de uso", True),
+    ("Depreciação, Amortização e Impairment", True),
+    ("Amortização de mais valia", True),
+    ("Depreciação IFRS-16", True),
+    ("Despesas com depreciação e amortização", True),
+    ("Amortização do direito de concessão", True),
+    ("Amortização de Custo de Transação de Empréstimos", False),
+    ("Amortização de custos de transação de Debêntures", False),
+    ("Amortizaçao dos custos de captação", False),
+    ("Amortização do custo de transação, ágio e deságio", False),
+    ("Amortização de mais valia estoque", False),
+    ("Atualização dos ativos financeiros ao custo amortizado", False),
+    ("Resultado de Juros e Variação Cambial de Ativos Financeiros ao Custo Amortizado", False),
+    ("Amortização de Despesas Antecipadas", False),
+    ("Juros, amortização de captação e variações cambiais líquidas", False),
+    ("Encargos sobre empréstimos, financiamentos, debêntures e amortização de custo de transação",
+     False),
+    ("Amortização do custo de aquisição de empréstimo", False),
+])
+def test_e_depreciacao_inclui_e_exclui_descricoes_reais_da_cvm(ds: str, esperado: bool) -> None:
+    assert B._e_depreciacao(ds) is esperado
+
+
+def test_banco_e_seguradora_saem_em_branco() -> None:
+    (linha,) = B.montar_balancos([
+        _dfp_2024("3.01", "Receita de vendas", 1000.0, demo="DRE", cd_cvm=16659),
+        _dfp_2024("3.03", "Resultado Bruto", 400.0, demo="DRE", cd_cvm=16659),
+        _dfp_2024("3.05", "Resultado Antes do Resultado Financeiro e dos Tributos", 300.0,
+                  demo="DRE", cd_cvm=16659),
+        _dfp_2024("3.11", "Lucro/Prejuízo Consolidado do Período", 200.0, demo="DRE", cd_cvm=16659),
+        _dfp_2024("2.03", "Patrimônio Líquido Consolidado", 800.0, cd_cvm=16659),
+        _dfp_2024("1.01.01", "Caixa e Equivalentes de Caixa", 50.0, demo="BPA", cd_cvm=16659),
+        _dfp_2024("6.01.01.03", "Depreciações", 10.0, demo="DFC", cd_cvm=16659),
+    ])
+    for coluna in B.COLUNAS_SEM_FINANCEIRAS:
+        assert linha[coluna] is None, coluna
+    assert linha["receita_liquida"] == 1000000.0
+    assert linha["lucro_liquido"] == 200000.0
+    assert linha["patrimonio_liquido"] == 800000.0
+
+
+def test_banco_sem_plano_industrial_nao_preenche_ebit_nem_caixa() -> None:
+    # ITUB4 tem o proprio plano: 3.05 e "Resultado Antes dos Tributos" e caixa nao casa.
+    (linha,) = B.montar_balancos([
+        _dfp_2024("3.05", "Resultado Antes dos Tributos sobre o Lucro", 300.0, demo="DRE",
+                  cd_cvm=19348),
+        _dfp_2024("1.01.01", "Caixa", 50.0, demo="BPA", cd_cvm=19348),
+    ])
+    assert linha["ebit"] is None
+    assert linha["caixa"] is None
+
+
+def test_dfp_preenche_d_a_no_periodo_anual() -> None:
+    (linha,) = B.montar_balancos([
+        _dfp_2024("3.01", "Receita de vendas", 1000.0, demo="DRE"),
+        _dfp_2024("6.01.01.04", "Depreciação, depleção e amortização", 39928.0, demo="DFC"),
+    ])
+    assert linha["depreciacao_amortizacao"] == 39928000.0
 
 
 # -- proventos -------------------------------------------------------------------------------
