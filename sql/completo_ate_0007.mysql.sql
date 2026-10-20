@@ -1,10 +1,10 @@
--- Dataset 1.0 -- schema completo ate a migration 0006 (MySQL 8), em um arquivo so.
+-- Dataset 1.0 -- schema completo ate a migration 0007 (MySQL 8), em um arquivo so.
 -- Gerado por:
 --   DB_TARGET=mysql alembic upgrade base:head --sql   (modo offline, dialeto MySQL)
 --
 -- Uso: banco VAZIO (sem tabelas do projeto). Banco ja na 0003: aplique so os
--- sql/0004_*, 0005_* e 0006_* (ou confira em alembic_version antes de rodar este arquivo).
---   SELECT version_num FROM alembic_version;   -- deve devolver '0006' ao fim
+-- sql/0004_*, 0005_*, 0006_* e 0007_* (ou confira em alembic_version antes de rodar este arquivo).
+--   SELECT version_num FROM alembic_version;   -- deve devolver '0007' ao fim
 --
 -- As tabelas herdam o charset do database (deve ser utf8mb4; ver docs/MIGRACAO-MYSQL.md).
 -- DDL no MySQL nao e transacional: se falhar no meio, as tabelas ja criadas ficam.
@@ -604,4 +604,16 @@ CREATE TABLE indices (
 CREATE INDEX ix_indices_indice ON indices (indice);
 
 UPDATE alembic_version SET version_num='0006' WHERE alembic_version.version_num = '0005';
+
+-- Running upgrade 0006 -> 0007
+
+ALTER TABLE raw_ipe_docs MODIFY categoria VARCHAR(128) NOT NULL;
+
+ALTER TABLE raw_ipe_docs MODIFY tipo VARCHAR(255) NULL;
+
+ALTER TABLE raw_ipe_docs MODIFY especie VARCHAR(255) NULL;
+
+ALTER TABLE raw_ipe_docs MODIFY tipo_apresentacao VARCHAR(64) NULL;
+
+UPDATE alembic_version SET version_num='0007' WHERE alembic_version.version_num = '0006';
 

@@ -129,9 +129,9 @@ raw_article_bodies        raw_macro               staging_article_sentiment
 raw_collection_runs                               features_dataset_v1
 ```
 
-Sem Alembic no servidor, o schema inteiro até a migration 0006 está em
-`sql/completo_ate_0006.mysql.sql`, gerado com `DB_TARGET=mysql alembic upgrade base:head --sql`.
-Banco vazio: rode esse arquivo. Banco já na 0003: aplique só `sql/0004_*`, `0005_*` e `0006_*`.
+Sem Alembic no servidor, o schema inteiro até a migration 0007 está em
+`sql/completo_ate_0007.mysql.sql`, gerado com `DB_TARGET=mysql alembic upgrade base:head --sql`.
+Banco vazio: rode esse arquivo. Banco já na 0003: aplique só `sql/0004_*`, `0005_*`, `0006_*` e `0007_*`.
 Antes, confira `SELECT version_num FROM alembic_version;`.
 
 As camadas são **prefixo no nome**, não schema separado, porque o MySQL não tem

@@ -9,6 +9,8 @@ import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 
+from sqlalchemy import String
+
 from tcc_scraper.collectors import cvm_ipe, google_news
 from tcc_scraper.collectors.base import WorkUnit
 from tcc_scraper.collectors.cvm_ipe import (
@@ -19,6 +21,7 @@ from tcc_scraper.collectors.cvm_ipe import (
 )
 from tcc_scraper.config import IPE_CATEGORIAS, TICKER_CODE_CVM
 from tcc_scraper.db.models import Article
+from tcc_scraper.db.models_fontes import RawIpeDoc
 
 FIXTURE = Path(__file__).parent / "fixtures" / "cvm_ipe_2026_amostra.csv"
 CD_CVM_PETR = 9512
@@ -188,3 +191,27 @@ def test_persist_sem_documentos_nao_toca_o_banco(monkeypatch) -> None:
     monkeypatch.setattr(cvm_ipe, "session_scope", proibido)
 
     assert cvm_ipe._persist([]) == 0
+
+
+def test_colunas_de_texto_cabem_todos_os_valores_da_fixture() -> None:
+    # Regressao: tipo_apresentacao (32) estourou com valor real de 33 caracteres.
+    linhas = _linhas()
+    categorias = frozenset(linha["Categoria"] for linha in linhas)
+    universo = {int(linha["Codigo_CVM"]) for linha in linhas}
+
+    docs = parse_ipe(linhas, universo, categorias, DESDE_TUDO)
+
+    atributo_de = {
+        "protocolo_entrega": "protocolo",
+        "cnpj": "cnpj",
+        "categoria": "categoria",
+        "tipo": "tipo",
+        "especie": "especie",
+        "tipo_apresentacao": "tipo_apresentacao",
+    }
+    colunas = [c for c in RawIpeDoc.__table__.c if isinstance(c.type, String) and c.type.length]
+    assert {c.name for c in colunas} == set(atributo_de)
+    assert docs
+    for coluna in colunas:
+        maior = max(len(getattr(doc, atributo_de[coluna.name])) for doc in docs)
+        assert maior <= coluna.type.length, f"{coluna.name}: {maior} > {coluna.type.length}"
