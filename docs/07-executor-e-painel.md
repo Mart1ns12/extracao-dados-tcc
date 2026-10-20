@@ -1,0 +1,194 @@
+# Executor e painel
+
+Este documento cobre o executor, o worker que roda o daily e a carga histórica a pedido do painel: o contrato com a API do painel, os comandos e como são recusados, a confirmação, a agenda das 18:30, o heartbeat, as tabelas `v1-painel_*`, as limitações atuais, as variáveis e como rodar e implantar.
+
+## 1. O que é o executor
+
+O executor é um worker que fica em loop. Não é um cron. Ele roda com:
+
+```bash
+python -m tcc_scraper.cli executor
+```
+
+Em produção, esse é o `CMD` da imagem (ver seção 12). A cada ciclo, ele:
+
+- busca os comandos pendentes na API do painel, a cada `EXECUTOR_POLL_S` segundos (padrão 5);
+- aplica cada comando e confirma o resultado à API (ack);
+- cria o daily automático no horário da agenda (`DAILY_HORA`, padrão 18:30 em `DAILY_TZ`);
+- inicia a execução agendada, quando a carga histórica deixa.
+
+Em paralelo, uma thread própria envia o heartbeat a cada `EXECUTOR_HEARTBEAT_S` segundos (padrão 15). O daily e a carga histórica rodam, cada um, em uma thread própria. Tudo é um processo só.
+
+O executor exige `PAINEL_API_URL` e `EXECUTOR_TOKEN`. Sem essas duas variáveis, a CLI sai com erro.
+
+## 2. Fluxo
+
+```
+painel -> API do painel -> v1-painel_comandos (fila)
+                                | POST /api/executor/comandos (a cada EXECUTOR_POLL_S)
+                           executor -> daily | etapa | carga histórica
+                                | grava
+                           MySQL v1-painel_* -> lido pela API -> painel
+```
+
+A API nunca chama o scraper. Ela só enfileira o comando. O executor busca, aplica e confirma. O painel lê o progresso direto das tabelas `v1-painel_*`.
+
+## 3. Contrato com a API do painel
+
+Todas as rotas são `POST`, com corpo JSON, e exigem `Authorization: Bearer <EXECUTOR_TOKEN>`. O token precisa ser igual ao configurado na API. Sem o token, a API responde `401`. Se a API não tem o token configurado, responde `503`.
+
+| Rota | Corpo | Resposta | Quem chama |
+|---|---|---|---|
+| `POST /api/executor/comandos` | `{}` | `200 {"comandos": [{"id", "tipo", "parametros", "criado_em"}]}`: os comandos ainda não confirmados, em ordem | Executor, a cada ciclo |
+| `POST /api/executor/comandos/ack` | `{"id": "...", "ok": true, "erro": null}` | `204`. `404` (id desconhecido) e `409` (já confirmado) contam como confirmado | Executor, depois de aplicar o comando |
+| `POST /api/executor/heartbeat` | `{"host": "...", "versao": "...", "ocupado_com": null}` | `204` | Executor, a cada `EXECUTOR_HEARTBEAT_S` |
+
+Os comandos chegam ao painel pelas rotas que o próprio painel usa:
+
+| Ação no painel | Rota da API | Comando na fila |
+|---|---|---|
+| Disparar o daily | `POST /api/disparos` com `{"tipo": "daily"}` | `daily` |
+| Disparar uma etapa | `POST /api/disparos` com `{"tipo": "etapa", "etapa": "noticias"}` | `etapa` |
+| Disparar a carga histórica | `POST /api/historico/disparos` com `{"anos": [2025, 2026], "modo": "pendentes"}` | `historico` |
+| Pausar, retomar ou cancelar a carga | `POST /api/historico/pausar` (`/retomar`, `/cancelar`) | `pausar`, `retomar`, `cancelar` |
+
+Em `MODO=live`, essas rotas ainda respondem `501`. Ver seção 9.
+
+## 4. Comandos
+
+O executor aplica cada comando de acordo com o `tipo`:
+
+| `tipo` | `parametros` | Efeito | Recusado (ack com `ok: false`) quando |
+|---|---|---|---|
+| `daily` | `{}` | Cria e inicia um daily, com origem `manual` | Já existe execução `agendada` ou `em_andamento` |
+| `etapa` | `{"etapa": "<id>"}` | Cria e inicia uma etapa, sozinha | Id fora do catálogo (`etapa invalida: ...`), ou execução ativa |
+| `historico` | `{"anos": [2025, 2026], "modo": "pendentes"}` | Dispara a carga histórica | Carga ativa (`em_andamento`, `pausando`, `pausada` ou `cancelando`); `modo` inválido; nenhum dos anos cai na faixa de coleta |
+| `pausar` | `{}` | Carga: `em_andamento` vai para `pausando` | A carga não está `em_andamento`, ou não há carga |
+| `retomar` | `{}` | Carga: `pausada` vai para `em_andamento` | A carga não está `pausada` |
+| `cancelar` | `{}` | Carga: vai para `cancelando`, ou direto para `cancelada` | A carga não está `em_andamento`, `pausando` ou `pausada` |
+
+- **Tipo desconhecido** é recusado com `tipo desconhecido: <tipo>`.
+- **Falha interna** ao aplicar um comando é recusada com `falha interna ao aplicar o comando`. A exceção vai para o log do processo.
+- **Não há cancelamento do daily pelo painel.** O método `Daily.cancelar()` existe, mas nenhum comando o aciona.
+- **Mensagens de recusa** vão no campo `erro` do ack. Exemplo: `pausar exige carga em_andamento (atual: pausada)`.
+
+Regras de execução (vêm de [02](02-pipeline-diaria.md), seção 5, e [03](03-carga-historica.md)):
+
+- Uma execução por vez. Um daily ou uma etapa é recusado enquanto houver execução `agendada` ou `em_andamento`.
+- Com carga `em_andamento` ou `pausando`, o daily nasce `agendada` com `aguardando = historico`, e não é recusado.
+
+## 5. Confirmação e reentrega
+
+Para cada comando, o executor aplica e depois confirma com `POST /api/executor/comandos/ack`, enviando `ok` e `erro`.
+
+- **Entrega pelo menos uma vez.** O painel pode reenviar um comando que já foi aplicado. O executor guarda o id em `v1-painel_comandos_aplicados`. Se o id já está lá, ele não aplica de novo e confirma com `ok: true`.
+- **Recusa reenviada sai como sucesso.** Um comando recusado grava `ok = 0` e a mensagem em `v1-painel_comandos_aplicados`. Se a primeira confirmação se perdeu e o comando volta, a reconfirmação sai com `ok: true`. A recusa original continua registrada no banco, mas o painel recebe o sucesso. Esse é um ponto em aberto (seção 9).
+- **Falha de rede no ack.** O executor não tenta de novo no mesmo ciclo. O comando continua pendente no painel e volta na próxima busca, quando é reconfirmado sem ser reaplicado.
+
+## 6. Agenda do daily automático
+
+A cada ciclo, o executor confere a agenda no fuso `DAILY_TZ`:
+
+1. Se a hora atual é igual ou posterior a `DAILY_HORA` (padrão 18:30), e
+2. Se não existe execução de origem `cron` iniciada hoje,
+
+então cria e inicia um daily com origem `cron`. O id da execução segue o formato `<data>-daily-<HHMMSS>`.
+
+- **Recusa.** Se a criação é recusada (por exemplo, há um daily manual em andamento), o executor tenta de novo a cada ciclo. Um aviso sai uma vez por dia no log.
+- **Subir depois do horário.** Se o executor sobe depois de 18:30 e ainda não houve execução `cron` no dia, o daily dispara logo na subida.
+- **Daily manual às 18:30.** Um daily manual rodando nesse horário adia o cron. O cron roda assim que a execução manual termina, no mesmo dia.
+- **Carga histórica ativa.** O daily é criado com `status = agendada` e `aguardando = historico`. Ele começa quando a carga sai de `em_andamento` e `pausando` (ver [03](03-carga-historica.md), seção 7).
+
+## 7. Heartbeat
+
+A cada `EXECUTOR_HEARTBEAT_S` segundos, o executor manda o heartbeat para a API e grava o mesmo registro em `v1-painel_heartbeat`. Uma falha em um dos dois não impede o outro.
+
+| Campo | Valor |
+|---|---|
+| `host` | `EXECUTOR_HOST`, ou o nome da máquina se a variável estiver vazia |
+| `versao` | Versão do pacote instalado (`dev` se o pacote não estiver instalado) |
+| `ocupado_com` | `historico` enquanto a carga está `em_andamento`, `pausando` ou `cancelando`. `daily` se a thread do daily está ativa. `null` caso contrário. Uma carga `pausada` não conta como ocupada |
+
+Pelo contrato da API, o componente `executor` aparece como `ok` com sinal de até 45 segundos, `lento` até 120 segundos, e `falha` depois disso.
+
+## 8. Tabelas `v1-painel_*`
+
+As tabelas são lidas pela API direto no MySQL. Só `v1-painel_comandos` é escrita pela API. As demais são escritas pelo executor. Os nomes têm hífen, então em SQL escrito à mão use crases: ``SELECT * FROM `v1-painel_logs` ``.
+
+| Tabela | Escrita por | Chave | Colunas |
+|---|---|---|---|
+| `v1-painel_comandos` | API (enfileira e confirma) | `id` (CHAR 36) | `tipo`, `parametros` (JSON), `criado_em`, `ack_em`, `ok`, `erro`. Índice em `ack_em` |
+| `v1-painel_comandos_aplicados` | Executor | `id` (CHAR 36) | `aplicado_em`, `ok`, `erro`. Garante a idempotência (seção 5) |
+| `v1-painel_heartbeat` | Executor | `host` (String 64) | `versao`, `ocupado_com`, `visto_em` |
+| `v1-painel_execucoes` | Executor | `id` (String 48) | `tipo` (`daily` ou `etapa`), `etapa_alvo`, `origem` (`cron` ou `manual`), `status`, `aguardando` (`null` ou `historico`), `iniciada_em`, `finalizada_em`, `prazo_em`, `erro`, `atualizada_em`. Índice em `iniciada_em` |
+| `v1-painel_etapas` | Executor | (`execucao_id`, `etapa_id`). FK para `v1-painel_execucoes.id` com `ON DELETE CASCADE` | `ordem`, `status`, `unidades_total`, `unidades_feitas`, `unidades_erro`, `unidades_saturadas`, `itens`, `iniciada_em`, `finalizada_em`, `ultimo_erro_unidade`, `ultimo_erro_mensagem`, `atualizada_em` |
+| `v1-painel_historico` | Executor | `id` (String 32, ex.: `hist-20261019-210512`) | `status`, `modo`, `anos` (JSON), `ano_atual`, `coletor_atual`, `unidade_atual`, `iniciada_em`, `finalizada_em`, `itens_por_min`, `erro`, `atualizada_em` |
+| `v1-painel_historico_progresso` | Executor | (`ano`, `coletor`) | `unidades_total`, `unidades_feitas`, `unidades_erro`, `itens`, `status_segmento`, `atualizado_em` |
+| `v1-painel_logs` | Executor | `id` (autoincremento) | `ts`, `nivel` (`info`, `aviso` ou `erro`), `origem` (`daily` ou `historico`), `etapa`, `mensagem`. Índice em `ts`. Sem chave estrangeira, para o log sobreviver à limpeza das execuções |
+
+Valores de status, em uso:
+
+- `v1-painel_execucoes.status`: `agendada`, `em_andamento`, `concluida`, `parcial`, `falhou`.
+- `v1-painel_etapas.status`: `pendente`, `em_andamento`, `concluida`, `falhou`, `pulada`.
+- `v1-painel_historico.status`: `em_andamento`, `pausando`, `pausada`, `cancelando`, `cancelada`, `concluida`, `falhou`.
+- `v1-painel_historico_progresso.status_segmento`: `pendente`, `em_andamento`, `pausado`, `concluido`, `falhou`.
+
+Os status são strings, sem `ENUM` no banco. Os valores de ponto flutuante são `Double`. As datas são `UTCDateTime`, gravadas em UTC.
+
+## 9. Limitações e pontos em aberto
+
+- **A API em `MODO=live` não implementa as rotas do executor.** As rotas `/api/executor/*` respondem `501`, porque a fila de comandos e o heartbeat ainda são TODO na fonte do modo live (`interface-acompanhamento/api/app/fila.py` e `api/app/fontes/mysql.py`). Enquanto isso, o executor não recebe comandos da API live. O loop segue rodando, sem aplicar nada.
+- **`MODO=mock` simula o executor.** Pelo contrato da API, nesse modo a própria API consome a fila e manda o heartbeat. Não aponte o executor real para uma API em `MODO=mock`: os dois disputariam a mesma fila.
+- **Um processo só.** O estado do daily e o da carga histórica ficam em memória. Não rode mais de um executor contra o mesmo banco.
+- **Reinício no meio de um daily.** A execução `em_andamento` vira `falhou`, com o motivo `interrompida por reinício do executor`. As etapas que ainda não começaram ficam `pendente`. O daily não é retomado: dispare de novo pelo painel. A carga histórica, ao contrário, é retomada sozinha (ver [03](03-carga-historica.md), seção 6).
+- **Sem cancelamento do daily** pelo painel.
+- **Recusa reenviada sai como sucesso.** Ver seção 5.
+- **Logs sem id de execução.** `v1-painel_logs` não tem essa coluna. A ligação com a execução é pelo horário e pela etapa.
+- **Limpeza de logs só na subida.** `PAINEL_LOGS_DIAS` é aplicado quando o executor sobe. Num processo que roda por semanas, os logs antigos só saem no próximo reinício.
+- **CLI sem a prioridade da carga.** Ver [03](03-carga-historica.md), seção 10.
+- **Caminho do contrato.** O docstring de `src/tcc_scraper/executor/painel_client.py` e o `docs/EXECUTOR.md` citam o contrato como `interface-acompanhamento/docs/contrato-api.md`, um caminho que não existe. O contrato está em `interface-acompanhamento/api/docs/contrato-api.md`. Onde o contrato e o código divergem, vale o código.
+- **Imagem e `pyproject.toml`.** O comentário do extra `sentiment` no `pyproject.toml` diz que a imagem do Railway não instala esse extra. O `Dockerfile` instala `.[llm,sentiment]`, e a etapa `enriquecimento` depende dele. Vale o `Dockerfile`.
+
+## 10. Variáveis do executor
+
+As demais variáveis (banco, Gemini, juíza, Jev, `EXPORT_DIR`) estão em [08](08-operacao-e-deploy.md) e [04](04-juiza-e-llm.md).
+
+| Variável | Padrão | Para quê |
+|---|---|---|
+| `PAINEL_API_URL` | vazio (obrigatória para o executor) | Base da API do painel, sem barra no final |
+| `EXECUTOR_TOKEN` | vazio (obrigatória para o executor) | Bearer enviado à API. Igual ao configurado na API |
+| `EXECUTOR_POLL_S` | 5 | Intervalo entre buscas de comandos, em segundos |
+| `EXECUTOR_HEARTBEAT_S` | 15 | Intervalo do heartbeat, em segundos |
+| `EXECUTOR_HOST` | vazio (nome da máquina) | Nome deste executor no painel |
+| `DAILY_HORA` | `18:30` | Horário-alvo do daily automático, em `HH:MM` no fuso de `DAILY_TZ` |
+| `DAILY_TZ` | `America/Sao_Paulo` | Fuso do horário da agenda, do dia de referência e do prazo |
+| `DAILY_ORCAMENTO_MIN` | 90 | Orçamento do daily, em minutos (ver [02](02-pipeline-diaria.md), seção 5) |
+| `DAILY_PRAZO_HORA` | 20 | Hora-alvo de publicação do dia (`prazo_em`) |
+| `DATA_FIM_COLETA` | vazio | Fixa o dia de referência. Deixe vazio no servidor |
+| `PAINEL_LOGS_DIAS` | 7 | Dias de retenção de `v1-painel_logs`, aplicados na subida |
+
+## 11. Como rodar localmente
+
+```bash
+cp .env.example .env                  # PAINEL_API_URL e EXECUTOR_TOKEN; o banco é o MySQL do .env
+pip install -e ".[dev,llm]"           # o extra [sentiment] é opcional localmente
+python -m tcc_scraper.cli db-info     # confere a conexão com o banco (só leitura)
+python -m tcc_scraper.cli executor    # worker; em outro terminal, a API do painel
+python -m tcc_scraper.cli daily --etapa precos   # roda uma etapa sem painel
+```
+
+- **Não há banco de desenvolvimento.** O executor local grava no MySQL do `.env`, que é o banco do TCC. Ver [06](06-banco-de-dados.md).
+- **Sem o extra `[sentiment]`**, a etapa `enriquecimento` falha e o daily sai `parcial`.
+- **Teste ponta a ponta com a API real** não é possível enquanto as rotas do executor estiverem em `501` (seção 9).
+- **Migrações** rodam da máquina local, com `alembic upgrade head`. O usuário do executor não tem permissão de DDL (ver seção 12).
+
+## 12. Implantação no Railway
+
+- **Serviço.** Um worker criado a partir deste repositório. O `railway.json` manda construir pelo `Dockerfile`. Não há healthcheck, porque o worker não serve HTTP. A política de reinício é `ON_FAILURE`, com até 10 tentativas.
+- **Imagem.** `python:3.12-slim`, com torch da roda CPU do PyTorch. Os modelos do FinBERT (pt e en) são baixados no build, em `/app/.hf_cache`, e por isso a subida do serviço não baixa modelo.
+- **Variáveis.** Ficam no painel do Railway, nunca no repositório. `EXECUTOR_TOKEN` tem que ser igual ao da API do painel.
+- **Migrações.** Não rodam no serviço. Rode `alembic upgrade head` da máquina local, com um usuário que tem DDL. Ver [06](06-banco-de-dados.md) e [08](08-operacao-e-deploy.md).
+- **Disco efêmero.** Parquet e CSV gerados no contêiner somem no próximo deploy. Para gerar CSV, rode `build-entrega --csv` localmente.
+- **Checklist de entrada em produção.** Está em [08](08-operacao-e-deploy.md), na ordem em que deve ser feito.
+
+Ver também: [02 Pipeline diária](02-pipeline-diaria.md), [03 Carga histórica](03-carga-historica.md), [06 Banco de dados](06-banco-de-dados.md), [08 Operação e deploy](08-operacao-e-deploy.md), [ADR](ADR.md).
