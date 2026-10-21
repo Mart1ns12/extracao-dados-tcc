@@ -103,9 +103,7 @@ class Executor:
     def ocupado_com(self) -> str | None:
         if self._historico.ocupado and self._carga_historica_ativa():
             return "historico"
-        if self._daily.ocupado:
-            return "daily"
-        return None
+        return self._daily.ocupado_com
 
     def _carga_historica_ativa(self) -> bool:
         try:

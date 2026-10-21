@@ -326,6 +326,9 @@ conferência é revisão manual; (3) o histórico registrado na própria tabela 
 em `sql/alteracoes/` e no [histórico de mudanças](09-historico-de-mudancas.md); (4) `db-info` só confere a existência
 das tabelas, não as colunas. A tabela `alembic_version` continua no MySQL de produção, sem uso, até o dono aprovar a
 remoção.
+
+**Comando `coletar`: coleta avulsa como variante do daily, com catálogo único de coletores (2026-10-20).** Problema: o painel precisa pedir a recoleta de coletores específicos (ex.: `cvm_itr_dfp` de 2024–2025 sem checkpoint, seguida da remontagem de `balancos`) sem disparar a carga histórica inteira. Opções: (a) filtro de coletores na carga histórica, que tem estado próprio (`v1-painel_historico`, posição por ano e coletor) e é única por vez; (b) uma terceira máquina de execução; (c) reaproveitar o `Daily`: a execução (`v1-painel_execucoes`, tipo `coletar`) recebe um plano de etapas montado pelo comando, uma por item e uma para a montagem. Escolhido (c), com um catálogo único em `orquestrador/coletores.py` (id → alvo, checkpoint padrão, parâmetros aceitos, janela de anos), usado também pela carga histórica. Mesma exclusão do daily: recusa com execução agendada ou em andamento, e nasce `agendada` com `aguardando = historico` durante a carga. Sem orçamento. Falha de item resulta em `parcial`. Sem cancelamento pelo painel. Custo: o plano vive só na memória do processo (não há coluna de parâmetros), então um coletar agendado ou em andamento num reinício vira `falhou` e precisa ser reenviado. O heartbeat ganha o valor `coletar`, e as etapas ganham ids de coletor que o painel precisa exibir.
+
 ---
 
 ## PHILOSOPHY

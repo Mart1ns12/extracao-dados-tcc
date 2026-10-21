@@ -11,7 +11,6 @@ vivem na memoria do processo. `recuperar_apos_reinicio` reconcilia os dois.
 
 from __future__ import annotations
 
-import importlib
 import logging
 import threading
 from collections import deque
@@ -22,6 +21,10 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from tcc_scraper.config import Settings, get_settings
+from tcc_scraper.orquestrador.coletores import CATALOGO, args_fixos
+
+# _resolver e global deste modulo: os testes trocam H._resolver por um duble.
+from tcc_scraper.orquestrador.coletores import resolver as _resolver
 from tcc_scraper.orquestrador.progresso import FLUSH_SEGUNDOS, FLUSH_UNIDADES
 
 if TYPE_CHECKING:
@@ -34,23 +37,6 @@ MODOS = ("pendentes", "reprocessar_erros")
 STATUS_ATIVOS = ("em_andamento", "pausando", "pausada", "cancelando")
 # Janela da media movel de itens por minuto.
 JANELA_RITMO = timedelta(minutes=10)
-
-# Alvos dos passos ("modulo:nome"). Resolvidos na hora de executar: o import deste modulo
-# continua leve e os testes trocam cada alvo por um dublê.
-_YAHOO = "tcc_scraper.collectors.prices_yahoo:YahooPriceCollector"
-_BCB = "tcc_scraper.collectors.macro_bcb:BcbCollector"
-_INDICES = "tcc_scraper.collectors.indices:IndicesBcbCollector"
-_CVM_CADASTRO = "tcc_scraper.collectors.cvm_cadastro:CvmCadastroCollector"
-_B3_CADASTRO = "tcc_scraper.collectors.b3_cadastro:B3CadastroCollector"
-_B3_PROVENTOS = "tcc_scraper.collectors.b3_proventos:B3ProventosCollector"
-_CVM_ITR_DFP = "tcc_scraper.collectors.cvm_demonstracoes:CvmDemonstracoesCollector"
-_GOOGLE_NEWS = "tcc_scraper.collectors.google_news:GoogleNewsCollector"
-_CVM_IPE = "tcc_scraper.collectors.cvm_ipe:CvmIpeCollector"
-_ENRIQUECIMENTO = "tcc_scraper.enrich.article_fetcher:ArticleBodyCollector"
-_FINBERT = "tcc_scraper.sentiment.scoring:score_pending"
-_JUIZA = "tcc_scraper.llm.juiza:julgar_pendentes"
-_ENTREGA = "tcc_scraper.entrega.builder:build_entrega"
-
 
 class HistoricoEmAndamento(Exception):
     """Ja existe uma carga historica ativa (rodando, pausada ou sendo cancelada)."""
@@ -86,34 +72,21 @@ def segmentos(settings: Settings, anos: list[int] | None = None) -> list[Segment
     return saida
 
 
-def _resolver(alvo: str) -> Any:
-    modulo, nome = alvo.split(":")
-    return getattr(importlib.import_module(modulo), nome)
-
-
 @dataclass(frozen=True)
 class Passo:
-    """Uma unidade de trabalho da carga: um coletor (ou funcao) para um ano."""
+    """Uma unidade de trabalho da carga: um coletor do catalogo para um ano."""
 
     ano: int
     coletor: str
-    alvo: str
     args: dict = field(default_factory=dict)
-    # True: classe de coletor (ganha `run`). False: funcao que recebe `observador=`.
-    classe: bool = True
-    # So vale para coletores: checkpoint ligado (`resume`) ou nao.
-    resume: bool = True
 
     def executar(self, progresso: ProgressoHistorico, modo: str) -> Any:
-        alvo = _resolver(self.alvo)
-        if not self.classe:
-            return alvo(observador=progresso, **self.args)
-        if modo == "reprocessar_erros":
-            execucao = {"apenas_erros": True}
-        else:
-            execucao = {"resume": self.resume}
-        with alvo(**self.args) as coletor:
-            return coletor.run(observador=progresso, **execucao)
+        return CATALOGO[self.coletor].executar(
+            progresso,
+            args=self.args,
+            apenas_erros=modo == "reprocessar_erros",
+            resolver_alvo=_resolver,
+        )
 
 
 class _Ritmo:
@@ -231,33 +204,22 @@ def _passos(settings: Settings, anos: list[int]) -> list[Passo]:
     ordem = sorted(set(anos), reverse=True)
     primeiro = ordem[0]
     passos = [
-        Passo(primeiro, "yahoo", _YAHOO, resume=False),
-        Passo(primeiro, "bcb", _BCB),
-        Passo(primeiro, "indices_bcb", _INDICES, {"anos": ordem}),
-        Passo(primeiro, "cvm_cadastro", _CVM_CADASTRO),
-        Passo(primeiro, "b3_cadastro", _B3_CADASTRO),
-        Passo(primeiro, "b3_proventos", _B3_PROVENTOS, resume=False),
-        Passo(primeiro, "cvm_itr_dfp", _CVM_ITR_DFP, {"anos": ordem}),
+        Passo(primeiro, "yahoo"),
+        Passo(primeiro, "bcb"),
+        Passo(primeiro, "indices_bcb", {"anos": ordem}),
+        Passo(primeiro, "cvm_cadastro"),
+        Passo(primeiro, "b3_cadastro"),
+        Passo(primeiro, "b3_proventos"),
+        Passo(primeiro, "cvm_itr_dfp", {"anos": ordem}),
     ]
     for seg in segmentos(settings, ordem):
         passos += [
-            Passo(
-                seg.ano,
-                "google_news",
-                _GOOGLE_NEWS,
-                {"desde": seg.inicio, "ate": seg.fim},
-            ),
-            Passo(seg.ano, "cvm_ipe", _CVM_IPE, {"anos": [seg.ano]}),
-            Passo(seg.ano, "enriquecimento", _ENRIQUECIMENTO, resume=False),
-            Passo(seg.ano, "finbert", _FINBERT, classe=False),
-            Passo(
-                seg.ano,
-                "juiza",
-                _JUIZA,
-                {"limite_itens": settings.juiza_max_itens_dia},
-                classe=False,
-            ),
-            Passo(seg.ano, "build_entrega", _ENTREGA, classe=False),
+            Passo(seg.ano, "google_news", {"desde": seg.inicio, "ate": seg.fim}),
+            Passo(seg.ano, "cvm_ipe", {"anos": [seg.ano]}),
+            Passo(seg.ano, "enriquecimento"),
+            Passo(seg.ano, "finbert"),
+            Passo(seg.ano, "juiza", args_fixos("juiza", settings)),
+            Passo(seg.ano, "build_entrega"),
         ]
     return passos
 

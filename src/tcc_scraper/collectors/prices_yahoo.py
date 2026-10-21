@@ -99,6 +99,11 @@ def _adj_ou_close(adj: list | None, index: int, close: float) -> float:
     return ajustado if ajustado is not None else close
 
 
+def tickers_padrao() -> list[str]:
+    """Simbolos coletados por padrao: universo, Ibovespa, macro, IVVB11 e indices."""
+    return [*universo_coleta(), BENCHMARK_TICKER, *MACRO_YAHOO.values(), IVVB11, *INDICES_YAHOO]
+
+
 class YahooPriceCollector(Collector):
     """Coleta OHLCV de acoes, benchmark e series macro do Yahoo."""
 
@@ -106,15 +111,7 @@ class YahooPriceCollector(Collector):
 
     def __init__(self, tickers: Iterable[str] | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
-        if tickers is None:
-            tickers = [
-                *universo_coleta(),
-                BENCHMARK_TICKER,
-                *MACRO_YAHOO.values(),
-                IVVB11,
-                *INDICES_YAHOO,
-            ]
-        self.tickers = list(tickers)
+        self.tickers = list(tickers) if tickers is not None else tickers_padrao()
         self.default_delay = self.settings.throttle_yahoo
         self.throttle.configure("query1.finance.yahoo.com", self.settings.throttle_yahoo)
 

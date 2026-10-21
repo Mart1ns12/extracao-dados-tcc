@@ -69,6 +69,19 @@ def de_stats(st: dict) -> ResultadoEtapa:
     return ResultadoEtapa("concluida", itens=st["itens"], detalhes=dict(st))
 
 
+def resultado_finbert(st: dict) -> ResultadoEtapa:
+    """Traduz o dict de `score_pending` em resultado de etapa (usado pelo `coletar`)."""
+    itens = st.get("gravados", 0)
+    if st.get("interrompido"):
+        return ResultadoEtapa(
+            "falhou",
+            itens=itens,
+            erro="interrompida: orçamento ou cancelamento",
+            detalhes=dict(st),
+        )
+    return ResultadoEtapa("concluida", itens=itens, detalhes=dict(st))
+
+
 def etapa_precos(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
     from tcc_scraper.collectors.prices_yahoo import YahooPriceCollector
 
@@ -212,30 +225,44 @@ def etapa_analise(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
     return ResultadoEtapa("falhou", erro=(r.erro or r.status)[:4000])
 
 
-def etapa_entrega(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+def montar_entrega(p: Progresso, tabelas: list[str] | None = None) -> ResultadoEtapa:
+    """Monta as tabelas pedidas (todas se None). Usado pelo daily e pelo `coletar`."""
     from tcc_scraper.db.models_entrega import COLUNAS
     from tcc_scraper.entrega.builder import build_entrega
 
     # O builder nao levanta por tabela: a que falha some do dict e o observador recebe ok=False.
-    tabelas = build_entrega(observador=p)
-    if not tabelas:
+    # Sem tabelas, a chamada fica identica a de antes (ha teste que confere os kwargs).
+    if tabelas:
+        gravadas = build_entrega(tabelas=list(tabelas), observador=p)
+    else:
+        gravadas = build_entrega(observador=p)
+    if not gravadas:
         return ResultadoEtapa("falhou", erro="todas as tabelas falharam", detalhes={"tabelas": {}})
-    itens = sum(tabelas.values())
-    faltam = [t for t in COLUNAS if t not in tabelas]
+    itens = sum(gravadas.values())
+    alvo = list(tabelas) if tabelas else list(COLUNAS)
+    faltam = [t for t in alvo if t not in gravadas]
     if faltam:
         return ResultadoEtapa(
             "falhou",
             itens=itens,
             erro=f"tabelas com falha: {', '.join(faltam)}",
-            detalhes={"tabelas": tabelas},
+            detalhes={"tabelas": gravadas},
         )
-    return ResultadoEtapa("concluida", itens=itens, detalhes={"tabelas": tabelas})
+    return ResultadoEtapa("concluida", itens=itens, detalhes={"tabelas": gravadas})
+
+
+def etapa_entrega(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    return montar_entrega(p)
 
 
 def etapa_juiza(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
     from tcc_scraper.llm.juiza import julgar_pendentes
 
     r = julgar_pendentes(limite_itens=ctx.settings.juiza_max_itens_dia, observador=p)
+    return resultado_juiza(r)
+
+
+def resultado_juiza(r: Any) -> ResultadoEtapa:
     itens = r.regra + r.jev + r.gemini
     detalhes = {
         "pendentes": r.pendentes,

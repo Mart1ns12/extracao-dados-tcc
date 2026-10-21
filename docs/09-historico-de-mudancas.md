@@ -308,3 +308,46 @@ Estes pontos não foram confirmados no código ou no ambiente. Não há evidênc
 - **`judge-news --avaliar` sem chave** deveria avisar e sair com código 0. Não foi conferido.
 - **Spike S3 (hora do IPE no RAD)** ficou fora do plano: a publicação é tratada como `precision='date'`, com
   `momento_pregao='desconhecido'`.
+
+## 10. Comando coletar no executor (2026-10-20)
+
+**O pedido.** As verificações do painel precisam recoletar coletores específicos para um recorte (por exemplo, ITR e
+DFP de 2024 e 2025, sem checkpoint) e remontar uma tabela da entrega (`balancos`). A carga histórica faz isso, mas
+roda inteira e só cabe uma por vez. O comando `coletar` faz a coleta pontual. Detalhes de uso e recusas estão em
+[Executor e painel](07-executor-e-painel.md), seção 4.1.
+
+**Arquivos novos:**
+
+- `src/tcc_scraper/orquestrador/coletores.py`: catálogo único dos coletores (id, alvo, checkpoint padrão, parâmetros
+  aceitos e janela de anos).
+- `src/tcc_scraper/orquestrador/coletar.py`: validação do comando e montagem do plano de etapas.
+- `tests/test_coletores.py`, `tests/test_daily_coletar.py` e `tests/test_coletar.py`.
+
+**Arquivos alterados:**
+
+- `orquestrador/historico.py`: `Passo` delega ao catálogo. As 13 constantes de alvo saem.
+- `orquestrador/daily.py`: execução `tipo = coletar`, com plano em memória. `criar` passa a `_registrar`.
+- `orquestrador/etapas.py`: `montar_entrega`, `resultado_juiza` e `resultado_finbert` extraídos para reuso.
+- `collectors/prices_yahoo.py`: `tickers_padrao()`.
+- `executor/comandos.py` e `executor/loop.py`: comando `coletar` e `ocupado_com`.
+- `db/models_painel.py`: só comentários. Sem mudança de schema.
+- `tests/test_orquestrador.py` e `tests/test_executor_loop.py`: casos novos.
+
+**Decisões:**
+
+1. **Catálogo único** em `orquestrador/coletores.py`, usado pela carga histórica e pelo `coletar`. Não muda o comportamento da carga.
+2. **Concorrência como etapa manual.** Com execução `agendada` ou `em_andamento`, o `coletar` é recusado. Com carga ativa, nasce `agendada` e espera a carga. Custo: a recusa precisa ser reenviada pelo painel.
+3. **Execução no `Daily`, com plano em memória e sem orçamento.** Falha de item não para os demais, e o final sai `parcial`. Custo: o plano se perde no reinício.
+4. **Sem cancelamento pelo painel.** `cancelar` continua sendo da carga.
+5. **Validação estrita.** Chaves de topo e de item são fechadas, a janela de anos é por coletor, e toda recusa vai com mensagem no ack.
+
+**O que o time do painel precisa saber:**
+
+- O heartbeat pode mandar `ocupado_com = "coletar"`.
+- Em execuções `coletar`, as etapas de `v1-painel_etapas` usam ids de coletor (`cvm_itr_dfp`, `google_news`,
+  `build_entrega`), e não as nove etapas do daily.
+- Os logs dessas execuções saem com `origem = daily`.
+- Um coletar recusado por execução ativa volta com `ja existe uma execucao em andamento ou agendada` e precisa ser
+  reenviado.
+- Depois de um reinício do executor, um coletar `agendada` ou `em_andamento` vira `falhou`, com a mensagem
+  `reenvie o comando`.

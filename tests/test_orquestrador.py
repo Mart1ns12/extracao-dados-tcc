@@ -617,3 +617,49 @@ def test_etapa_juiza_excecao_sobe_para_o_daily(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="gemini fora"):
         E.etapa_juiza(_ctx(), _Observador())
+
+
+# -- utilitarios reaproveitaveis (usados pelo coletar) --------------------------------
+def test_montar_entrega_com_tabelas_pedidas_passa_so_essas(monkeypatch) -> None:
+    chamadas: list = []
+
+    def falso(**kwargs):
+        chamadas.append(kwargs)
+        return {"balancos": 5}
+
+    monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", falso)
+    obs = _Observador()
+
+    r = E.montar_entrega(obs, ["balancos"])
+
+    assert r.status == "concluida"
+    assert r.itens == 5
+    assert chamadas == [{"tabelas": ["balancos"], "observador": obs}]
+
+
+def test_montar_entrega_falha_quando_uma_tabela_pedida_nao_gravou(monkeypatch) -> None:
+    monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", lambda **kw: {"balancos": 5})
+
+    r = E.montar_entrega(_Observador(), ["balancos", "precos"])
+
+    assert r.status == "falhou"
+    assert r.erro == "tabelas com falha: precos"
+
+
+def test_resultado_finbert_concluida_e_interrompida() -> None:
+    ok = E.resultado_finbert({"gravados": 7, "interrompido": 0})
+    assert ok.status == "concluida"
+    assert ok.itens == 7
+
+    interrompido = E.resultado_finbert({"gravados": 3, "interrompido": 1})
+    assert interrompido.status == "falhou"
+    assert interrompido.erro == "interrompida: orçamento ou cancelamento"
+
+
+def test_tickers_padrao_do_yahoo_inclui_benchmark_e_a_lista_atual() -> None:
+    from tcc_scraper.collectors.prices_yahoo import YahooPriceCollector, tickers_padrao
+    from tcc_scraper.config import BENCHMARK_TICKER
+
+    with YahooPriceCollector() as c:
+        assert c.tickers == tickers_padrao()
+    assert BENCHMARK_TICKER in tickers_padrao()

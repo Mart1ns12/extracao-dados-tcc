@@ -1,4 +1,5 @@
-"""Aplica um comando do painel: traduz o `tipo` em chamada ao Daily ou a carga historica.
+"""Aplica um comando do painel: traduz o `tipo` em chamada ao Daily (daily, etapa e coletar)
+ou a carga historica.
 
 Idempotente: id ja aplicado devolve (True, None) sem reaplicar, porque o painel entrega
 "pelo menos uma vez".
@@ -11,6 +12,7 @@ from typing import Protocol
 
 from tcc_scraper.config import Settings
 from tcc_scraper.executor.painel_client import Comando
+from tcc_scraper.orquestrador.coletar import montar_plano
 from tcc_scraper.orquestrador.daily import Daily, ExecucaoEmAndamento
 from tcc_scraper.orquestrador.historico import Historico, HistoricoEmAndamento, TransicaoInvalida
 from tcc_scraper.orquestrador.repositorio import Repositorio
@@ -97,6 +99,18 @@ class Aplicador:
             aguardando = "historico" if self._historico.bloqueia() else None
             etapa = cmd.parametros.get("etapa") if tipo == "etapa" else None
             execucao_id = self._daily.criar(tipo, etapa, origem=origem, aguardando=aguardando)
+            if aguardando is None:
+                self._daily.iniciar(execucao_id)
+        elif tipo == "coletar":
+            # Valida antes de olhar ocupacao: o painel recebe o erro de parametro primeiro.
+            plano = montar_plano(cmd.parametros, self._settings)
+            aguardando = "historico" if self._historico.bloqueia() else None
+            execucao_id = self._daily.criar_coletar(
+                plano.etapas, origem=origem, aguardando=aguardando
+            )
+            if plano.verificacoes:
+                mensagem = f"coletar {execucao_id}: verificações {', '.join(plano.verificacoes)}"
+                self._repo.log("daily", "info", None, mensagem, execucao_id)
             if aguardando is None:
                 self._daily.iniciar(execucao_id)
         elif tipo == "historico":

@@ -26,7 +26,7 @@ O executor exige `PAINEL_API_URL` e `EXECUTOR_TOKEN`. Sem essas duas variáveis,
 ```
 painel -> API do painel -> v1-painel_comandos (fila)
                                 | POST /api/executor/comandos (a cada EXECUTOR_POLL_S)
-                           executor -> daily | etapa | carga histórica
+                           executor -> daily | etapa | coletar | carga histórica
                                 | grava
                            MySQL v1-painel_* -> lido pela API -> painel
 ```
@@ -51,6 +51,7 @@ Os comandos chegam ao painel pelas rotas que o próprio painel usa:
 |---|---|---|
 | Disparar o daily | `POST /api/disparos` com `{"tipo": "daily"}` | `daily` |
 | Disparar uma etapa | `POST /api/disparos` com `{"tipo": "etapa", "etapa": "noticias"}` | `etapa` |
+| Coletar sob demanda (verificações) | rota definida pelo painel | `coletar` (seção 4.1) |
 | Disparar a carga histórica | `POST /api/historico/disparos` com `{"anos": [2025, 2026], "modo": "pendentes"}` | `historico` |
 | Pausar, retomar ou cancelar a carga | `POST /api/historico/pausar` (`/retomar`, `/cancelar`) | `pausar`, `retomar`, `cancelar` |
 
@@ -64,6 +65,7 @@ O executor aplica cada comando de acordo com o `tipo`:
 |---|---|---|---|
 | `daily` | `{}` | Cria e inicia um daily, com origem `manual` | Já existe execução `agendada` ou `em_andamento` |
 | `etapa` | `{"etapa": "<id>"}` | Cria e inicia uma etapa, sozinha | Id fora do catálogo (`etapa invalida: ...`), ou execução ativa |
+| `coletar` | `{"itens": [{"coletor", "anos" ou "tickers" ou "desde" e "ate", "refazer"}], "montar_entrega": [...], "origem_verificacoes": [...]}` | Cria e inicia uma execução `coletar`: uma etapa por item, e mais `build_entrega` se houver `montar_entrega`. Sem orçamento | Parâmetro inválido (lista completa na seção 4.1), ou execução `agendada` ou `em_andamento` |
 | `historico` | `{"anos": [2025, 2026], "modo": "pendentes"}` | Dispara a carga histórica | Carga ativa (`em_andamento`, `pausando`, `pausada` ou `cancelando`); `modo` inválido; nenhum dos anos cai na faixa de coleta |
 | `pausar` | `{}` | Carga: `em_andamento` vai para `pausando` | A carga não está `em_andamento`, ou não há carga |
 | `retomar` | `{}` | Carga: `pausada` vai para `em_andamento` | A carga não está `pausada` |
@@ -76,8 +78,85 @@ O executor aplica cada comando de acordo com o `tipo`:
 
 Regras de execução (vêm de [02](02-pipeline-diaria.md), seção 5, e [03](03-carga-historica.md)):
 
-- Uma execução por vez. Um daily ou uma etapa é recusado enquanto houver execução `agendada` ou `em_andamento`.
-- Com carga `em_andamento` ou `pausando`, o daily nasce `agendada` com `aguardando = historico`, e não é recusado.
+- Uma execução por vez. Um daily, uma etapa ou um coletar é recusado enquanto houver execução `agendada` ou `em_andamento`.
+- Com carga `em_andamento` ou `pausando`, o daily e o coletar nascem `agendada` com `aguardando = historico`, e não são recusados.
+
+### 4.1 Comando `coletar`
+
+O comando `coletar` faz uma coleta avulsa de coletores escolhidos, para verificações do painel, sem disparar a carga histórica inteira. Ele reaproveita o `Daily`: cria uma execução `tipo = coletar` com um plano de etapas montado pelo comando. O catálogo dos coletores fica em `orquestrador/coletores.py`, e é o mesmo usado pela carga histórica.
+
+Parâmetros:
+
+```json
+{
+  "itens": [
+    {"coletor": "cvm_itr_dfp", "anos": [2024, 2025], "refazer": true},
+    {"coletor": "google_news", "tickers": ["PETR4"], "desde": "2026-01-01", "ate": "2026-02-01"}
+  ],
+  "montar_entrega": ["balancos"],
+  "origem_verificacoes": ["balancos_contas_novas"]
+}
+```
+
+- `itens` é obrigatório e não pode estar vazio. Cada item é um coletor do catálogo, com os parâmetros que ele aceita.
+- `montar_entrega` é opcional: lista de tabelas da entrega (`COLUNAS` de `db/models_entrega.py`) que a etapa `build_entrega` monta por último.
+- `origem_verificacoes` é opcional e só vai para o log, na mensagem `coletar <id>: verificações ...`.
+- Chave de topo fora dessas três é recusada, para pegar erro de digitação.
+
+Catálogo de coletores:
+
+| `coletor` (id da etapa) | Parâmetros aceitos | Janela de anos (`anos`) | Sem `refazer` |
+|---|---|---|---|
+| `yahoo` | `tickers` (só os de `tickers_padrao()`) | - | Refaz tudo (sem checkpoint) |
+| `bcb` | - | - | Checkpoint |
+| `indices_bcb` | `anos` | do ano de `price_start` ao ano de `fim_coleta` | Checkpoint |
+| `cvm_cadastro` | - | - | Checkpoint |
+| `b3_cadastro` | - | - | Checkpoint |
+| `b3_proventos` | - | - | Refaz tudo (sem checkpoint) |
+| `cvm_itr_dfp` | `anos` | do ano de `data_start` menos 1 ao ano de `fim_coleta` | Checkpoint |
+| `google_news` | `tickers` (só os de `IBOV_TICKERS`), `desde` e `ate` | `desde` e `ate` em ISO, `ate` exclusivo, dentro de `inicio_noticias` até `fim_coleta` + 1 dia | Checkpoint |
+| `cvm_ipe` | `anos` | do ano de `inicio_noticias` ao ano de `fim_coleta` | Checkpoint |
+| `enriquecimento` | - | - | Refaz tudo (sem checkpoint) |
+| `finbert` | - | - | Só pendentes. `refazer` não se aplica |
+| `juiza` | - | - | Só pendentes. Limitada por `JUIZA_MAX_ITENS_DIA`. `refazer` não se aplica |
+| `build_entrega` | não é item: use `montar_entrega` | - | - |
+
+Regras:
+
+- **`refazer`.** `true` liga `resume = False` (equivale a `--no-resume`). Sem `refazer`, vale o padrão do catálogo, o mesmo da carga histórica. Em coletor sem checkpoint, `refazer` não se aplica e é recusado em `finbert` e `juiza`.
+- **Ordem.** Os itens rodam na ordem enviada. A montagem (`build_entrega`) vem sempre por último.
+- **Coletor repetido** nos itens é recusado: a chave da etapa é o id do coletor. Junte os parâmetros num item só.
+- **Orçamento.** A execução não tem prazo: `DAILY_ORCAMENTO_MIN` não se aplica, porque itens históricos podem levar horas.
+- **Falha de item** não para os demais. O final sai `parcial`, como no daily.
+- **Logs** saem com `origem = daily`, para o painel não precisar de mudança.
+- **Nomes.** `etapa_id` é o id do coletor (`cvm_itr_dfp`, `google_news`, …), e `build_entrega` para a montagem. Não são as nove etapas do daily.
+
+Recusas (ack com `ok: false` e a mensagem no campo `erro`):
+
+| Caso | Mensagem (início) |
+|---|---|
+| Chave de topo desconhecida | `parâmetro desconhecido em coletar: ...` |
+| Sem `itens`, ou `itens` vazio | `itens vazios: informe ao menos um coletor` |
+| Item que não é objeto | `item N: esperado um objeto com 'coletor'` |
+| Coletor fora do catálogo | `coletor desconhecido: ...` |
+| `build_entrega` como item | `build_entrega não é item de coleta: use montar_entrega` |
+| Coletor repetido | `coletor repetido nos itens: ...` |
+| Parâmetro que o coletor não aceita | `<coletor> não aceita o parâmetro ...` |
+| `refazer` que não é booleano | `<coletor>: refazer deve ser true ou false` |
+| `refazer` em coletor sem checkpoint | `<coletor> não tem checkpoint: refazer não se aplica` |
+| `anos` que não é lista de inteiros | `<coletor>: anos deve ser uma lista de anos inteiros` |
+| Ano fora da janela do coletor | `<coletor>: ano fora da janela A-B: [...]` |
+| `tickers` que não é lista de códigos | `<coletor>: tickers deve ser uma lista de códigos` |
+| Ticker fora do universo do coletor | `<coletor>: ticker fora do universo: ...` |
+| `desde` sem `ate`, ou o contrário | `<coletor>: desde e ate devem vir juntos` |
+| Data fora do formato `AAAA-MM-DD` | `<coletor>: datas no formato AAAA-MM-DD` |
+| `ate` não posterior a `desde` | `<coletor>: ate deve ser posterior a desde` |
+| Período fora da janela de notícias | `<coletor>: período fora da janela A..B (ate exclusivo)` |
+| Tabela de entrega inválida | `tabela de entrega inválida: ...` |
+| `montar_entrega` que não é lista de tabelas | `montar_entrega deve ser uma lista de tabelas` |
+| Execução `agendada` ou `em_andamento` | `ja existe uma execucao em andamento ou agendada` |
+
+Uma recusa não fica na fila: o painel precisa reenviar o comando.
 
 ## 5. Confirmação e reentrega
 
@@ -109,7 +188,7 @@ A cada `EXECUTOR_HEARTBEAT_S` segundos, o executor manda o heartbeat para a API 
 |---|---|
 | `host` | `EXECUTOR_HOST`, ou o nome da máquina se a variável estiver vazia |
 | `versao` | Versão do pacote instalado (`dev` se o pacote não estiver instalado) |
-| `ocupado_com` | `historico` enquanto a carga está `em_andamento`, `pausando` ou `cancelando`. `daily` se a thread do daily está ativa. `null` caso contrário. Uma carga `pausada` não conta como ocupada |
+| `ocupado_com` | `historico` enquanto a carga está `em_andamento`, `pausando` ou `cancelando`. `daily` se a thread do daily está ativa, e `coletar` se a thread é a de um comando `coletar`. `null` caso contrário. Uma carga `pausada` não conta como ocupada |
 
 Pelo contrato da API, o componente `executor` aparece como `ok` com sinal de até 45 segundos, `lento` até 120 segundos, e `falha` depois disso.
 
@@ -122,7 +201,7 @@ As tabelas são lidas pela API direto no MySQL. Só `v1-painel_comandos` é escr
 | `v1-painel_comandos` | API (enfileira e confirma) | `id` (CHAR 36) | `tipo`, `parametros` (JSON), `criado_em`, `ack_em`, `ok`, `erro`. Índice em `ack_em` |
 | `v1-painel_comandos_aplicados` | Executor | `id` (CHAR 36) | `aplicado_em`, `ok`, `erro`. Garante a idempotência (seção 5) |
 | `v1-painel_heartbeat` | Executor | `host` (String 64) | `versao`, `ocupado_com`, `visto_em` |
-| `v1-painel_execucoes` | Executor | `id` (String 48) | `tipo` (`daily` ou `etapa`), `etapa_alvo`, `origem` (`cron` ou `manual`), `status`, `aguardando` (`null` ou `historico`), `iniciada_em`, `finalizada_em`, `prazo_em`, `erro`, `atualizada_em`. Índice em `iniciada_em` |
+| `v1-painel_execucoes` | Executor | `id` (String 48) | `tipo` (`daily`, `etapa` ou `coletar`), `etapa_alvo`, `origem` (`cron` ou `manual`), `status`, `aguardando` (`null` ou `historico`), `iniciada_em`, `finalizada_em`, `prazo_em`, `erro`, `atualizada_em`. Índice em `iniciada_em` |
 | `v1-painel_etapas` | Executor | (`execucao_id`, `etapa_id`). FK para `v1-painel_execucoes.id` com `ON DELETE CASCADE` | `ordem`, `status`, `unidades_total`, `unidades_feitas`, `unidades_erro`, `unidades_saturadas`, `itens`, `iniciada_em`, `finalizada_em`, `ultimo_erro_unidade`, `ultimo_erro_mensagem`, `atualizada_em` |
 | `v1-painel_historico` | Executor | `id` (String 32, ex.: `hist-20261019-210512`) | `status`, `modo`, `anos` (JSON), `ano_atual`, `coletor_atual`, `unidade_atual`, `iniciada_em`, `finalizada_em`, `itens_por_min`, `erro`, `atualizada_em` |
 | `v1-painel_historico_progresso` | Executor | (`ano`, `coletor`) | `unidades_total`, `unidades_feitas`, `unidades_erro`, `itens`, `status_segmento`, `atualizado_em` |
@@ -135,6 +214,8 @@ Valores de status, em uso:
 - `v1-painel_historico.status`: `em_andamento`, `pausando`, `pausada`, `cancelando`, `cancelada`, `concluida`, `falhou`.
 - `v1-painel_historico_progresso.status_segmento`: `pendente`, `em_andamento`, `pausado`, `concluido`, `falhou`.
 
+Em execuções `coletar`, `etapa_id` é o id do coletor do catálogo (`cvm_itr_dfp`, `google_news`, …) ou `build_entrega`, e não uma das nove etapas do daily (seção 4.1).
+
 Os status são strings, sem `ENUM` no banco. Os valores de ponto flutuante são `Double`. As datas são `UTCDateTime`, gravadas em UTC.
 
 ## 9. Limitações e pontos em aberto
@@ -144,6 +225,9 @@ Os status são strings, sem `ENUM` no banco. Os valores de ponto flutuante são 
 - **Um processo só.** O estado do daily e o da carga histórica ficam em memória. Não rode mais de um executor contra o mesmo banco.
 - **Reinício no meio de um daily.** A execução `em_andamento` vira `falhou`, com o motivo `interrompida por reinício do executor`. As etapas que ainda não começaram ficam `pendente`. O daily não é retomado: dispare de novo pelo painel. A carga histórica, ao contrário, é retomada sozinha (ver [03](03-carga-historica.md), seção 6).
 - **Sem cancelamento do daily** pelo painel.
+- **Sem cancelamento do coletar** pelo painel. `cancelar` é da carga histórica. Um `google_news` sem recorte (de 6 a 9 h) só para com o reinício do executor.
+- **Plano do coletar só em memória.** Não há coluna de parâmetros em `v1-painel_execucoes`. No reinício, um coletar `em_andamento` vira `falhou`. Um coletar `agendada` também vira `falhou`, com `plano do coletar perdido no reinício do executor; reenvie o comando`.
+- **Carga histórica com daily ou coletar rodando.** `Historico.disparar` não consulta o daily, então hoje é possível iniciar uma carga enquanto um daily ou um coletar roda. A lacuna é anterior ao comando `coletar` e não foi corrigida aqui.
 - **Recusa reenviada sai como sucesso.** Ver seção 5.
 - **Logs sem id de execução.** `v1-painel_logs` não tem essa coluna. A ligação com a execução é pelo horário e pela etapa.
 - **Limpeza de logs só na subida.** `PAINEL_LOGS_DIAS` é aplicado quando o executor sobe. Num processo que roda por semanas, os logs antigos só saem no próximo reinício.

@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 # nao podem ficar de fora por causa de uma coleta que demorou.
 ETAPAS_SEM_CORTE = ("entrega", "analise")
 
+# Execucao do comando `coletar`: sem orcamento (itens historicos levam horas).
+SEM_PRAZO = datetime.max.replace(tzinfo=UTC)
+MOTIVO_SEM_PLANO = "plano do coletar perdido no reinício do executor; reenvie o comando"
+
 # Estado da execucao corrente, lido pelo handler de logging. E global ao processo (nao
 # threading.local) porque o ArticleBodyCollector loga a partir de um ThreadPoolExecutor:
 # logs de worker cairiam fora de uma variavel por thread. Uma execucao por vez torna isso seguro.
@@ -84,11 +88,19 @@ class Daily:
         self._thread: threading.Thread | None = None
         self._cancelar = threading.Event()
         self._lock = threading.Lock()
+        # Plano do `coletar` por execucao. So em memoria: nao ha coluna de parametros no painel.
+        self._planos: dict[str, tuple[EtapaDef, ...]] = {}
+        self._tipo_rodando: str | None = None
         _instalar_handler()
 
     @property
     def ocupado(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def ocupado_com(self) -> str | None:
+        """'coletar' ou 'daily' (daily e etapa) enquanto a thread roda; None parado."""
+        return (self._tipo_rodando or "daily") if self.ocupado else None
 
     def _catalogo(self) -> dict[str, EtapaDef]:
         # Lido na hora (nao importado): os testes trocam `etapas.ETAPAS`.
@@ -112,7 +124,27 @@ class Daily:
             if etapa is not None:
                 raise ValueError("etapa so se aplica ao tipo 'etapa'")
             alvo = tuple(_etapas.ETAPAS)
+        return self._registrar(tipo, etapa, alvo, origem, aguardando)
 
+    def criar_coletar(
+        self,
+        etapas: tuple[EtapaDef, ...],
+        origem: str = "manual",
+        aguardando: str | None = None,
+    ) -> str:
+        """Execucao avulsa do comando `coletar`: as etapas vem do plano, nao do catalogo."""
+        if not etapas:
+            raise ValueError("coletar sem etapas")
+        return self._registrar("coletar", None, tuple(etapas), origem, aguardando)
+
+    def _registrar(
+        self,
+        tipo: str,
+        etapa: str | None,
+        alvo: tuple[EtapaDef, ...],
+        origem: str,
+        aguardando: str | None,
+    ) -> str:
         with self._lock:
             atual = self.repo.atual()
             ativa = atual is not None and atual["status"] in ("em_andamento", "agendada")
@@ -161,6 +193,8 @@ class Daily:
                 for e in alvo
             ]
             self.repo.criar_execucao(execucao, etapas_linhas)
+            if tipo == "coletar":
+                self._planos[execucao_id] = alvo
             return execucao_id
 
     def iniciar(self, execucao_id: str) -> None:
@@ -175,6 +209,7 @@ class Daily:
                 aguardando=None,
                 atualizada_em=agora,
             )
+            self._tipo_rodando = "coletar" if execucao_id in self._planos else "daily"
             self._cancelar = threading.Event()
             self._thread = threading.Thread(
                 target=self._rodar, args=(execucao_id,), name=f"daily-{execucao_id}", daemon=True
@@ -194,13 +229,31 @@ class Daily:
         return True
 
     def recuperar_apos_reinicio(self) -> int:
-        return self.repo.marcar_interrompidas("interrompida por reinício do executor")
+        n = self.repo.marcar_interrompidas("interrompida por reinício do executor")
+        atual = self.repo.atual()
+        if (
+            atual is not None
+            and atual.get("tipo") == "coletar"
+            and atual["status"] == "agendada"
+            and atual["id"] not in self._planos
+        ):
+            self._falhar_sem_plano(atual)
+        return n
 
     # -- execucao ------------------------------------------------------------------
     def _rodar(self, execucao_id: str) -> None:
         exe = self.repo.obter(execucao_id)
         cancelar = self._cancelar
-        deadline = exe["iniciada_em"] + timedelta(minutes=self.settings.daily_orcamento_min)
+        if exe.get("tipo") == "coletar":
+            plano = self._planos.pop(execucao_id, None)
+            if plano is None:
+                self._falhar_sem_plano(exe)
+                return
+            defs = {e.id: e for e in plano}
+            deadline = SEM_PRAZO
+        else:
+            defs = self._catalogo()
+            deadline = exe["iniciada_em"] + timedelta(minutes=self.settings.daily_orcamento_min)
         ctx = Contexto(
             execucao_id=execucao_id,
             hoje=self.settings.fim_coleta,
@@ -209,7 +262,6 @@ class Daily:
             cancelar=cancelar,
             origem=exe["origem"],
         )
-        defs = self._catalogo()
         estados: list[str] = []
         _ESTADO_LOG.update(repo=self.repo, execucao_id=execucao_id, etapa=None)
         try:
@@ -281,6 +333,17 @@ class Daily:
         else:
             self.repo.log("daily", "info", ed.id, f"etapa {ed.id} pulada: {resultado.erro}", eid)
         return resultado.status
+
+    def _falhar_sem_plano(self, exe: dict) -> None:
+        eid = exe["id"]
+        for reg in exe["etapas"]:
+            if reg["status"] == "pendente":
+                self._pular(eid, reg["etapa_id"], MOTIVO_SEM_PLANO)
+        agora = self._agora()
+        self.repo.atualizar_execucao(
+            eid, status="falhou", erro=MOTIVO_SEM_PLANO, finalizada_em=agora, atualizada_em=agora
+        )
+        self.repo.log("daily", "erro", None, f"execução {eid}: {MOTIVO_SEM_PLANO}", eid)
 
     def _pular(self, execucao_id: str, etapa_id: str, motivo: str) -> None:
         agora = self._agora()

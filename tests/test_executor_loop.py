@@ -16,6 +16,7 @@ from tcc_scraper.config import Settings
 from tcc_scraper.executor.comandos import Aplicador, HistoricoIndisponivel
 from tcc_scraper.executor.loop import Executor
 from tcc_scraper.executor.painel_client import Comando, PainelClient
+from tcc_scraper.orquestrador import coletores
 from tcc_scraper.orquestrador import etapas as E
 from tcc_scraper.orquestrador import historico as H
 from tcc_scraper.orquestrador.daily import Daily
@@ -534,3 +535,147 @@ def test_cron_que_falha_nao_e_registrado_e_avisa_uma_vez_por_dia(cenario, caplog
 
     assert repo.comando_aplicado("cron-2026-10-19") is True
     assert repo.existe_execucao_cron(date(2026, 10, 19)) is True
+
+
+# -- comando coletar ------------------------------------------------------------------
+_STATS_OK = {"total": 1, "ok": 1, "erro": 0, "itens": 5, "saturadas": 0, "interrompido": 0}
+CONTRATO = {
+    "itens": [{"coletor": "cvm_itr_dfp", "anos": [2024, 2025], "refazer": True}],
+    "montar_entrega": ["balancos"],
+    "origem_verificacoes": ["balancos_contas_novas"],
+}
+
+
+@pytest.fixture
+def coletor_falso(monkeypatch):
+    """Troca o alvo de todo coletor por um falso que so registra as chamadas.
+
+    `trava` comeca aberta; quem quiser segurar o run limpa o evento e o reabre depois.
+    """
+    registro: list[tuple[str, dict]] = []
+    trava = threading.Event()
+    trava.set()
+
+    class _Falso:
+        def __init__(self, **kwargs):
+            registro.append(("init", kwargs))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc) -> bool:
+            return False
+
+        def run(self, *, observador, **kwargs) -> dict:
+            trava.wait(5)
+            registro.append(("run", kwargs))
+            return dict(_STATS_OK)
+
+    monkeypatch.setattr(coletores, "resolver", lambda alvo: _Falso)
+    monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", lambda **kw: {"balancos": 3})
+    return registro, trava
+
+
+def test_coletar_contrato_roda_os_itens_e_monta_a_entrega(cenario, coletor_falso):
+    repo, daily, _ = cenario
+    registro, _ = coletor_falso
+    aplicador = Aplicador(repo, daily, HistoricoFalso(), _settings_historico())
+
+    assert aplicador.aplicar(Comando("k1", "coletar", CONTRATO, "")) == (True, None)
+    _esperar(daily)
+
+    (eid,) = repo.execucoes
+    exe = repo.obter(eid)
+    assert exe["tipo"] == "coletar"
+    assert exe["status"] == "concluida"
+    assert [e["etapa_id"] for e in exe["etapas"]] == ["cvm_itr_dfp", "build_entrega"]
+    assert ("init", {"anos": [2024, 2025]}) in registro
+    assert ("run", {"resume": False}) in registro
+    assert any("balancos_contas_novas" in log["mensagem"] for log in repo.logs)
+
+
+def test_coletar_invalido_e_recusado_sem_criar_execucao(cenario):
+    repo, daily, _ = cenario
+    aplicador = Aplicador(repo, daily, HistoricoFalso(), _settings_historico())
+
+    ok, erro = aplicador.aplicar(Comando("k2", "coletar", {"itens": [{"coletor": "xpto"}]}, ""))
+
+    assert ok is False
+    assert erro.startswith("coletor desconhecido")
+    assert not repo.execucoes
+    assert repo.comandos["k2"]["ok"] is False
+
+
+def test_coletar_invalido_e_validado_antes_da_ocupacao(cenario):
+    repo, daily, _ = cenario
+    daily.criar("daily")  # execucao agendada: se a ocupacao viesse antes, a msg seria outra
+    aplicador = Aplicador(repo, daily, HistoricoFalso(), _settings_historico())
+
+    ok, erro = aplicador.aplicar(Comando("k8", "coletar", {"itens": [{"coletor": "xpto"}]}, ""))
+
+    assert ok is False
+    assert erro.startswith("coletor desconhecido")
+
+
+def test_coletar_com_carga_ativa_nasce_agendada_e_roda_apos_liberar(cenario, coletor_falso):
+    repo, daily, relogio = cenario
+    historico = HistoricoFalso(bloqueia=True)
+    aplicador = Aplicador(repo, daily, historico, _settings_historico())
+
+    assert aplicador.aplicar(Comando("k4", "coletar", CONTRATO, "")) == (True, None)
+    (eid,) = repo.execucoes
+    assert repo.obter(eid)["status"] == "agendada"
+    assert repo.obter(eid)["aguardando"] == "historico"
+    assert not daily.ocupado
+
+    historico.liberar()
+    with respx.mock(assert_all_called=False) as router:
+        router.post(COMANDOS).mock(return_value=httpx.Response(200, json={"comandos": []}))
+        ex = _executor(repo, daily, historico, relogio)
+        ex.ciclo()
+        _esperar(daily)
+    assert repo.obter(eid)["status"] == "concluida"
+
+
+def test_coletar_recusado_com_daily_agendado(cenario):
+    repo, daily, _ = cenario
+    daily.criar("daily")
+    aplicador = Aplicador(repo, daily, HistoricoFalso(), _settings_historico())
+
+    assert aplicador.aplicar(Comando("k5", "coletar", CONTRATO, "")) == (
+        False,
+        "ja existe uma execucao em andamento ou agendada",
+    )
+    assert len(repo.execucoes) == 1
+
+
+def test_ocupado_com_coletar_enquanto_o_coletor_roda(cenario, coletor_falso):
+    repo, daily, relogio = cenario
+    _, trava = coletor_falso
+    trava.clear()
+    aplicador = Aplicador(repo, daily, HistoricoIndisponivel(), _settings_historico())
+    ex = _executor(repo, daily, HistoricoIndisponivel(), relogio)
+    try:
+        assert aplicador.aplicar(Comando("k6", "coletar", CONTRATO, "")) == (True, None)
+        assert ex.ocupado_com() == "coletar"
+    finally:
+        trava.set()
+        _esperar(daily)
+    assert ex.ocupado_com() is None
+
+
+def test_coletar_invalido_chega_ao_painel_com_a_mensagem(cenario):
+    repo, daily, relogio = cenario
+    with respx.mock(assert_all_called=False) as router:
+        router.post(COMANDOS).mock(
+            return_value=httpx.Response(
+                200, json={"comandos": [_comando("k7", "coletar", itens=[])]}
+            )
+        )
+        ack = router.post(ACK).mock(return_value=httpx.Response(204))
+        ex = _executor(repo, daily, HistoricoIndisponivel(), relogio)
+        ex.ciclo()
+    assert json.loads(ack.calls[-1].request.content) == {
+        "id": "k7", "ok": False, "erro": "itens vazios: informe ao menos um coletor",
+    }
+    assert not repo.execucoes

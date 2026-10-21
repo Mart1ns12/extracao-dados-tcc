@@ -61,14 +61,14 @@ class PainelExecucao(Base):
     __table_args__ = (Index("ix_painel_execucoes_iniciada_em", "iniciada_em"),)
 
     id: Mapped[str] = mapped_column(String(48), primary_key=True)
-    # daily | etapa
+    # daily | etapa | coletar
     tipo: Mapped[str] = mapped_column(String(12), nullable=False)
     etapa_alvo: Mapped[str | None] = mapped_column(String(24))
     # cron | manual
     origem: Mapped[str] = mapped_column(String(8), nullable=False)
     # agendada | em_andamento | concluida | parcial | falhou
     status: Mapped[str] = mapped_column(String(16), nullable=False)
-    # null | historico
+    # null | historico (daily, etapa e coletar esperam a carga)
     aguardando: Mapped[str | None] = mapped_column(String(16))
     iniciada_em: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
     finalizada_em: Mapped[dt.datetime | None] = mapped_column(UTCDateTime)
