@@ -44,6 +44,10 @@ def _setup_logging(verbose: bool = False) -> None:
         datefmt="[%X]",
         handlers=[RichHandler(console=console, rich_tracebacks=True)],
     )
+    # O httpx loga cada requisicao em INFO; no executor (poll a cada 5 s) isso gerava
+    # 40-80 MB de log por dia. So avisos e erros, salvo em modo verbose.
+    if not verbose:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def _report(titulo: str, stats: dict[str, int]) -> None:
