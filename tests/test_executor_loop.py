@@ -25,7 +25,7 @@ from tcc_scraper.orquestrador.historico import Historico
 from tcc_scraper.orquestrador.repositorio import RepositorioMemoria
 
 URL = "http://painel.test"
-# 18:30 UTC = 15:30 em Sao Paulo: antes do horario do cron.
+# 18:30 UTC = 15:30 em Sao Paulo: antes do horario do cron (daily_hora=18:30 nos settings).
 AGORA = datetime(2026, 10, 19, 18, 30, tzinfo=UTC)
 COMANDOS = f"{URL}/api/executor/comandos"
 ACK = f"{URL}/api/executor/comandos/ack"
@@ -81,6 +81,8 @@ def _settings() -> Settings:
         executor_poll_s=0,
         executor_heartbeat_s=3600,
         executor_host="maquina-teste",
+        # Fixo: os relogios dos testes (15:30, 18:31, 18:45) supoem o cron as 18:30.
+        daily_hora="18:30",
     )
 
 
@@ -448,6 +450,8 @@ def _settings_historico() -> Settings:
         executor_poll_s=0,
         executor_heartbeat_s=3600,
         executor_host="maquina-teste",
+        # Fixo: os relogios dos testes (15:30, 18:31, 18:45) supoem o cron as 18:30.
+        daily_hora="18:30",
         data_fim_coleta=date(2026, 10, 19),
     )
 

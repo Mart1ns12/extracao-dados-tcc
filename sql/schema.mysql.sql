@@ -31,7 +31,7 @@ CREATE INDEX ix_articles_source_domain ON raw_articles (source_domain);
 
 CREATE TABLE raw_article_bodies (
     article_id BIGINT NOT NULL, 
-    body_text TEXT NOT NULL, 
+    body_text LONGTEXT NOT NULL, 
     extraction_method VARCHAR(32) NOT NULL, 
     fetched_at DATETIME(6) NOT NULL, 
     CONSTRAINT pk_raw_article_bodies PRIMARY KEY (article_id), 

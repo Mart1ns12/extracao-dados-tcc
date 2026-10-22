@@ -148,7 +148,7 @@ Os intervalos de cada fonte vêm de `config.py` (`throttle_*`). Toda requisiçã
 | FinBERT | Modelo que classifica o tom de um texto em positivo, neutro ou negativo. Há versões para português e inglês, escolhidas pelo idioma do artigo. Roda localmente, sem API. |
 | Juíza | Etapa que decide se cada par (notícia, ticker) é matéria real sobre a empresa. Aplica regras baratas primeiro; o que sobra vai ao Gemini. Notícias reprovadas saem da entrega. |
 | Jev | Fonte opcional de julgamento da juíza, desligada por padrão. |
-| Daily | Execução das 9 etapas de um dia, na ordem do catálogo. Roda às 18:30 (Brasília) ou sob demanda. |
+| Daily | Execução das 9 etapas de um dia, na ordem do catálogo. Roda às 08:00 (Brasília) ou sob demanda. |
 | Etapa | Uma das 9 partes do daily (`precos`, `noticias`, `entrega` e outras). O id é fixo, porque o painel usa esse nome. |
 | Executor | Processo que fica ligado como worker. Recebe comandos do painel, roda o daily e a carga histórica e grava o progresso. |
 | Painel | Interface de acompanhamento da execução. Lê as tabelas `v1-painel_*`. |

@@ -211,7 +211,7 @@ ali. Os caminhos de `EXPORT_DIR`, `ENTREGA_CSV_DIR` e `HF_CACHE_DIR` são padrõ
 | `EXECUTOR_HEARTBEAT_S` | `15` | sim | Segundos entre batimentos |
 | `EXECUTOR_HOST` | vazio = nome da máquina | sim | Nome deste executor no painel |
 | `PAINEL_LOGS_DIAS` | `7` | sim | Dias de `v1-painel_logs` mantidos |
-| `DAILY_HORA` | `18:30` | sim | Horário-alvo do daily automático (HH:MM, no `DAILY_TZ`) |
+| `DAILY_HORA` | `08:00` | sim | Horário-alvo do daily automático (HH:MM, no `DAILY_TZ`) |
 | `DAILY_TZ` | `America/Sao_Paulo` | sim | Fuso do daily |
 | `DAILY_ORCAMENTO_MIN` | `90` | sim | Orçamento das etapas de coleta, em minutos |
 | `DAILY_PRAZO_HORA` | `20` | sim | Hora limite para publicar o dia, no `DAILY_TZ` |
@@ -280,7 +280,7 @@ Esta é a ordem. Cada passo depende do anterior.
 6. **API do painel em `MODO=live`.** Mesmo banco e mesmo `EXECUTOR_TOKEN`. Confirme `executor: ok` em
    `/api/componentes`.
 7. **Primeiro daily pelo painel.** Dispare um daily (ou só a etapa `precos`) e confirme que a execução termina em `concluida` ou
-   `parcial`, com as 9 etapas e `unidades_total` preenchido. O daily automático roda às `DAILY_HORA` (18:30).
+   `parcial`, com as 9 etapas e `unidades_total` preenchido. O daily automático roda às `DAILY_HORA` (08:00).
 
 Carga histórica: depois do passo 7, dispare `historico` pelo painel, com `--anos` dos anos desejados. Ela tem
 prioridade sobre o daily, e o daily espera a carga pausar ou terminar.

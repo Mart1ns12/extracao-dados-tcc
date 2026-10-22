@@ -212,7 +212,7 @@ python -m tcc_scraper.cli collect-proventos    # proventos (B3)
 python -m tcc_scraper.cli collect-indices      # CDI e IPCA (BCB)
 python -m tcc_scraper.cli judge-news [--limite N] [--avaliar]   # juiza de noticias
 python -m tcc_scraper.cli build-entrega [--csv] [--tabela X]    # 8 tabelas da entrega
-python -m tcc_scraper.cli executor             # worker do painel (Railway): comandos, daily das 18:30 BRT, carga historica
+python -m tcc_scraper.cli executor             # worker do painel (Railway): comandos, daily das 08:00 BRT, carga historica
 python -m tcc_scraper.cli daily [--etapa ID]   # daily de 9 etapas, sem painel (bloqueante)
 python -m tcc_scraper.cli historico --anos 2025 --anos 2026 [--modo pendentes]  # carga historica (bloqueante)
 
@@ -286,7 +286,7 @@ JSON schema **na mesma chamada** (só Gemini 3+ aceita os dois juntos). Modelo e
 (substituídas por dia). O `features_dataset_v1` **fica intacto**.
 
 **Exceção aprovada à regra de custo:** é a única dependência paga do projeto, com teto de
-US$ 5/mês (~30 chamadas), compartilhado com a juíza (ver [docs/04-juiza-e-llm.md](docs/04-juiza-e-llm.md), seção 3.6). Roda como etapa `analise` do daily, agendada pelo executor às 18:30 de Brasília (ver [docs/07-executor-e-painel.md](docs/07-executor-e-painel.md)).
+US$ 5/mês (~30 chamadas), compartilhado com a juíza (ver [docs/04-juiza-e-llm.md](docs/04-juiza-e-llm.md), seção 3.6). Roda como etapa `analise` do daily, agendada pelo executor às 08:00 de Brasília (ver [docs/07-executor-e-painel.md](docs/07-executor-e-painel.md)).
 
 **Citações:** o prompt exige `fonte` e `url` dentro de cada item do JSON. As anotações
 `url_citation` da API vão para `citacoes_json` só como auditoria, nunca como fonte de dados.

@@ -10,7 +10,7 @@ do Google, com teto de US$ 5 por mês. A análise e a modelagem ficam fora deste
 | Pipeline | O que produz | Como roda |
 |---|---|---|
 | Dataset v1 (congelado) | Tabela `features_dataset_v1`, com Parquet e CSV. Janela fixa de 1 ano | Comandos por fase: `collect-prices`, `collect-news`, `enrich`, `score`, `build-dataset` |
-| Pipeline nova (entrega) | Oito tabelas `v1-noticias` a `v1-indices`, com as colunas da spec | `daily` com 9 etapas, às 18:30 (Brasília). O `executor` roda como worker e recebe comandos do painel |
+| Pipeline nova (entrega) | Oito tabelas `v1-noticias` a `v1-indices`, com as colunas da spec | `daily` com 9 etapas, às 08:00 (Brasília). O `executor` roda como worker e recebe comandos do painel |
 
 O detalhe das duas pipelines está em [Visão geral](docs/01-visao-geral.md).
 

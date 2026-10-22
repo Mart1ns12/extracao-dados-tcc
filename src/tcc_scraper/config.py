@@ -107,7 +107,7 @@ class Settings(BaseSettings):
 
     # Coleta diaria: horario-alvo (HH:MM no daily_tz), orcamento em minutos e hora limite
     # para publicar o dia.
-    daily_hora: str = "18:30"
+    daily_hora: str = "08:00"
     daily_tz: str = "America/Sao_Paulo"
     daily_orcamento_min: int = 90
     daily_prazo_hora: int = 20

@@ -8,7 +8,7 @@ Uma execução do `daily` roda as nove etapas em sequência, para o dia de refer
 
 | Origem | Como dispara | `origem` gravada |
 |---|---|---|
-| Agenda | O executor cria o daily às `DAILY_HORA` (18:30, em `DAILY_TZ`), uma vez por dia | `cron` |
+| Agenda | O executor cria o daily às `DAILY_HORA` (08:00, em `DAILY_TZ`), uma vez por dia | `cron` |
 | Painel | Comando `daily` ou `etapa` enviado pela API do painel (ver [07](07-executor-e-painel.md)) | `manual` |
 | CLI | `python -m tcc_scraper.cli daily`, bloqueante, sem painel | `manual`, ou o valor de `--origem` |
 

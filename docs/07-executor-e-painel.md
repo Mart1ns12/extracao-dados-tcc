@@ -1,6 +1,6 @@
 # Executor e painel
 
-Este documento cobre o executor, o worker que roda o daily e a carga histórica a pedido do painel: o contrato com a API do painel, os comandos e como são recusados, a confirmação, a agenda das 18:30, o heartbeat, as tabelas `v1-painel_*`, as limitações atuais, as variáveis e como rodar e implantar.
+Este documento cobre o executor, o worker que roda o daily e a carga histórica a pedido do painel: o contrato com a API do painel, os comandos e como são recusados, a confirmação, a agenda das 08:00, o heartbeat, as tabelas `v1-painel_*`, as limitações atuais, as variáveis e como rodar e implantar.
 
 ## 1. O que é o executor
 
@@ -14,7 +14,7 @@ Em produção, esse é o `CMD` da imagem (ver seção 12). A cada ciclo, ele:
 
 - busca os comandos pendentes na API do painel, a cada `EXECUTOR_POLL_S` segundos (padrão 5);
 - aplica cada comando e confirma o resultado à API (ack);
-- cria o daily automático no horário da agenda (`DAILY_HORA`, padrão 18:30 em `DAILY_TZ`);
+- cria o daily automático no horário da agenda (`DAILY_HORA`, padrão 08:00 em `DAILY_TZ`);
 - inicia a execução agendada, quando a carga histórica deixa.
 
 Em paralelo, uma thread própria envia o heartbeat a cada `EXECUTOR_HEARTBEAT_S` segundos (padrão 15). O daily e a carga histórica rodam, cada um, em uma thread própria. Tudo é um processo só.
@@ -170,14 +170,14 @@ Para cada comando, o executor aplica e depois confirma com `POST /api/executor/c
 
 A cada ciclo, o executor confere a agenda no fuso `DAILY_TZ`:
 
-1. Se a hora atual é igual ou posterior a `DAILY_HORA` (padrão 18:30), e
+1. Se a hora atual é igual ou posterior a `DAILY_HORA` (padrão 08:00), e
 2. Se não existe execução de origem `cron` iniciada hoje,
 
 então cria e inicia um daily com origem `cron`. O id da execução segue o formato `<data>-daily-<HHMMSS>`.
 
 - **Recusa.** Se a criação é recusada (por exemplo, há um daily manual em andamento), o executor tenta de novo a cada ciclo. Um aviso sai uma vez por dia no log.
-- **Subir depois do horário.** Se o executor sobe depois de 18:30 e ainda não houve execução `cron` no dia, o daily dispara logo na subida.
-- **Daily manual às 18:30.** Um daily manual rodando nesse horário adia o cron. O cron roda assim que a execução manual termina, no mesmo dia.
+- **Subir depois do horário.** Se o executor sobe depois de 08:00 e ainda não houve execução `cron` no dia, o daily dispara logo na subida.
+- **Daily manual às 08:00.** Um daily manual rodando nesse horário adia o cron. O cron roda assim que a execução manual termina, no mesmo dia.
 - **Carga histórica ativa.** O daily é criado com `status = agendada` e `aguardando = historico`. Ele começa quando a carga sai de `em_andamento` e `pausando` (ver [03](03-carga-historica.md), seção 7).
 
 ## 7. Heartbeat
@@ -244,7 +244,7 @@ As demais variáveis (banco, Gemini, juíza, Jev, `EXPORT_DIR`) estão em [08](0
 | `EXECUTOR_POLL_S` | 5 | Intervalo entre buscas de comandos, em segundos |
 | `EXECUTOR_HEARTBEAT_S` | 15 | Intervalo do heartbeat, em segundos |
 | `EXECUTOR_HOST` | vazio (nome da máquina) | Nome deste executor no painel |
-| `DAILY_HORA` | `18:30` | Horário-alvo do daily automático, em `HH:MM` no fuso de `DAILY_TZ` |
+| `DAILY_HORA` | `08:00` | Horário-alvo do daily automático, em `HH:MM` no fuso de `DAILY_TZ` |
 | `DAILY_TZ` | `America/Sao_Paulo` | Fuso do horário da agenda, do dia de referência e do prazo |
 | `DAILY_ORCAMENTO_MIN` | 90 | Orçamento do daily, em minutos (ver [02](02-pipeline-diaria.md), seção 5) |
 | `DAILY_PRAZO_HORA` | 20 | Hora-alvo de publicação do dia (`prazo_em`) |

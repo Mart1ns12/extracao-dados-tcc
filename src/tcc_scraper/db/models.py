@@ -43,6 +43,10 @@ from sqlalchemy.types import TypeDecorator
 PREFIXO_TABELA = "v1-"
 # As camadas viram PREFIXO no nome da tabela (raw_/staging_/features_), nao schema
 # separado: no MySQL "schema" e "database" sao a mesma coisa.
+
+# `Text` e TEXT de 64 KB no MySQL: uma resposta de ~15 mil tokens passa de 60 KB e seria
+# truncada (ou rejeitada em modo estrito). LONGTEXT onde o tamanho e imprevisivel.
+LongText = mysql.LONGTEXT()
 TABLE_PREFIXES = ("raw_", "staging_", "features_", "painel_")
 # Tabelas de entrega: nomes fixos pela spec da etapa seguinte do TCC, sem prefixo de camada
 # (o prefixo PREFIXO_TABELA continua valendo para elas no banco).
@@ -194,7 +198,9 @@ class ArticleBody(Base):
     article_id: Mapped[int] = mapped_column(
         ForeignKey("raw_articles.id", ondelete="CASCADE"), primary_key=True
     )
-    body_text: Mapped[str] = mapped_column(Text, nullable=False)
+    # LONGTEXT: paginas longas (ao vivo, agregadores) passavam dos 64 KB do TEXT e o MySQL
+    # recusava o lote inteiro de ~200 corpos no INSERT.
+    body_text: Mapped[str] = mapped_column(LongText, nullable=False)
     # 'rss_content_encoded' | 'trafilatura' -- registra COMO o texto foi obtido.
     extraction_method: Mapped[str] = mapped_column(String(32), nullable=False)
     fetched_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
@@ -333,9 +339,6 @@ class DatasetV1(Base):
 # llm -- analise diaria por Gemini. raw_ = o que veio da rede (prompt e resposta);
 # staging_ = o JSON normalizado em linhas. Nada aqui alimenta features_dataset_v1.
 # --------------------------------------------------------------------------------------
-# `Text` e TEXT de 64 KB no MySQL: uma resposta de ~15 mil tokens passa de 60 KB e seria
-# truncada (ou rejeitada em modo estrito). LONGTEXT onde o tamanho e imprevisivel.
-LongText = mysql.LONGTEXT()
 
 
 class LlmPrompt(Base):
