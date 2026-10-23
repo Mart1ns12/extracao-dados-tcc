@@ -136,9 +136,10 @@ TABELAS_COM_V1 = {
     "v1-painel_historico", "v1-painel_historico_progresso", "v1-painel_logs",
     "v1-painel_comandos_aplicados", "v1-raw_ipe_docs", "v1-raw_cvm_balancos", "v1-raw_cvm_acoes",
     "v1-raw_cvm_cadastro", "v1-raw_b3_cadastro", "v1-raw_b3_proventos", "v1-raw_b3_suplemento",
-    "v1-raw_llm_juiza_runs", "v1-staging_noticias_julgamento", "v1-noticias", "v1-precos",
-    "v1-cadastro", "v1-mudancas_ticker", "v1-balancos", "v1-acoes_emitidas", "v1-proventos",
-    "v1-indices",
+    "v1-raw_llm_juiza_runs", "v1-staging_noticias_julgamento", "v1-staging_juiza_tentativas",
+    "v1-noticias", "v1-precos", "v1-cadastro", "v1-mudancas_ticker", "v1-balancos",
+    "v1-composicao_ibov",
+    "v1-acoes_emitidas", "v1-proventos", "v1-indices",
 }
 TABELAS_SEM_V1 = {
     "raw_articles", "raw_article_bodies", "raw_prices", "raw_macro", "raw_collection_runs",
@@ -148,11 +149,11 @@ TABELAS_SEM_V1 = {
 }
 
 
-def test_prefixo_v1_so_nas_25_tabelas_da_pipeline_nova() -> None:
+def test_prefixo_v1_so_nas_27_tabelas_da_pipeline_nova() -> None:
     from tcc_scraper.db import models_entrega, models_fontes, models_painel  # noqa: F401
 
     nomes = set(Base.metadata.tables)
-    assert len(TABELAS_COM_V1) == 25
+    assert len(TABELAS_COM_V1) == 27
     assert len(TABELAS_SEM_V1) == 14
     assert {n for n in nomes if n.startswith("v1-")} == TABELAS_COM_V1
     assert nomes >= TABELAS_SEM_V1

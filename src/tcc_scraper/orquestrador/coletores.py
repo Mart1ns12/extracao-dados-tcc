@@ -22,7 +22,7 @@ def resolver(alvo: str) -> Any:
 
 
 # Faixas de `anos` aceitas: espelham o padrao do construtor de cada coletor.
-def _anos_precos(s: Settings) -> tuple[int, int]:  # IndicesBcbCollector
+def _anos_precos(s: Settings) -> tuple[int, int]:  # IndicesBcbCollector, B3IndicesCollector
     return s.price_start.year, s.fim_coleta.year
 
 
@@ -39,13 +39,16 @@ class ColetorDef:
     id: str
     nome: str
     alvo: str
-    # True: classe de coletor (ganha `run`). False: funcao que recebe `observador=`.
+    # True: classe de coletor (ganha `run`). False: funcao (recebe `observador=`, salvo abaixo).
     classe: bool = True
     # Checkpoint ligado por padrao (carga historica e `coletar` sem `refazer`).
     resume: bool = True
-    # Parametros aceitos pelo comando `coletar`: subconjunto de anos, tickers, desde, ate.
+    # Parametros aceitos pelo comando `coletar`: subconjunto de anos, tickers, desde, ate,
+    # e os proprios das acoes avulsas (aplicar, limite, n, semente).
     aceita: frozenset[str] = frozenset()
     janela_anos: Callable[[Settings], tuple[int, int]] | None = None
+    # False: a funcao nao aceita `observador=` (corrigir_horas, juiza_concordancia).
+    recebe_observador: bool = True
 
     def executar(
         self,
@@ -60,6 +63,8 @@ class ColetorDef:
         alvo = (resolver_alvo or resolver)(self.alvo)
         kwargs = dict(args or {})
         if not self.classe:
+            if not self.recebe_observador:
+                return alvo(**kwargs)
             return alvo(observador=observador, **kwargs)
         if apenas_erros:
             execucao: dict = {"apenas_erros": True}
@@ -73,6 +78,11 @@ _P = "tcc_scraper."
 _DEFS = (
     ColetorDef("yahoo", "Preços (Yahoo)", _P + "collectors.prices_yahoo:YahooPriceCollector",
                resume=False, aceita=frozenset({"tickers"})),
+    ColetorDef("b3_indices", "Índices B3 (IDIV, SMLL, IFIX)",
+               _P + "collectors.b3_indices:B3IndicesCollector",
+               aceita=frozenset({"anos"}), janela_anos=_anos_precos),
+    ColetorDef("b3_carteira_ibov", "Carteira do IBOV (B3)",
+               _P + "collectors.b3_carteira_ibov:B3CarteiraIbovCollector", resume=False),
     ColetorDef("bcb", "Selic e PTAX (BCB)", _P + "collectors.macro_bcb:BcbCollector"),
     ColetorDef("indices_bcb", "CDI e IPCA (BCB)", _P + "collectors.indices:IndicesBcbCollector",
                aceita=frozenset({"anos"}), janela_anos=_anos_precos),
@@ -93,15 +103,25 @@ _DEFS = (
                _P + "enrich.article_fetcher:ArticleBodyCollector", resume=False),
     ColetorDef("finbert", "Sentimento (FinBERT)", _P + "sentiment.scoring:score_pending",
                classe=False),
-    ColetorDef("juiza", "Juíza de notícias", _P + "llm.juiza:julgar_pendentes", classe=False),
+    ColetorDef("juiza", "Juíza de notícias", _P + "llm.juiza:julgar_pendentes", classe=False,
+               aceita=frozenset({"anos"}), janela_anos=_anos_noticias),
     ColetorDef("build_entrega", "Montagem da entrega", _P + "entrega.builder:build_entrega",
                classe=False),
+    # Acoes avulsas do painel: so no `coletar`, fora do daily e da carga historica (_passos).
+    ColetorDef("corrigir_horas", "Corrigir horas (Google News)",
+               _P + "enrich.article_fetcher:corrigir_horas_publicacao",
+               classe=False, resume=False, recebe_observador=False,
+               aceita=frozenset({"aplicar", "limite"})),
+    ColetorDef("juiza_concordancia", "Concordância Jev × Gemini",
+               _P + "llm.juiza_concordancia:medir_concordancia",
+               classe=False, resume=False, recebe_observador=False,
+               aceita=frozenset({"n", "semente"})),
 )
 CATALOGO: dict[str, ColetorDef] = {d.id: d for d in _DEFS}
 
 
 def args_fixos(coletor: str, settings: Settings) -> dict:
-    """Argumentos que nao vem do painel: hoje so o teto diario da juiza (custo do Gemini)."""
+    """Argumentos que nao vem do painel: a juiza na carga roda em modo backlog (verba em US$)."""
     if coletor == "juiza":
-        return {"limite_itens": settings.juiza_max_itens_dia}
+        return {"modo": "backlog"}
     return {}

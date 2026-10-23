@@ -1,6 +1,6 @@
-# Entrega: as 8 tabelas para a etapa seguinte
+# Entrega: as 9 tabelas para a etapa seguinte
 
-Este documento cobre as 8 tabelas entregues (`v1-noticias` a `v1-indices`): a origem de cada coluna, a chave, a regra de atualização e as regras especiais. A especificação do que foi pedido está em [spec-entrega-etapa-seguinte.md](spec-entrega-etapa-seguinte.md), e o desenho detalhado em [superpowers/specs/2026-10-19-entrega-etapa-seguinte-design.md](superpowers/specs/2026-10-19-entrega-etapa-seguinte-design.md). Este texto descreve o código atual.
+Este documento cobre as 9 tabelas entregues: as 8 da spec (`v1-noticias` a `v1-indices`) e `v1-composicao_ibov`, que não está na spec (seção 10). Para cada uma: a origem de cada coluna, a chave, a regra de atualização e as regras especiais. A especificação do que foi pedido está em [spec-entrega-etapa-seguinte.md](spec-entrega-etapa-seguinte.md), e o desenho detalhado em [superpowers/specs/2026-10-19-entrega-etapa-seguinte-design.md](superpowers/specs/2026-10-19-entrega-etapa-seguinte-design.md). Este texto descreve o código atual.
 
 ## 1. Visão geral
 
@@ -14,6 +14,7 @@ Este documento cobre as 8 tabelas entregues (`v1-noticias` a `v1-indices`): a or
 | `v1-acoes_emitidas` | (`cnpj`, `data_referencia`) | `raw_cvm_acoes` |
 | `v1-proventos` | (`ticker`, `tipo`, `data_com`) | `raw_b3_proventos`, `raw_b3_suplemento`, `raw_b3_cadastro` |
 | `v1-indices` | (`data`, `indice`) | `raw_prices` (Yahoo) e `raw_macro` (BCB) |
+| `v1-composicao_ibov` | (`ticker`, `vigencia_inicio`) | Carteiras oficiais em `data/composicao_ibov/`, `REBALANCEAMENTOS_IBOV`, `EVENTOS_IBOV_EXTRAORDINARIOS` e `MUDANCAS_TICKER` em `config.py`, coletor `b3_carteira_ibov` |
 
 Todas levam o prefixo `v1-`, como as demais tabelas da pipeline nova (ver [06-banco-de-dados.md](06-banco-de-dados.md)).
 
@@ -68,6 +69,8 @@ Depois das 10 colunas da spec, a tabela tem 7 colunas extras, nesta ordem:
   - `antes_abertura`: antes das 10:00;
   - `durante`: das 10:00 às 17:59;
   - `apos_fechamento`: a partir das 18:00.
+
+  Notícias do Google News só têm a data quando o RSS entrega 00:00 de Los Angeles. Nesse caso `published_precision = 'date'` e a hora vira `desconhecido`, a menos que a própria página da matéria traga a hora (`published_time_source = 'pagina'`, ver `docs/09-historico-de-mudancas.md`, seção 12).
 - **Julgamento por ticker.** Cada par leva o julgamento do próprio ticker, na versão mais alta do prompt da juíza. Tickers adicionais herdam o julgamento do ticker principal do artigo.
 - **Filtro da juíza.** Controlado por `ENTREGA_FILTRO_JUIZA`, com padrão `false`.
   - Com o filtro **desligado**, entra todo par com vínculo, inclusive panoramas e opiniões. Os campos da juíza saem vazios quando não há julgamento.
@@ -95,6 +98,8 @@ Chave: (`data`, `ticker`). Fonte: `raw_prices`, do Yahoo.
 | `BZ=F` | `BRENT` | Vazio |
 
 Os índices `IDIV`, `SMLL` e `IFIX` não entram aqui. Vão para `v1-indices`. Linhas sem `close` são descartadas.
+
+**Abertura do IBOV.** A coluna `abertura` fica vazia quando a fonte repete o fechamento anterior: se o `open` do dia é igual (com 2 casas) ao `close` do pregão anterior da série `IBOV`, grava-se `NULL`. É defeito do Yahoo, que faz isso em ~32% dos dias. A regra vale só para o IBOV, e a camada `raw_prices` não muda.
 
 **Atualização.** Cada execução regrava todas as linhas de `raw_prices` pela chave. Quando o Yahoo muda o ajustado de um dia, a linha nova substitui a antiga.
 
@@ -133,7 +138,8 @@ Chave: (`ticker_antigo`). Fonte: `MUDANCAS_TICKER` em `config.py`.
 | CCRO3 | MOTV3 |
 
 - A tabela registra troca de código, não fusão. A fusão BRF + Marfrig que gerou MBRF3 fica de fora, porque não renomeia um ticker.
-- `data_mudanca` está **vazia nas 10 linhas**. As datas dependem do levantamento nos avisos da B3, ainda não feito (ver a seção 7).
+- `data_mudanca` é o primeiro pregão com o código novo, levantado em 2026-10-23 nos comunicados das companhias e avisos da B3.
+- Três trocas passaram por código intermediário, que não entra na tabela: ELET6 → AXIA6 → AXIA3, CPLE6 → CPLE5 → CPLE3 e AZUL4 → AZUL54/AZUL53 → AZUL3. A data registrada é a da chegada ao código final. O detalhe está no comentário de `MUDANCAS_TICKER`.
 
 ## 6. Balanços: `v1-balancos`
 
@@ -150,8 +156,8 @@ Chave: (`cnpj`, `tipo_documento`, `data_inicio_periodo`, `data_fim_periodo`). Fo
 | `patrimonio_liquido` | BPP, conta `2.08`, senão `2.03` | Linha com `DT_FIM_EXERC` igual à data da DRE. A descrição precisa começar com "patrimonio liquido" |
 | `ebit` | DRE, conta `3.05` | A descrição precisa começar com "resultado antes do resultado financeiro". Em branco para bancos e seguradoras |
 | `depreciacao_amortizacao` | DFC (método indireto), contas `6.01.01.NN` (4 níveis) | Soma das linhas cuja descrição contém "deprecia", "amortiz", "exaust" ou "deplec", sem termos de exclusão (custo de transação, captação, juros, estoque etc.). Valor sempre positivo. Em branco para bancos e seguradoras. Ver a regra do trimestre abaixo |
-| `emprestimos_curto_prazo` | BPP, contas `2.01.04.01` + `2.01.04.02` | Soma de empréstimos e debêntures a pagar em até 1 ano. A descrição precisa começar com "emprestimos e financiamentos" ou "debentures". O arrendamento (`2.01.04.03`) fica de fora. Em branco para bancos e seguradoras |
-| `emprestimos_longo_prazo` | BPP, contas `2.02.01.01` + `2.02.01.02` | Igual a `emprestimos_curto_prazo`, para o passivo de longo prazo. O arrendamento (`2.02.01.03`) fica de fora. Em branco para bancos e seguradoras |
+| `emprestimos_curto_prazo` | BPP, contas `2.01.04.01` + `2.01.04.02`; se somam zero, conta-pai `2.01.04` menos `2.01.04.03` | Soma de empréstimos e debêntures a pagar em até 1 ano. A descrição precisa começar com "emprestimos e financiamentos" ou "debentures" (a conta-pai, só com "emprestimos e financiamentos"). O arrendamento (`2.01.04.03`) fica de fora. Sem pai nem subcontas, fica em branco. Em branco para bancos e seguradoras |
+| `emprestimos_longo_prazo` | BPP, contas `2.02.01.01` + `2.02.01.02`; se somam zero, conta-pai `2.02.01` menos `2.02.01.03` | Igual a `emprestimos_curto_prazo`, para o passivo de longo prazo. O arrendamento (`2.02.01.03`) fica de fora. Em branco para bancos e seguradoras |
 | `caixa` | BPA, conta `1.01.01` | A descrição precisa começar com "caixa e equivalentes". Linha com `DT_FIM_EXERC` igual à data de referência do documento. Em branco para bancos e seguradoras |
 | `aplicacoes_financeiras` | BPA, conta `1.01.02` | A descrição precisa começar com "aplicacoes financeiras". Linha com `DT_FIM_EXERC` igual à data de referência do documento. Em branco para bancos e seguradoras |
 
@@ -161,6 +167,7 @@ Chave: (`cnpj`, `tipo_documento`, `data_inicio_periodo`, `data_fim_periodo`). Fo
 - Para cada (CNPJ, tipo, `DT_REFER`), só a maior `VERSAO`.
 - Valores com escala `MIL` são multiplicados por 1.000. A multiplicação usa `Decimal`.
 - **Posições** (`caixa`, `aplicacoes_financeiras`, `emprestimos_*`) são saldos na data de referência do documento. Como o patrimônio, são copiadas para todas as linhas de DRE do documento.
+- **Empréstimos sem subconta.** CSN, Sabesp, Rede D'Or, Magalu, CMIN e outras lançam a dívida só na conta-pai (`2.01.04`, `2.02.01`), com as subcontas em 0. Por isso as subcontas valem quando somam mais que zero; senão, usa-se o pai menos o arrendamento (`.03`), tratado como 0 quando não existe. A regra não vale para aplicações financeiras, que zeradas continuam valendo 0. **Limitação da fonte:** se a empresa preenche só o pai e deixa o `.03` em 0, o valor pode incluir arrendamento, que a CVM não separa. As contas-pai só existem no `raw_cvm_balancos` depois de recoletar `cvm_itr_dfp`.
 - **D&A no ITR.** A DFC do ITR é acumulada no ano. Na linha cujo período é igual ao de uma DFC (acumulado, primeiro trimestre ou DFP), a D&A é a dessa DFC. No trimestre seguinte, a D&A é a acumulada até o fim do período menos a acumulada até a véspera do início, ambas do mesmo CNPJ. Se o documento anterior não existir, ou a diferença sair negativa, a coluna fica em branco. Se houver mais de uma versão do documento anterior, vale a de maior `VERSAO`.
 - **Bancos e seguradoras** usam outro plano de contas: o lucro fica em `3.11` ou `3.09` e o patrimônio em `2.08` ou `2.03`. A descrição não basta para separá-los (há bancos com "Caixa e Equivalentes de Caixa", e a seguradora PSSA3 usa o plano industrial). Por isso a lista explícita `CD_CVM_BANCOS_SEGURADORAS`, em `config.py`, diz quem são. Para eles, `lucro_bruto`, `ebit`, `depreciacao_amortizacao`, os empréstimos, `caixa` e `aplicacoes_financeiras` ficam em branco. Lucro líquido e patrimônio seguem a regra normal.
 
@@ -215,16 +222,55 @@ Chave: (`data`, `indice`).
 |---|---|---|
 | `CDI` | BCB SGS série 12 | Como vem: percentual ao dia |
 | `IPCA` | BCB SGS série 433 | Como vem: percentual no mês. A data é a gravada em `raw_macro` |
-| `IDIV`, `SMLL`, `IFIX` | Yahoo (`IDIV.SA`, `SMLL.SA`, `IFIX.SA`) | Fechamento (`close`), sem ajuste |
+| `IDIV`, `SMLL`, `IFIX` | B3 (`GetPortfolioDay`), gravados em `raw_prices` com `source='b3'` | Fechamento (`close`), sem ajuste |
 
-O IBOV não entra aqui. Vai para `v1-precos`, como `IBOV`.
+O IBOV não entra aqui. Vai para `v1-precos`, como `IBOV`, e a regra da coluna `abertura` dele está na seção 3.
 
 **Atualização.** Upsert pela chave.
 
-## 10. Como gerar as tabelas e os CSVs
+## 10. Composição do IBOV: `v1-composicao_ibov`
+
+Uma linha por período contínuo em que o papel esteve no IBOV. `vigencia_fim` NULL quer dizer vigente. `participacao` é o peso (%) no início da vigência, e fica NULL quando a fonte não traz peso. `fonte` diz de onde veio o período: `paccafelipe_csv`, `rebalanceamento` ou `b3_api`.
+
+Montagem (`entrega/composicao_ibov.py`, e `montar_composicao` em `builder.py`):
+
+1. **Carteiras oficiais, jan/2021 a set/2024.** Doze CSVs em `data/composicao_ibov/`, com origem e atribuição em `LEIAME.md`. O início de vigência é o primeiro dia útil do mês (segunda a sexta, sem feriados), salvo as cinco datas conhecidas (2023-05-02, 2023-09-04, 2024-01-02, 2024-05-06 e 2024-09-02).
+2. **Rebalanceamentos e eventos extraordinários depois de set/2024** (`REBALANCEAMENTOS_IBOV` e `EVENTOS_IBOV_EXTRAORDINARIOS`, em `config.py`). Cada evento tem a data do primeiro pregão em que a mudança vale; a fonte (comunicado da B3 ou da companhia, conferido na imprensa em 2026-10-23) fica em comentário. Os eventos extraordinários são os que não são rebalanceamento: fusões, cisões, recuperações judiciais e extrajudiciais, OPAs, deslistagens, conversão de BDR e trocas de código com mais de um papel.
+3. **Trocas de código de `MUDANCAS_TICKER`** entram na mesma linha do tempo, mas só valem se o código antigo está na carteira naquela data e se nenhum evento explícito já trata o par (o antigo sai ou o novo entra no evento). Por isso JBSS3 → JBSS32, AZUL4 → AZUL3, PETZ3 → AUAU3 e as trocas já cobertas por eventos (ELET3/ELET6 → AXIA3, CPLE6 → CPLE3) não adicionam o código novo uma segunda vez. A regra está em `eventos_trocas` (`entrega/composicao_ibov.py`).
+4. **Vigências.** Cada papel gera uma linha por período contínuo. O fim é a véspera da primeira carteira sem o papel.
+5. **Fechamento gravado pelo coletor prevalece** sobre a reconstrução, porque veio da carteira publicada pela B3.
+
+Eventos extraordinários (data = primeiro pregão com a mudança):
+
+| Data | Entram | Saem | Motivo |
+|---|---|---|---|
+| 2024-09-09 | BRAV3 | RRRP3 | 3R vira Brava (troca de código) |
+| 2024-11-18 | ISAE4 | TRPL4 | ISA CTEEP vira ISA Energia (troca de código) |
+| 2024-12-16 | AMOB3 | — | Cisão da Vamos (inclusão automática) |
+| 2025-05-30 | — | AZUL4 | Recuperação judicial (exclusão no fechamento de 29/05) |
+| 2025-06-02 | — | CRFB3 | Deslistagem (último pregão 30/05) |
+| 2025-06-09 | — | JBSS3 | Vira BDR JBSS32, que não entra no índice |
+| 2025-09-23 | MBRF3 | BRFS3, MRFG3 | Fusão BRF + Marfrig |
+| 2025-10-06 | — | STBP3 | OPA e deslistagem (último pregão 03/10) |
+| 2025-11-10 | AXIA3, AXIA6, CPLE5 | ELET3, ELET6, CPLE6 | Troca de código da Eletrobras e da Copel |
+| 2025-12-22 | CPLE3 | CPLE5 | Migração da Copel ao Novo Mercado |
+| 2026-03-12 | — | PCAR3 | Recuperação extrajudicial (último pregão 11/03) |
+| 2026-03-13 | — | RAIZ4 | Último pregão 12/03 |
+| 2026-06-08 | — | AXIA6 | Convertida em AXIA3, que já está. AXIA5 também foi convertida, mas nunca esteve na carteira |
+| 2026-08-26 | — | BRKM5 | Recuperação extrajudicial (exclusão no fechamento de 25/08) |
+
+ELET5 → AXIA5 não se aplica: ELET5 não estava na base de set/2024.
+
+Conferência: a reconstrução chega a 76 papéis em 2026-10-23, o mesmo conjunto da carteira da API da B3 (`tests/fixtures/b3_carteira_ibov_2026.json`).
+
+Coletor diário (`collectors/b3_carteira_ibov.py`, etapa `precos`): baixa a carteira do IBOV (`GetPortfolioDay`, 76 papéis em 2026-10-23) e compara com as vigências abertas. Se diferirem, grava as entradas com a data do header e fecha as saídas no dia anterior, com `fonte = b3_api`. Sem vigência aberta (antes do primeiro `build-entrega`), não grava nada. Não tem checkpoint: é um retrato do dia.
+
+Trocas de código intermediárias não estão na tabela (ELET6 → AXIA6, CPLE6 → CPLE5, AZUL4 → AZUL54/AZUL53). O código antigo aparece até a data da troca final.
+
+## 11. Como gerar as tabelas e os CSVs
 
 ```bash
-python -m tcc_scraper.cli build-entrega                             # grava as 8 tabelas no banco
+python -m tcc_scraper.cli build-entrega                             # grava as 9 tabelas no banco
 python -m tcc_scraper.cli build-entrega --csv                       # grava no banco e exporta CSV
 python -m tcc_scraper.cli build-entrega --tabela noticias --csv     # só uma tabela; --tabela é repetível
 ```
@@ -240,14 +286,14 @@ SELECT ticker, data_publicacao, titulo
  LIMIT 10;
 ```
 
-## 11. Lacunas e pendências
+## 12. Lacunas e pendências
 
+- **Composição do IBOV não validada contra a B3.** A reconstrução de set/2024 até hoje dá 84 papéis, e a carteira da API tem 76. As divergências e as contagens citadas em B estão em [09-historico-de-mudancas.md](09-historico-de-mudancas.md), seção 14. A decisão é do dono.
 - **Filtro da juíza desligado por padrão.** Com `ENTREGA_FILTRO_JUIZA=false`, `v1-noticias` leva panoramas e opiniões. O filtro ligado é a regra de qualidade pretendida (spec, seção 5.1), e a decisão de ligá-lo é do dono.
 - **`qualidade` é número gerado pela LLM.** A coluna vem da nota de 0 a 1 da juíza. O `CLAUDE.md` diz que a LLM nunca gera número que vá para tabela entregue. Esse ponto precisa de decisão do dono: manter a coluna com essa ressalva ou tirá-la da entrega.
 - **Regra de atualização de `noticias` diferente da spec.** A spec diz que a regra diária só acrescenta e não reescreve `prob_*`. O código regrava todas as colunas que não são chave. A remoção de reprovadas é a única exceção.
 - **`--reprocessar` não existe.** A spec (seção 5.1) cita a opção para refazer o FinBERT ou a juíza quando a versão muda. O comando `build-entrega` tem só `--csv` e `--tabela`.
 - **`origem = 'rss_nativo'` não é gravado.** Não há coletor de RSS nativo (a constante `NATIVE_FEEDS`, sem uso, foi removida em 2026-10-20). Hoje a tabela só tem `google_news` e `cvm_ipe`.
-- **`data_mudanca` vazia em todas as mudanças de ticker.** Depende do levantamento nos avisos da B3.
 - **CRFB3 sem código CVM.** Não há código CVM em `TICKER_CODE_CVM`. A linha do CRFB3 em `v1-cadastro` sai com `cnpj` e setor vazios. Está registrado como caso de teste pendente (`xfail` em `tests/test_config.py`).
 - **Proventos de outros rótulos.** Rendimentos, restituições de capital e outros rótulos da B3 não entram. A spec previa listá-los no spike antes de decidir.
 - **Fator de ajuste e data de pagamento.** A conferência dos fatores em cinco empresas e da data de pagamento está listada como spike na spec, seção 5.7, e não foi documentada como concluída.

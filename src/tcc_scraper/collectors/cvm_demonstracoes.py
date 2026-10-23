@@ -26,7 +26,12 @@ from tcc_scraper.collectors.cvm_base import (
     last_modified,
     ler_csvs_do_zip,
 )
-from tcc_scraper.config import CONTAS_CVM, TICKER_CODE_CVM, conta_ajuste_dfc
+from tcc_scraper.config import (
+    CONTAS_CVM,
+    CONTAS_CVM_AUXILIARES,
+    TICKER_CODE_CVM,
+    conta_ajuste_dfc,
+)
 from tcc_scraper.db.models_fontes import RawCvmAcoes, RawCvmBalanco
 from tcc_scraper.db.session import session_scope
 from tcc_scraper.db.upsert import bulk_upsert
@@ -145,7 +150,10 @@ def parse_demonstracoes(
     for chave, demonstracao, aceita in (
         (CHAVE_DRE, "DRE", lambda cd: cd in CONTAS_CVM["DRE"]),
         (CHAVE_BPA, "BPA", lambda cd: cd in CONTAS_CVM["BPA"]),
-        (CHAVE_BPP, "BPP", lambda cd: cd in CONTAS_CVM["BPP"]),
+        (
+            CHAVE_BPP, "BPP",
+            lambda cd: cd in CONTAS_CVM["BPP"] or cd in CONTAS_CVM_AUXILIARES["BPP"],
+        ),
         (CHAVE_DFC, "DFC", conta_ajuste_dfc),
     ):
         for r in csvs.get(chave, []):

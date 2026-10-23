@@ -1,0 +1,39 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "papel": {
+      "type": "choice",
+      "choice": "protagonista",
+      "confidence": 0.84,
+      "probabilities": {
+        "protagonista": 0.88,
+        "citada_com_fato": 0.12,
+        "mencionada": 0.0,
+        "nao_relacionada": 0.0
+      }
+    },
+    "qualidade": {
+      "type": "score",
+      "score": 1.05,
+      "confidence": 0.59,
+      "legend": {
+        "0": "muito baixa",
+        "1": "baixa",
+        "2": "media",
+        "3": "alta",
+        "4": "muito alta"
+      },
+      "probabilities": {
+        "0": 0.22,
+        "1": 0.54,
+        "2": 0.21,
+        "3": 0.03,
+        "4": 0.0
+      }
+    }
+  },
+  "usage": {
+    "input_tokens": 453,
+    "output_tokens": 78
+  }
+}

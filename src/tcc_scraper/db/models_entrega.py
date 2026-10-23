@@ -1,4 +1,4 @@
-"""As 8 tabelas de entrega (nomes fixos pela spec), sem prefixo de camada.
+"""As 9 tabelas de entrega (8 fixas pela spec e a composicao do IBOV), sem prefixo de camada.
 
 Colunas na ordem da spec (parte 2, dicionario de colunas). A `noticias` leva, depois das 10
 colunas da spec, as 7 extras da secao 5.1 do desenho. `COLUNAS` e a fonte unica dessa ordem
@@ -50,6 +50,7 @@ COLUNAS: dict[str, list[str]] = {
     "acoes_emitidas": ["cnpj", "data_referencia", "qtd_on", "qtd_pn"],
     "proventos": ["ticker", "tipo", "data_com", "valor_por_acao", "data_pagamento"],
     "indices": ["data", "indice", "valor"],
+    "composicao_ibov": ["ticker", "vigencia_inicio", "vigencia_fim", "participacao", "fonte"],
 }
 
 
@@ -114,6 +115,22 @@ class MudancaTicker(Base):
     ticker_antigo: Mapped[str] = mapped_column(String(12), primary_key=True)
     ticker_novo: Mapped[str] = mapped_column(String(12), nullable=False)
     data_mudanca: Mapped[dt.date | None] = mapped_column(Date)
+
+
+class ComposicaoIbov(Base):
+    """Um periodo continuo em que o ticker esteve no IBOV. `vigencia_fim` NULL = vigente.
+
+    `participacao` e o peso (%) no inicio da vigencia; NULL quando a fonte nao traz peso.
+    `fonte`: b3_api (coletor diario), paccafelipe_csv (carteira oficial) ou rebalanceamento.
+    """
+
+    __tablename__ = f"{PREFIXO_TABELA}composicao_ibov"
+
+    ticker: Mapped[str] = mapped_column(String(12), primary_key=True)
+    vigencia_inicio: Mapped[dt.date] = mapped_column(Date, primary_key=True)
+    vigencia_fim: Mapped[dt.date | None] = mapped_column(Date)
+    participacao: Mapped[float | None] = mapped_column(Double)
+    fonte: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
 class Balanco(Base):

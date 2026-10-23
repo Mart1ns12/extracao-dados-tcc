@@ -65,7 +65,7 @@ O executor aplica cada comando de acordo com o `tipo`:
 |---|---|---|---|
 | `daily` | `{}` | Cria e inicia um daily, com origem `manual` | Já existe execução `agendada` ou `em_andamento` |
 | `etapa` | `{"etapa": "<id>"}` | Cria e inicia uma etapa, sozinha | Id fora do catálogo (`etapa invalida: ...`), ou execução ativa |
-| `coletar` | `{"itens": [{"coletor", "anos" ou "tickers" ou "desde" e "ate", "refazer"}], "montar_entrega": [...], "origem_verificacoes": [...]}` | Cria e inicia uma execução `coletar`: uma etapa por item, e mais `build_entrega` se houver `montar_entrega`. Sem orçamento | Parâmetro inválido (lista completa na seção 4.1), ou execução `agendada` ou `em_andamento` |
+| `coletar` | `{"itens": [{"coletor", "anos" ou "tickers" ou "desde" e "ate" ou "aplicar" e "limite" ou "n" e "semente", "refazer"}], "montar_entrega": [...], "origem_verificacoes": [...]}` | Cria e inicia uma execução `coletar`: uma etapa por item, e mais `build_entrega` se houver `montar_entrega`. Sem orçamento | Parâmetro inválido (lista completa na seção 4.1), ou execução `agendada` ou `em_andamento` |
 | `historico` | `{"anos": [2025, 2026], "modo": "pendentes"}` | Dispara a carga histórica | Carga ativa (`em_andamento`, `pausando`, `pausada` ou `cancelando`); `modo` inválido; nenhum dos anos cai na faixa de coleta |
 | `pausar` | `{}` | Carga: `em_andamento` vai para `pausando` | A carga não está `em_andamento`, ou não há carga |
 | `retomar` | `{}` | Carga: `pausada` vai para `em_andamento` | A carga não está `pausada` |
@@ -120,6 +120,15 @@ Catálogo de coletores:
 | `finbert` | - | - | Só pendentes. `refazer` não se aplica |
 | `juiza` | - | - | Só pendentes. Limitada por `JUIZA_MAX_ITENS_DIA`. `refazer` não se aplica |
 | `build_entrega` | não é item: use `montar_entrega` | - | - |
+| `corrigir_horas` | `aplicar` (bool, obrigatório; `false` simula, sem gravar) e `limite` (int ≥ 1, opcional; `null` = sem limite) | - | Sem checkpoint. `refazer` não se aplica |
+| `juiza_concordancia` | `n` (int de 10 a 1000, obrigatório) e `semente` (int, opcional, padrão 42; `null` também vale 42) | - | Sem checkpoint. `refazer` não se aplica |
+
+Os dois últimos são ações avulsas do painel (`corrigir_horas`, a mesma função do CLI `fix-news-times`; `juiza_concordancia`, a mesma do CLI `judge-news --concordancia`). Exemplos de item:
+
+```json
+{"coletor": "corrigir_horas", "aplicar": true, "limite": 500}
+{"coletor": "juiza_concordancia", "n": 200, "semente": 42}
+```
 
 Regras:
 
@@ -130,6 +139,11 @@ Regras:
 - **Falha de item** não para os demais. O final sai `parcial`, como no daily.
 - **Logs** saem com `origem = daily`, para o painel não precisar de mudança.
 - **Nomes.** `etapa_id` é o id do coletor (`cvm_itr_dfp`, `google_news`, …), e `build_entrega` para a montagem. Não são as nove etapas do daily.
+- **Ações avulsas (`corrigir_horas` e `juiza_concordancia`) ficam fora do daily e da carga histórica.** Não estão em `ETAPAS` nem em `historico._passos`, e não têm checkpoint.
+- **`juiza_concordancia` gasta API real** (Jev e Gemini) e grava a run-resumo (`modelo = concordancia`). Não grava julgamento e não tem teto. Sem `JEV_ENABLED` e `JEV_API_KEY`, ou sem `GEMINI_API_KEY`, a etapa falha antes de qualquer chamada, com `concordancia exige o Jev: ...` ou `concordancia exige o Gemini: ...` como erro do item.
+- **`corrigir_horas` com `aplicar = false`** roda a fase (b) só para medir (baixa as páginas, com throttle), e não grava nada.
+- **Log das ações avulsas.** Cada contagem sai numa linha, `<coletor>: <chave> = <valor>`, com origem `daily`. `corrigir_horas` loga `aplicado` ou `simulação, nada gravado`. `juiza_concordancia` loga as linhas do resumo da medição, incluindo `decisao`. A decisão não altera a config: ligar `JUIZA_JEV_DECIDE` é decisão do dono.
+- **`montar_entrega` vale para qualquer plano**, inclusive com ações avulsas, e é anexado no fim como antes. Não há recusa específica para ele.
 
 Recusas (ack com `ok: false` e a mensagem no campo `erro`):
 
@@ -154,6 +168,12 @@ Recusas (ack com `ok: false` e a mensagem no campo `erro`):
 | Período fora da janela de notícias | `<coletor>: período fora da janela A..B (ate exclusivo)` |
 | Tabela de entrega inválida | `tabela de entrega inválida: ...` |
 | `montar_entrega` que não é lista de tabelas | `montar_entrega deve ser uma lista de tabelas` |
+| `corrigir_horas` sem `aplicar` | `corrigir_horas: aplicar é obrigatório (false simula, sem gravar)` |
+| `aplicar` que não é booleano | `corrigir_horas: aplicar deve ser true ou false` |
+| `limite` que não é inteiro ≥ 1 (nem `null`) | `corrigir_horas: limite deve ser um inteiro maior que zero, ou null` |
+| `juiza_concordancia` sem `n` | `juiza_concordancia: n é obrigatório (inteiro de 10 a 1000)` |
+| `n` fora de 10 a 1000, ou não inteiro | `juiza_concordancia: n deve ser um inteiro de 10 a 1000` |
+| `semente` que não é inteiro | `juiza_concordancia: semente deve ser um inteiro` |
 | Execução `agendada` ou `em_andamento` | `ja existe uma execucao em andamento ou agendada` |
 
 Uma recusa não fica na fila: o painel precisa reenviar o comando.

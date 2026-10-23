@@ -24,11 +24,15 @@ B3_DOMINIO = "sistemaswebb3-listados.b3.com.br"
 USER_AGENT_B3 = "Mozilla/5.0"
 
 
-def url_b3(metodo: str, params: dict) -> str:
-    """URL do endpoint: os parâmetros vão como JSON compacto, codificados em base64 no caminho."""
+def url_b3(metodo: str, params: dict, base: str = B3_BASE) -> str:
+    """URL do endpoint: os parâmetros vão como JSON compacto, codificados em base64 no caminho.
+
+    `base` troca o proxy da B3 (ex.: indexStatisticsProxy, dos índices); o padrão é o
+    listedCompaniesProxy.
+    """
     bruto = json.dumps(params, separators=(",", ":")).encode("utf-8")
     codificado = base64.b64encode(bruto).decode("ascii")
-    return f"{B3_BASE}/{metodo}/{codificado}"
+    return f"{base}/{metodo}/{codificado}"
 
 
 def registro_hash(d: dict) -> str:
@@ -66,9 +70,9 @@ class B3Collector(Collector):
         self.throttle.set_default(self.settings.throttle_b3)
         self.throttle.configure(B3_DOMINIO, self.settings.throttle_b3)
 
-    def get_json(self, metodo: str, params: dict) -> Any | None:
+    def get_json(self, metodo: str, params: dict, base: str = B3_BASE) -> Any | None:
         """Chama um método do endpoint e devolve o JSON, ou None em falha, HTTP de erro ou HTML."""
-        url = url_b3(metodo, params)
+        url = url_b3(metodo, params, base)
         try:
             resposta = self.fetch(url, headers={"User-Agent": USER_AGENT_B3})
         except RuntimeError as exc:

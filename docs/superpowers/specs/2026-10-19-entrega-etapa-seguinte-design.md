@@ -1,5 +1,7 @@
 # Entrega para a etapa seguinte do TCC: 8 tabelas com notícias de alta qualidade
 
+> **Nota de revisão (2026-10-23):** o conjunto-ouro foi substituído por concordância Jev × Gemini, ver ADR de 2026-10-23 em [ADR](../../ADR.md). Este texto não foi reescrito.
+
 Data: 2026-10-19. Estado: **rascunho para aprovação** (nada construído).
 
 Este documento descreve o que o pipeline passa a entregar para a etapa seguinte do TCC
@@ -443,6 +445,8 @@ cobrir, custo zero).
   template em `llm/prompts/juiza_v1.txt`, sha256 gravado em `raw_llm_prompts` (coluna `nome`
   distingue `analise_diaria` de `juiza`).
 
+> *Nota de revisão (2026-10-23): substituído por concordância Jev × Gemini, ver ADR de 2026-10-23.*
+
 **Conjunto-ouro.** `tests/fixtures/juiza_gold.csv` com ~300 pares (artigo, ticker) rotulados
 à mão em `papel` e `tipo_conteudo`, estratificados por caso (homônimos, marcas, panoramas,
 matriz estrangeira, opinião). Comando `judge-news --avaliar` imprime precisão e revocação
@@ -727,7 +731,7 @@ construtor): o checkpoint do Google News é por janela semanal (`iter_weeks`), e
 
 **Ainda abertas:**
 
-- **Q6. Conjunto-ouro.** Para medir a juíza é preciso uma "resposta certa" feita por pessoa:
+- **Q6. Conjunto-ouro.** *Nota de revisão (2026-10-23): substituído por concordância Jev × Gemini, ver ADR de 2026-10-23.* Para medir a juíza é preciso uma "resposta certa" feita por pessoa:
   ~300 pares (manchete, ticker) rotulados à mão em `papel` e `tipo_conteudo`. Proposta para
   reduzir o esforço: a LLM pré-rotula e o dono só revisa e corrige (cerca de 1 h), antes da
   Fase B. Sem isso a precisão da juíza fica sem número no TCC.

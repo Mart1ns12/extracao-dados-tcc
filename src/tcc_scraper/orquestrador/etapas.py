@@ -82,12 +82,40 @@ def resultado_finbert(st: dict) -> ResultadoEtapa:
     return ResultadoEtapa("concluida", itens=itens, detalhes=dict(st))
 
 
+def resultado_corrigir_horas(st: dict) -> ResultadoEtapa:
+    """Traduz o dict de `corrigir_horas_publicacao` em resultado de etapa (usado pelo `coletar`)."""
+    return ResultadoEtapa("concluida", itens=st.get("gravados", 0), detalhes=dict(st))
+
+
+def resultado_concordancia(r: Any) -> ResultadoEtapa:
+    """Traduz o `ResultadoConcordancia` de `medir_concordancia` (usado pelo `coletar`)."""
+    detalhes = {"decisao": r.decisao, "amostra": r.amostra, "custo_usd": r.custo_usd}
+    return ResultadoEtapa("concluida", itens=r.amostra, detalhes=detalhes)
+
+
 def etapa_precos(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    from tcc_scraper.collectors.b3_carteira_ibov import B3CarteiraIbovCollector
+    from tcc_scraper.collectors.b3_indices import B3IndicesCollector
     from tcc_scraper.collectors.prices_yahoo import YahooPriceCollector
 
-    with YahooPriceCollector() as c:
-        st = c.run(resume=False, observador=p)
-    return de_stats(st)
+    # IDIV, SMLL e IFIX vêm da B3 (o Yahoo só tem 1 dia deles); só o ano corrente é refeito.
+    # A carteira do IBOV e so um retrato do dia: grava mudancas em v1-composicao_ibov.
+    return _executa_partes(
+        p,
+        [
+            ("yahoo", lambda: _roda_coletor(YahooPriceCollector(), p, resume=False)),
+            (
+                "b3_indices",
+                lambda: _roda_coletor(
+                    B3IndicesCollector(anos=[ctx.hoje.year]), p, resume=False
+                ),
+            ),
+            (
+                "b3_carteira_ibov",
+                lambda: _roda_coletor(B3CarteiraIbovCollector(), p, resume=False),
+            ),
+        ],
+    )
 
 
 def _roda_coletor(coletor: Collector, p: Progresso, **kw: Any) -> dict:
@@ -258,7 +286,14 @@ def etapa_entrega(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
 def etapa_juiza(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
     from tcc_scraper.llm.juiza import julgar_pendentes
 
-    r = julgar_pendentes(limite_itens=ctx.settings.juiza_max_itens_dia, observador=p)
+    r = julgar_pendentes(
+        limite_itens=ctx.settings.juiza_max_itens_dia, observador=p, modo="diario"
+    )
+    # Os detalhes da etapa nao chegam ao painel: a linha de log e o que fica visivel.
+    logger.info(
+        "juiza: %d lidos, %d julgados, US$ %.4f, parada=%s",
+        r.pendentes, r.regra + r.jev + r.gemini, r.custo_usd, r.parada or "nenhuma",
+    )
     return resultado_juiza(r)
 
 
@@ -270,9 +305,12 @@ def resultado_juiza(r: Any) -> ResultadoEtapa:
         "jev": r.jev,
         "gemini": r.gemini,
         "erros": r.erros,
+        "invalidos": r.invalidos,
         "runs": r.runs,
         "tokens_entrada": r.tokens_entrada,
         "tokens_saida": r.tokens_saida,
+        "custo_usd": r.custo_usd,
+        "parada": r.parada,
         "interrompido": r.interrompido,
     }
     if r.interrompido:

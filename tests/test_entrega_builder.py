@@ -218,8 +218,8 @@ def test_aprovado_para_entrega_combinacoes(julgamento, origem, exigir, esperado)
 
 # -- precos e indices ------------------------------------------------------------------------
 
-def _preco(ticker, close=10.0, adj=9.0, volume=1000, data=dt.date(2026, 6, 18)):
-    return {"ticker": ticker, "date": data, "open": 1.0, "high": 2.0, "low": 0.5,
+def _preco(ticker, close=10.0, adj=9.0, volume=1000, data=dt.date(2026, 6, 18), abertura=1.0):
+    return {"ticker": ticker, "date": data, "open": abertura, "high": 2.0, "low": 0.5,
             "close": close, "adj_close": adj, "volume": volume}
 
 
@@ -243,6 +243,45 @@ def test_precos_renomeia_macro_e_zera_volume_e_ajuste_do_ibov() -> None:
     assert por_ticker[("IVVB11", dt.date(2026, 6, 18))]["volume"] is None  # 0 vira em branco
     petr = por_ticker[("PETR4", dt.date(2026, 6, 18))]
     assert (petr["fechamento"], petr["fechamento_ajustado"], petr["volume"]) == (35.0, 33.0, 1000)
+
+
+def test_abertura_do_ibov_repetindo_o_fechamento_anterior_vira_vazia() -> None:
+    d1, d2 = dt.date(2026, 6, 17), dt.date(2026, 6, 18)
+    linhas = B.montar_precos([
+        _preco("^BVSP", close=130000.0, abertura=129000.0, data=d1),
+        _preco("^BVSP", close=130500.0, abertura=130000.0, data=d2),  # == fechamento de d1
+    ])
+    por_data = {linha["data"]: linha for linha in linhas}
+    assert por_data[d2]["abertura"] is None
+    assert por_data[d2]["fechamento"] == 130500.0  # so a abertura some, o resto fica
+
+
+def test_abertura_do_ibov_normal_mantem_e_primeiro_dia_mantem() -> None:
+    d1, d2, d3 = dt.date(2026, 6, 16), dt.date(2026, 6, 17), dt.date(2026, 6, 18)
+    linhas = B.montar_precos([  # fora de ordem de propósito: a regra ordena por data antes
+        _preco("^BVSP", close=131000.0, abertura=130800.0, data=d3),  # != fechamento de d2
+        _preco("^BVSP", close=130000.0, abertura=129500.0, data=d1),
+        _preco("^BVSP", close=130500.0, abertura=130100.0, data=d2),
+    ])
+    por_data = {linha["data"]: linha["abertura"] for linha in linhas}
+    assert por_data == {d1: 129500.0, d2: 130100.0, d3: 130800.0}
+    # Primeiro dia da serie sem pregao anterior: a abertura fica mesmo que bata com o
+    # proprio fechamento.
+    primeiro = B.montar_precos([_preco("^BVSP", close=130000.0, abertura=130000.0, data=d1)])
+    assert primeiro[0]["abertura"] == 130000.0
+
+
+def test_abertura_repetida_so_e_anulada_no_ibov() -> None:
+    d1, d2 = dt.date(2026, 6, 17), dt.date(2026, 6, 18)
+    linhas = B.montar_precos([
+        _preco("USDBRL=X", close=5.4, abertura=5.3, data=d1, volume=0),
+        _preco("USDBRL=X", close=5.5, abertura=5.4, data=d2, volume=0),  # repete, mas nao e IBOV
+        _preco("PETR4.SA", close=35.0, abertura=34.0, data=d1),
+        _preco("PETR4.SA", close=35.5, abertura=35.0, data=d2),  # repete, mas nao e IBOV
+    ])
+    aberturas = {(linha["ticker"], linha["data"]): linha["abertura"] for linha in linhas}
+    assert aberturas[("USDBRL", d2)] == 5.4
+    assert aberturas[("PETR4", d2)] == 35.0
 
 
 def test_indices_roteia_cdi_ipca_e_fechamento_das_series_b3() -> None:
@@ -464,6 +503,52 @@ def test_sem_conta_de_emprestimo_fica_none_e_nao_zero() -> None:
     ])
     assert linha["emprestimos_curto_prazo"] is None
     assert linha["emprestimos_longo_prazo"] is None
+
+
+def test_emprestimos_usam_pai_quando_subcontas_zeradas_como_csn() -> None:
+    # CSN (4030): a divida so vem na conta-pai; as subcontas saem zeradas.
+    (linha,) = B.montar_balancos([
+        _dfp_2024("3.01", "Receita de vendas", 1000.0, demo="DRE"),
+        _dfp_2024("2.01.04", "Empréstimos e Financiamentos", 10428559.0),
+        _dfp_2024("2.01.04.01", "Empréstimos e Financiamentos", 0.0),
+        _dfp_2024("2.01.04.02", "Debêntures", 0.0),
+        _dfp_2024("2.02.01", "Empréstimos e Financiamentos", 42495988.0),
+        _dfp_2024("2.02.01.01", "Empréstimos e Financiamentos", 0.0),
+        _dfp_2024("2.02.01.02", "Debêntures", 0.0),
+    ])
+    assert linha["emprestimos_curto_prazo"] == 10428559000.0
+    assert linha["emprestimos_longo_prazo"] == 42495988000.0
+
+
+def test_pai_menos_arrendamento_quando_subcontas_zeradas() -> None:
+    (linha,) = B.montar_balancos([
+        _dfp_2024("3.01", "Receita de vendas", 1000.0, demo="DRE"),
+        _dfp_2024("2.01.04", "Empréstimos e Financiamentos", 1000.0),
+        _dfp_2024("2.01.04.01", "Empréstimos e Financiamentos", 0.0),
+        _dfp_2024("2.01.04.03", "Financiamento por Arrendamento", 300.0),
+        _dfp_2024("2.02.01", "Empréstimos e Financiamentos", 5000.0),
+        _dfp_2024("2.02.01.03", "Financiamento por Arrendamento", 1200.0),
+    ])
+    assert linha["emprestimos_curto_prazo"] == 700000.0
+    assert linha["emprestimos_longo_prazo"] == 3800000.0
+
+
+def test_subcontas_positivas_ignoram_o_pai() -> None:
+    (linha,) = B.montar_balancos([
+        _dfp_2024("3.01", "Receita de vendas", 1000.0, demo="DRE"),
+        _dfp_2024("2.01.04", "Empréstimos e Financiamentos", 9999.0),
+        _dfp_2024("2.01.04.01", "Empréstimos e Financiamentos", 1293000.0),
+        _dfp_2024("2.01.04.02", "Debêntures", 80000.0),
+    ])
+    assert linha["emprestimos_curto_prazo"] == 1373000000.0
+
+
+def test_pai_zerado_sem_subcontas_fica_none() -> None:
+    (linha,) = B.montar_balancos([
+        _dfp_2024("3.01", "Receita de vendas", 1000.0, demo="DRE"),
+        _dfp_2024("2.01.04", "Empréstimos e Financiamentos", 0.0),
+    ])
+    assert linha["emprestimos_curto_prazo"] is None
 
 
 def test_depreciacao_soma_varias_linhas_e_fica_positiva() -> None:

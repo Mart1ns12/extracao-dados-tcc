@@ -31,6 +31,7 @@ FIXTURES = RAIZ / "tests" / "fixtures"
 CVM = "https://dados.cvm.gov.br/dados/CIA_ABERTA"
 BCB = "https://api.bcb.gov.br/dados/serie/bcdata.sgs"
 B3 = "https://sistemaswebb3-listados.b3.com.br/listedCompaniesProxy/CompanyCall"
+B3_INDICES = "https://sistemaswebb3-listados.b3.com.br/indexStatisticsProxy/IndexCall"
 YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart"
 
 # Yahoo e B3 recusam o User-Agent padrao do projeto.
@@ -72,6 +73,18 @@ def b3_url(metodo: str, parametros: dict[str, Any]) -> str:
 
 def _grava_b3(col: Collector, saida: str, metodo: str, parametros: dict[str, Any]) -> bytes:
     corpo = baixar(col, b3_url(metodo, parametros), headers=NAVEGADOR)
+    json.loads(corpo)  # confirma que e JSON antes de gravar
+    gravar(saida, corpo)
+    return corpo
+
+
+def _grava_b3_indice(col: Collector, saida: str, indice: str, ano: int) -> bytes:
+    """Ano inteiro de um indice (IDIV, SMLL, IFIX) pelo indexStatisticsProxy da B3."""
+    codigo = json.dumps(
+        {"index": indice, "language": "pt-br", "year": str(ano)}, separators=(",", ":")
+    )
+    url = f"{B3_INDICES}/GetPortfolioDay/{base64.b64encode(codigo.encode()).decode()}"
+    corpo = baixar(col, url, headers=NAVEGADOR)
     json.loads(corpo)  # confirma que e JSON antes de gravar
     gravar(saida, corpo)
     return corpo
@@ -334,6 +347,18 @@ def main() -> int:
         ]
         for saida, metodo, parametros in b3:
             _executar(erros, saida, _grava_b3, col, saida, metodo, parametros)
+
+        print("== B3 indices IDIV, SMLL, IFIX (2022)")
+        for indice in ("IDIV", "SMLL", "IFIX"):
+            _executar(
+                erros,
+                f"b3_indices_{indice}_2022",
+                _grava_b3_indice,
+                col,
+                f"b3_indices_{indice.lower()}_2022.json",
+                indice,
+                2022,
+            )
 
         print("== B3 proventos (pagina 1)")
         for saida, pregao, busca in [

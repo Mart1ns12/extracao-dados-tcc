@@ -50,7 +50,7 @@ def _setup_logging(verbose: bool = False) -> None:
         logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-def _report(titulo: str, stats: dict[str, int]) -> None:
+def _report(titulo: str, stats: dict[str, object]) -> None:
     table = Table(title=titulo)
     table.add_column("metrica")
     table.add_column("valor", justify="right")
@@ -78,7 +78,10 @@ def db_info() -> None:
 
     if faltando:
         console.print(f"[yellow]faltam {len(faltando)} tabelas[/yellow]: {', '.join(faltando)}")
-        console.print("banco vazio: aplique [bold]sql/schema.mysql.sql[/bold]; tabela faltando: ver [bold]sql/alteracoes/[/bold]")
+        console.print(
+            "banco vazio: aplique [bold]sql/schema.mysql.sql[/bold]; "
+            "tabela faltando: ver [bold]sql/alteracoes/[/bold]"
+        )
     else:
         console.print(f"[green]as {len(esperadas)} tabelas existem[/green]")
 
@@ -156,6 +159,21 @@ def enrich(limit: int = typer.Option(None, help="Processa so os N primeiros lote
 
     with ArticleBodyCollector() as collector:
         _report("corpo dos artigos", collector.run(resume=False, limit=limit))
+
+
+@app.command("fix-news-times")
+def fix_news_times(
+    limite: int | None = typer.Option(None, help="Maximo de paginas baixadas na fase (b)"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Conta o que seria corrigido, sem gravar"
+    ),
+) -> None:
+    """Corrige a hora falsa (00:00 do Pacifico) das noticias do Google News."""
+    _setup_logging()
+    from tcc_scraper.enrich.article_fetcher import corrigir_horas_publicacao
+
+    stats = corrigir_horas_publicacao(limite=limite, dry_run=dry_run)
+    _report("correcao de horas (dry-run)" if dry_run else "correcao de horas", stats)
 
 
 class _ObservadorScore:
@@ -498,29 +516,67 @@ def build_entrega_cmd(
 @app.command("judge-news")
 def judge_news(
     limite: int | None = typer.Option(None, help="Maximo de itens nesta rodada"),
-    avaliar: bool = typer.Option(
-        False, "--avaliar", help="Mede precisao e revocacao no conjunto ouro, sem gravar"
+    backlog: bool = typer.Option(
+        False, "--backlog", help="Julga o passado (ordem crescente), com teto em US$"
+    ),
+    orcamento_usd: float | None = typer.Option(
+        None, "--orcamento-usd", help="Teto em US$ desta rodada (so com --backlog)"
+    ),
+    anos: Annotated[
+        list[int] | None,
+        typer.Option("--anos", help="Repita: --anos 2025 --anos 2026 (so com --backlog)"),
+    ] = None,
+    status: bool = typer.Option(
+        False, "--status", help="Mostra pendentes, gasto e verbas, sem julgar"
+    ),
+    concordancia: int | None = typer.Option(
+        None, "--concordancia", min=1,
+        help="Mede a concordancia Jev x Gemini em N pares (nao grava julgamento nem staging)",
+    ),
+    semente: int = typer.Option(
+        42, "--semente", help="Semente da amostra de --concordancia (reprodutivel)"
     ),
 ) -> None:
     """Juiza de noticias: regra, Jev e Gemini sobre as pendentes."""
     _setup_logging()
-    from tcc_scraper.config import PROJECT_ROOT
-    from tcc_scraper.llm.juiza import avaliar_conjunto_ouro, julgar_pendentes
+    from tcc_scraper.llm.juiza import contar_pendentes, julgar_pendentes
 
-    if avaliar:
-        caminho = PROJECT_ROOT / "tests" / "fixtures" / "juiza_gold.csv"
-        if not caminho.exists():
-            console.print(f"[yellow]conjunto ouro ausente: {caminho}[/yellow]")
-            return
-        try:
-            metricas = avaliar_conjunto_ouro(caminho)
-        except ValueError as exc:
-            console.print(f"[yellow]avaliacao nao executada: {exc}[/yellow]")
-            return
-        console.print(metricas)
+    if concordancia is not None:
+        if status or backlog:
+            raise typer.BadParameter("--concordancia nao combina com --status nem --backlog")
+        from tcc_scraper.llm.juiza_concordancia import medir_concordancia
+
+        r = medir_concordancia(concordancia, semente=semente)
+        _report("juiza de noticias: concordancia", r.resumo())
+        console.print(
+            f"decisao: {r.decisao} (nao altera a config; JUIZA_JEV_DECIDE segue como esta)"
+        )
         return
 
-    r = julgar_pendentes(limite_itens=limite)
+    if status:
+        from tcc_scraper.config import get_settings
+        from tcc_scraper.llm.juiza_custo import gasto_usd, inicio_mes_utc
+
+        s = get_settings()
+        agora = dt.datetime.now(dt.UTC)
+        _report(
+            "juiza de noticias: status",
+            {
+                **contar_pendentes(s.juiza_max_tentativas),
+                "gasto_backlog_usd": round(gasto_usd("backlog"), 4),
+                "gasto_producao_mes_usd": round(
+                    gasto_usd("producao", inicio_mes_utc(agora, s.daily_tz)), 4
+                ),
+                "verba_backlog_usd": s.juiza_backlog_verba_usd,
+                "orcamento_mensal_usd": s.juiza_orcamento_mensal_usd,
+            },
+        )
+        return
+
+    chamada: dict[str, object] = {"limite_itens": limite}
+    if backlog:
+        chamada |= {"modo": "backlog", "anos": anos, "orcamento_usd": orcamento_usd}
+    r = julgar_pendentes(**chamada)
     _report(
         "juiza de noticias",
         {
@@ -529,9 +585,12 @@ def judge_news(
             "jev": r.jev,
             "gemini": r.gemini,
             "erros": r.erros,
+            "invalidos": r.invalidos,
             "runs": r.runs,
             "tokens_entrada": r.tokens_entrada,
             "tokens_saida": r.tokens_saida,
+            "custo_usd": round(r.custo_usd, 4),
+            "parada": r.parada or "-",
             "interrompido": r.interrompido,
         },
     )

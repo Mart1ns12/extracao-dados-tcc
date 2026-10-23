@@ -33,21 +33,21 @@ Os ids, nomes e coletores são o contrato com o painel. Não renomear sem combin
 
 | # | Id | Nome no painel | Coletor | Fonte | Unidade de trabalho | Retoma por checkpoint? |
 |---|---|---|---|---|---|---|
-| 1 | `precos` | Preços e índices | `yahoo` | Yahoo Finance, chart API (`adjclose`) | Um ticker: o universo de coleta, `^BVSP`, `BZ=F`, `USDBRL=X`, `IVVB11`, `IDIV.SA`, `SMLL.SA`, `IFIX.SA` | Não: refaz todos os tickers a cada dia |
+| 1 | `precos` | Preços e índices | `yahoo` | Yahoo Finance, chart API (`adjclose`), e B3 (`GetPortfolioDay`, para IDIV, SMLL e IFIX) | Um ticker: o universo de coleta, `^BVSP`, `BZ=F`, `USDBRL=X`, `IVVB11`; depois, um índice da B3 no ano corrente (`b3\|<indice>\|<ano>`) | Não: refaz todos os tickers a cada dia |
 | 2 | `macro` | Macro do BCB | `bcb` e `indices_bcb` | BCB SGS (Selic, série 432; CDI, série 12; IPCA, série 433) e PTAX (`cotacaoVenda`) | Uma série; depois, uma série por ano (`sgs\|<serie>\|<ano>`) | Não |
 | 3 | `noticias` | Notícias | `google_news` | Google News RSS, sem chave | Ticker × semana × idioma, na janela da seção 2 | Não |
 | 4 | `ipe` | Fatos relevantes | `cvm_ipe` | CVM, IPE (fatos relevantes e comunicados), arquivo anual | Um arquivo do IPE do ano (`ipe\|<ano>\|<Last-Modified>`) | Sim |
 | 5 | `enriquecimento` | Corpo e sentimento | `finbert` | Página do veículo (só domínios da allowlist) e FinBERT local | Lote de artigos sem corpo; depois, bloco de textos sem sentimento | Não é preciso: só entram os pendentes |
-| 6 | `juiza` | Juíza de qualidade | `juiza` | Regra local, sem API; depois Gemini, sem busca na web | Lote de `JUIZA_LOTE` pares (artigo, ticker) pendentes, até `JUIZA_MAX_ITENS_DIA` por dia | Só entram os pendentes |
+| 6 | `juiza` | Juíza de qualidade | `juiza` | Regra local, sem API; depois Jev (se ligado); depois Gemini, sem busca na web | Lote de `JUIZA_LOTE` pares (artigo, ticker) pendentes, até `JUIZA_MAX_ITENS_DIA` por dia e até o teto mensal em US$ (`JUIZA_ORCAMENTO_MENSAL_USD`) | Só entram os pendentes |
 | 7 | `cadastro` | Cadastro e eventos | `cvm_b3` | CVM (cadastro das companhias), B3 (`GetDetail` e proventos), CVM (ITR e DFP) | Quatro partes: companhia da CVM (`cad\|<Last-Modified>`), empresa da B3 (`detail\|<cd_cvm>`), empresa de proventos (`prov\|<issuing_company>`), arquivo ITR/DFP (`<tipo>\|<ano>\|<Last-Modified>`) | Só ITR/DFP (`resume=True`) |
-| 8 | `entrega` | Montagem das 8 tabelas | `build_entrega` | Tabelas `raw_*` e `staging_*` já gravadas | As 8 tabelas da entrega | Refaz as 8 tabelas a cada execução |
+| 8 | `entrega` | Montagem das 9 tabelas | `build_entrega` | Tabelas `raw_*` e `staging_*` já gravadas | As 9 tabelas da entrega | Refaz as 9 tabelas a cada execução |
 | 9 | `analise` | Análise diária | `gemini` | Gemini, com busca Google e saída em JSON | Uma chamada, para o dia `fim_coleta` | Refaz o dia (apaga e regrava) |
 
 Ordem de execução: `precos`, `macro`, `noticias`, `ipe`, `enriquecimento`, `juiza`, `cadastro`, `entrega`, `analise`. As etapas `enriquecimento` e `juiza` vêm antes de `entrega`, então a entrega do dia já sai com as notícias julgadas.
 
 ## 4. Tabelas gravadas e regra de falha
 
-Só as 25 tabelas criadas pela pipeline nova (fontes novas, painel e entrega) têm o prefixo `v1-`. As demais mantêm o nome de camada (`raw_prices`, `raw_articles` etc.). Ver [06](06-banco-de-dados.md).
+Só as 27 tabelas criadas pela pipeline nova (fontes novas, painel e entrega) têm o prefixo `v1-`. As demais mantêm o nome de camada (`raw_prices`, `raw_articles` etc.). Ver [06](06-banco-de-dados.md).
 
 | Etapa | Tabelas que grava | Sai `falhou` quando | Sai `pulada` quando |
 |---|---|---|---|
@@ -58,7 +58,7 @@ Só as 25 tabelas criadas pela pipeline nova (fontes novas, painel e entrega) t�
 | `enriquecimento` | `raw_article_bodies`, `raw_articles` (coluna `resolved_url`), `staging_article_sentiment` | Foi interrompida, ou o FinBERT não está instalado (falta o extra `[sentiment]`). O corpo já gravado fica | Orçamento esgotado antes de começar, ou cancelamento |
 | `juiza` | `v1-staging_noticias_julgamento`, `v1-raw_llm_juiza_runs` | Foi interrompida (orçamento ou cancelamento) | Orçamento esgotado antes de começar, ou cancelamento. Sem `GEMINI_API_KEY`, a etapa sai `concluida` sem julgar pelo Gemini (ver nota abaixo) |
 | `cadastro` | `v1-raw_cvm_cadastro`, `v1-raw_b3_cadastro`, `v1-raw_b3_proventos`, `v1-raw_b3_suplemento`, `v1-raw_cvm_balancos`, `v1-raw_cvm_acoes` | Alguma parte foi interrompida, ou as quatro partes falharam | Orçamento esgotado antes de começar, ou cancelamento |
-| `entrega` | As 8 tabelas `v1-noticias` … `v1-indices` (ver [05](05-entrega.md)) | Alguma das 8 tabelas falhou (a mensagem lista quais), ou nenhuma foi montada | Não é pulada pelo orçamento (ver seção 5) |
+| `entrega` | As 9 tabelas `v1-noticias` … `v1-indices` e `v1-composicao_ibov` (ver [05](05-entrega.md)) | Alguma das 9 tabelas falhou (a mensagem lista quais), ou nenhuma foi montada | Não é pulada pelo orçamento (ver seção 5) |
 | `analise` | `raw_llm_prompts`, `raw_llm_runs`, `staging_llm_noticias_empresas`, `staging_llm_noticias_macro`, `staging_llm_acoes_sinais`, `staging_llm_mercados` | A chamada de análise não devolveu status `ok` | Sem `GEMINI_API_KEY` |
 
 Regras de falha, valem para todas as etapas:
@@ -133,6 +133,6 @@ Nomes com hífen, como `v1-painel_etapas`, precisam de crases em SQL escrito à 
 - **Análise sem chave** sai `pulada`. A execução pode ficar `concluida` mesmo assim, se as outras etapas deram certo.
 - **Uma execução só por processo.** O estado do daily fica em memória. Ver [07](07-executor-e-painel.md), seção 9.
 - **A CLI `daily` não respeita a prioridade da carga histórica.** Ver [03](03-carga-historica.md), seção 7.
-- **Jev desligado.** O daily não passa cliente Jev à juíza, e a fonte está desligada por padrão (`JEV_ENABLED=false`). Ver [04](04-juiza-e-llm.md).
+- **Jev desligado por padrão.** Com `JEV_ENABLED=true` e `JEV_API_KEY`, a própria juíza cria o cliente Jev. Com `JUIZA_JEV_DECIDE=false` (padrão), ele só aceita descartes. Ver [04](04-juiza-e-llm.md).
 
 Ver também: [01 Visão geral](01-visao-geral.md), [03 Carga histórica](03-carga-historica.md), [07 Executor e painel](07-executor-e-painel.md), [ADR](ADR.md).

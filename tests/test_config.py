@@ -61,6 +61,11 @@ def test_mudancas_ticker_apontam_para_o_universo():
         assert novo in universo, novo
 
 
+def test_mudancas_ticker_tem_data():
+    for antigo, _novo, data in MUDANCAS_TICKER:
+        assert data is not None, antigo
+
+
 def test_units_terminam_em_11_e_estao_no_universo():
     universo = set(universo_coleta())
     for ticker in UNITS:

@@ -26,6 +26,7 @@ from tcc_scraper.orquestrador.repositorio import RepositorioMemoria
 AGORA = datetime(2026, 10, 19, 18, 30, tzinfo=UTC)
 ORDEM_PREVIA = [
     "yahoo",
+    "b3_indices",
     "bcb",
     "indices_bcb",
     "cvm_cadastro",
@@ -49,6 +50,7 @@ class Falso:
 
     NOMES = {
         "YahooPriceCollector": "yahoo",
+        "B3IndicesCollector": "b3_indices",
         "BcbCollector": "bcb",
         "IndicesBcbCollector": "indices_bcb",
         "CvmCadastroCollector": "cvm_cadastro",
@@ -175,6 +177,12 @@ def test_segmentos_desde_2021_somam_seis_anos():
 
 def test_segmentos_filtra_por_anos_pedidos():
     assert [s.ano for s in segmentos(_settings(), [2025])] == [2025]
+
+
+def test_passo_da_juiza_leva_o_ano_e_roda_em_backlog():
+    passos = H._passos(_settings(), [2026])
+    juizas = [p for p in passos if p.coletor == "juiza"]
+    assert juizas == [H.Passo(2026, "juiza", {"anos": [2026], "modo": "backlog"})]
 
 
 # -- ordem e flags dos coletores ---------------------------------------------------------

@@ -71,7 +71,9 @@ def test_collect_news_exige_desde_e_ate_juntos() -> None:
 def test_yahoo_cobre_ivvb11_indices_e_universo_novo() -> None:
     tickers = set(YahooPriceCollector().tickers)
 
-    assert {IVVB11, "IDIV", "CRFB3"} <= tickers
+    assert {IVVB11, "CRFB3"} <= tickers
+    # IDIV, SMLL e IFIX saem do Yahoo (so 1 dia de historico): vem da B3.
+    assert not {"IDIV", "SMLL", "IFIX"} & tickers
 
 
 def test_indice_sem_adjclose_usa_o_close() -> None:

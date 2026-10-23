@@ -21,6 +21,7 @@ TABELAS_FONTES = {
     "v1-raw_b3_suplemento",
     "v1-raw_llm_juiza_runs",
     "v1-staging_noticias_julgamento",
+    "v1-staging_juiza_tentativas",
 }
 
 PKS_ESPERADAS = {
@@ -36,6 +37,7 @@ PKS_ESPERADAS = {
     "v1-raw_b3_suplemento": ["registro_hash"],
     "v1-raw_llm_juiza_runs": ["id"],
     "v1-staging_noticias_julgamento": ["article_id", "ticker", "prompt_versao"],
+    "v1-staging_juiza_tentativas": ["article_id", "ticker", "prompt_versao"],
 }
 
 
@@ -69,6 +71,18 @@ def test_valores_de_balanco_e_probabilidade_sao_double() -> None:
     julgamento = Base.metadata.tables["v1-staging_noticias_julgamento"]
     assert isinstance(julgamento.c.qualidade.type, Double)
     assert isinstance(julgamento.c.confianca.type, Double)
+
+
+def test_custo_da_juiza_e_double() -> None:
+    tabela = Base.metadata.tables["v1-raw_llm_juiza_runs"]
+    assert isinstance(tabela.c.custo_usd.type, Double)
+    assert tabela.c.custo_usd.nullable
+
+
+def test_finalidade_da_juiza_tem_default_producao_no_banco() -> None:
+    tabela = Base.metadata.tables["v1-raw_llm_juiza_runs"]
+    assert tabela.c.finalidade.server_default.arg == "producao"
+    assert not tabela.c.finalidade.nullable
 
 
 def test_staging_julgamento_cascateia_do_artigo() -> None:

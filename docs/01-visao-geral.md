@@ -11,7 +11,7 @@ O sistema coleta notícias e dados de mercado da B3 e produz duas saídas:
    sentimento FinBERT, retornos de 1, 5 e 20 pregões, volatilidade, volume relativo, retorno do
    Ibovespa e alvo binário (`target`). Cobre a janela fixa definida em `DATA_START` e `DATA_END`
    (padrão de `config.py`: 2025-09-01 a 2026-09-01). A janela não muda.
-2. **Entrega para a etapa seguinte.** Oito tabelas (`v1-noticias` a `v1-indices`), com os mesmos
+2. **Entrega para a etapa seguinte.** Nove tabelas (`v1-noticias` a `v1-indices`, mais `v1-composicao_ibov`), com os mesmos
    nomes de colunas da [spec de entrega](spec-entrega-etapa-seguinte.md). São atualizadas todo dia
    de pregão, até as 20h (horário de Brasília).
 
@@ -22,8 +22,8 @@ das tabelas.
 três empresas que saíram do índice (CRFB3, STBP3 e SRNA3), num total de 88. Além das ações, a
 entrega de preços traz IBOV, USDBRL, BRENT e IVVB11.
 
-**Restrição de custo:** zero, exceto a LLM do Google (Gemini), com teto de US$ 5 por mês. Essa conta
-inclui a juíza de notícias e a análise diária.
+**Restrição de custo:** zero, exceto a LLM do Google (Gemini) e o Jev, com teto de US$ 5 por mês para o Gemini. Essa conta
+inclui a juíza de notícias e a análise diária. A juíza tem teto próprio de US$ 3 por mês, e o backlog tem verba única de US$ 15. O Jev é a segunda exceção paga, aprovada em 2026-10-23; o custo dele entra nas somas da juíza.
 
 ## 2. As duas pipelines
 
@@ -32,11 +32,11 @@ saída.
 
 | | Dataset v1 (congelado) | Pipeline nova (entrega) |
 |---|---|---|
-| Objetivo | Base do TCC: 14 colunas por (data, ticker) | Oito tabelas para a etapa seguinte, com as colunas da spec |
+| Objetivo | Base do TCC: 14 colunas por (data, ticker) | Nove tabelas para a etapa seguinte, com as colunas da spec (a nona, `v1-composicao_ibov`, não está na spec) |
 | Janela | Fixa: `DATA_START` a `DATA_END`, com aquecimento de preços antes do início | Fim rolante: a coleta avança até hoje (`fim_coleta`) |
 | Como roda | Um comando por fase: `collect-prices`, `collect-macro`, `collect-news`, `enrich`, `score`, `build-dataset` | `daily` com 9 etapas; `executor` como worker; `historico` para anos passados; comandos `collect-*`, `judge-news` e `build-entrega` |
 | Saída | Tabela `features_dataset_v1`, mais Parquet e CSV (`build-dataset`) | Tabelas `v1-noticias` a `v1-indices`, e CSV com `build-entrega --csv` |
-| Juíza e LLM | Não usa a juíza. A análise diária (`analyze-llm`) grava em `staging_llm_*` | A juíza filtra as notícias antes da entrega. A análise diária (etapa `analise`) não entra nas 8 tabelas |
+| Juíza e LLM | Não usa a juíza. A análise diária (`analyze-llm`) grava em `staging_llm_*` | A juíza filtra as notícias antes da entrega. A análise diária (etapa `analise`) não entra nas 9 tabelas |
 | Tabelas | Nomes antigos, sem prefixo: `raw_articles`, `raw_prices`, `raw_macro`, `staging_article_sentiment` e outras | Tabelas novas com prefixo `v1-`, mais as de notícias, preços e macro que ela reaproveita |
 
 A pipeline nova grava em `raw_articles`, `raw_prices` e `raw_macro`, as mesmas tabelas do v1. O v1
@@ -52,7 +52,7 @@ existir.
 |---|---|---|---|
 | Raw | `raw_` e `v1-raw_` | O que veio da rede, sem transformação: artigos, corpos, cotações, macro, balanços CVM, fatos relevantes IPE, cadastro B3, proventos B3 | Imutável e append-only. Reprocessar sempre parte daqui, nunca da rede |
 | Staging | `staging_` e `v1-staging_` | Vínculo notícia-ticker, sentimento, julgamentos da juíza, análise diária por LLM | Substituível. Pode ser recalculada a partir do raw |
-| Features e entrega | `features_dataset_v1`; `v1-noticias` a `v1-indices` | O dataset do v1 e as oito tabelas entregues | Upsert pela chave de cada tabela. Remontar sobrescreve, não duplica |
+| Features e entrega | `features_dataset_v1`; `v1-noticias` a `v1-indices` | O dataset do v1 e as nove tabelas entregues | Upsert pela chave de cada tabela. Remontar sobrescreve, não duplica |
 | Painel | `v1-painel_*` | Estado do executor: comandos, execuções, etapas, heartbeat, carga histórica, logs | Lido pela API do painel. Não entra no dataset |
 
 Duas regras valem para todas as camadas:
@@ -121,7 +121,8 @@ repositório. A API nunca chama o scraper: ela só grava o comando na fila. Deta
 
 | Fonte | O que entrega | Precisa de chave de API? | Limite conhecido | Coletor |
 |---|---|---|---|---|
-| Yahoo Finance (chart API) | Cotações diárias das ações do universo, IBOV, BRENT (`BZ=F`), USDBRL e os índices IDIV, SMLL e IFIX (fechamento) | Não | Sem limite documentado. Intervalo de 1 s por domínio | `collectors/prices_yahoo.py` |
+| Yahoo Finance (chart API) | Cotações diárias das ações do universo, IBOV, BRENT (`BZ=F`) e USDBRL | Não | Sem limite documentado. Intervalo de 1 s por domínio | `collectors/prices_yahoo.py` |
+| B3 (indexStatisticsProxy, `GetPortfolioDay`) | Fechamento diário dos índices IDIV, SMLL e IFIX, um ano por chamada. O Yahoo devolve só 1 dia deles | Não | Sem limite documentado. Intervalo de 1 s por domínio | `collectors/b3_indices.py` |
 | Google News RSS | Notícias por ticker e contexto, em janelas semanais | Não | Satura em 100 itens por consulta. Por isso a coleta é semanal e a janela é subdividida ao bater 100 | `collectors/google_news.py` (intervalo de 2 s) |
 | Link do Google News (`batchexecute`) | URL real do artigo a partir do link opaco | Não | Endpoint interno e não documentado. Quando falha, a notícia fica só com a manchete | `enrich/link_resolver.py` (intervalo de 0,4 s) |
 | Sites dos veículos (allowlist) | Corpo do artigo, extraído com trafilatura | Não | Só veículos da allowlist. Intervalo de 1,5 s | `enrich/article_fetcher.py` |
@@ -129,8 +130,8 @@ repositório. A API nunca chama o scraper: ela só grava o comando na fila. Deta
 | BCB SGS 12 e 433 | CDI diário e IPCA mensal | Não | A série diária aceita até 10 anos por requisição. A coleta busca ano a ano | `collectors/indices.py` |
 | CVM dados abertos | Fatos relevantes e comunicados (IPE); cadastro das companhias; balanços ITR e DFP; ações emitidas | Não | Arquivos anuais em zip. Intervalo de 1 s | `collectors/cvm_ipe.py`, `cvm_cadastro.py`, `cvm_demonstracoes.py` |
 | B3 listedCompaniesProxy | Setor, subsetor, tipo de ação (ON, PN ou UNIT) e composição das units (GetDetail por código CVM); proventos | Não | Intervalo de 1 s | `collectors/b3_cadastro.py`, `collectors/b3_proventos.py` |
-| Gemini (Google) | Julgamento das notícias (juíza) e análise diária | Sim: `GEMINI_API_KEY` | Teto de US$ 5 por mês, compartilhado entre juíza e análise. A juíza tem limite diário de itens (`JUIZA_MAX_ITENS_DIA`) | `llm/gemini_client.py`, `llm/juiza.py`, `llm/job.py` |
-| JEV | Segundo julgamento de notícias, opcional | Sim | Desligado (`JEV_ENABLED=false`), aguardando aprovação do dono | `llm/jev_client.py` |
+| Gemini (Google) | Julgamento das notícias (juíza) e análise diária | Sim: `GEMINI_API_KEY` | Teto de US$ 5 por mês, compartilhado entre juíza e análise. A juíza tem teto mensal próprio de US$ 3 (`JUIZA_ORCAMENTO_MENSAL_USD`), verba de US$ 15 para o backlog e limite diário de itens (`JUIZA_MAX_ITENS_DIA`) | `llm/gemini_client.py`, `llm/juiza.py`, `llm/job.py` |
+| JEV | Segundo julgamento de notícias, aprovado como exceção paga em 2026-10-23 | Sim | Desligado por padrão (`JEV_ENABLED=false`). Medido por concordância com o Gemini antes de decidir (`judge-news --concordancia`) | `llm/jev_client.py` |
 | FinBERT (Hugging Face) | Sentimento: probabilidades de positivo, neutro e negativo, em pt e en | Não | Modelo local. Precisa do extra `sentiment` (torch) | `sentiment/finbert.py`, `sentiment/scoring.py` |
 
 Os intervalos de cada fonte vêm de `config.py` (`throttle_*`). Toda requisição passa pela base
@@ -147,7 +148,7 @@ Os intervalos de cada fonte vêm de `config.py` (`throttle_*`). Toda requisiçã
 | ITR e DFP | Balanços trimestral (ITR) e anual (DFP) entregues à CVM. |
 | FinBERT | Modelo que classifica o tom de um texto em positivo, neutro ou negativo. Há versões para português e inglês, escolhidas pelo idioma do artigo. Roda localmente, sem API. |
 | Juíza | Etapa que decide se cada par (notícia, ticker) é matéria real sobre a empresa. Aplica regras baratas primeiro; o que sobra vai ao Gemini. Notícias reprovadas saem da entrega. |
-| Jev | Fonte opcional de julgamento da juíza, desligada por padrão. |
+| Jev | Segundo julgador da juíza (TypeSafe AI), desligado por padrão e medido por concordância com o Gemini. |
 | Daily | Execução das 9 etapas de um dia, na ordem do catálogo. Roda às 08:00 (Brasília) ou sob demanda. |
 | Etapa | Uma das 9 partes do daily (`precos`, `noticias`, `entrega` e outras). O id é fixo, porque o painel usa esse nome. |
 | Executor | Processo que fica ligado como worker. Recebe comandos do painel, roda o daily e a carga histórica e grava o progresso. |
@@ -155,7 +156,7 @@ Os intervalos de cada fonte vêm de `config.py` (`throttle_*`). Toda requisiçã
 | Carga histórica | Coleta de anos passados, feita por coletor e por ano. Pode ser pausada, cancelada e retomada. |
 | Fim rolante | Data final da coleta diária, que avança até hoje. É diferente da janela fixa do v1. |
 | Aquecimento | Dias de cotação coletados antes de `DATA_START` (`PRICE_WARMUP_DAYS`, padrão 400). Assim as janelas de 20 pregões já estão cheias no primeiro dia do dataset. |
-| `v1-` | Prefixo das 25 tabelas criadas pela pipeline nova, incluindo as 8 de entrega. As tabelas do dataset v1 mantêm o nome antigo. |
+| `v1-` | Prefixo das 27 tabelas criadas pela pipeline nova, incluindo as 9 de entrega. As tabelas do dataset v1 mantêm o nome antigo. |
 | Upsert | Gravação que cria a linha se a chave não existe e atualiza se ela existe. Uma chave repetida nunca gera linha duplicada. |
 
 ## 7. Limitações conhecidas

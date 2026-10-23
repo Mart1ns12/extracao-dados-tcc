@@ -1,10 +1,11 @@
--- Schema completo do MySQL (estado atual, equivalente às antigas migrations 0001-0008).
+-- Schema completo do MySQL (estado atual, equivalente às antigas migrations 0001-0009).
 -- Aplicar somente em banco VAZIO. O Alembic foi descontinuado em 2026-10-20; mudanças de schema:
 -- alterar o model em src/tcc_scraper/db/ E este arquivo, e escrever o ALTER em
 -- sql/alteracoes/AAAA-MM-DD_descricao.mysql.sql, aplicado à mão.
 --
--- As tabelas criadas pela pipeline nova (25) saem com o prefixo `v1-` pelos RENAME da
--- Etapa 0008, no fim do arquivo. As 14 antigas mantêm o nome.
+-- As tabelas criadas pela pipeline nova (26) saem com o prefixo `v1-` pelos RENAME da
+-- Etapa 0008, no fim do arquivo (a tabela de tentativas da Etapa 0009 já nasce com o prefixo).
+-- As 14 antigas mantêm o nome.
 --
 
 -- Etapa 0001: estrutura inicial
@@ -18,10 +19,11 @@ CREATE TABLE raw_articles (
     title TEXT NOT NULL, 
     source_name TEXT, 
     source_domain VARCHAR(255), 
-    published_at DATETIME(6) NOT NULL, 
-    lang VARCHAR(5) NOT NULL, 
-    collected_at DATETIME(6) NOT NULL, 
-    CONSTRAINT pk_raw_articles PRIMARY KEY (id), 
+    published_at DATETIME(6) NOT NULL,
+    published_time_source VARCHAR(8),
+    lang VARCHAR(5) NOT NULL,
+    collected_at DATETIME(6) NOT NULL,
+    CONSTRAINT pk_raw_articles PRIMARY KEY (id),
     CONSTRAINT uq_raw_articles_url_hash UNIQUE (url_hash)
 );
 
@@ -653,4 +655,35 @@ ALTER TABLE acoes_emitidas RENAME TO `v1-acoes_emitidas`;
 ALTER TABLE proventos RENAME TO `v1-proventos`;
 
 ALTER TABLE indices RENAME TO `v1-indices`;
+
+-- Etapa 0009: juiza com custo, finalidade e tentativas (ver sql/alteracoes/2026-10-23_juiza_custo_tentativas)
+
+ALTER TABLE `v1-raw_llm_juiza_runs`
+    ADD COLUMN custo_usd DOUBLE NULL AFTER tokens_saida,
+    ADD COLUMN finalidade VARCHAR(16) NOT NULL DEFAULT 'producao' AFTER status;
+
+CREATE INDEX ix_raw_llm_juiza_runs_finalidade ON `v1-raw_llm_juiza_runs` (finalidade, iniciado_em);
+
+CREATE TABLE `v1-staging_juiza_tentativas` (
+    article_id BIGINT NOT NULL,
+    ticker VARCHAR(12) NOT NULL,
+    prompt_versao INTEGER NOT NULL,
+    tentativas INTEGER NOT NULL,
+    ultimo_status VARCHAR(16) NOT NULL,
+    ultimo_erro TEXT,
+    atualizado_em DATETIME(6) NOT NULL,
+    CONSTRAINT pk_staging_juiza_tentativas PRIMARY KEY (article_id, ticker, prompt_versao),
+    CONSTRAINT fk_staging_juiza_tentativas_article_id FOREIGN KEY(article_id) REFERENCES raw_articles (id) ON DELETE CASCADE
+);
+
+-- Etapa 0010: composicao do IBOV por data (ver sql/alteracoes/2026-10-23_composicao_ibov)
+
+CREATE TABLE `v1-composicao_ibov` (
+    ticker VARCHAR(12) NOT NULL,
+    vigencia_inicio DATE NOT NULL,
+    vigencia_fim DATE NULL,
+    participacao DOUBLE NULL,
+    fonte VARCHAR(32) NOT NULL,
+    CONSTRAINT pk_composicao_ibov PRIMARY KEY (ticker, vigencia_inicio)
+);
 

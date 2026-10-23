@@ -207,7 +207,7 @@ def test_work_units_gera_itr_e_dfp_com_data_de_hoje_sem_last_modified(
     assert unidades[0].payload["url"].endswith("/DOC/ITR/DADOS/itr_cia_aberta_2025.zip")
 
 
-def test_dfp_2024_traz_ebit_e_dividas_sem_arrendamento() -> None:
+def test_dfp_2024_traz_ebit_dividas_pai_e_arrendamento() -> None:
     balancos, _ = parse_demonstracoes(_csvs("dfp_2024"), "DFP", UNIVERSO)
     valores = {
         (r["demonstracao"], r["cd_conta"]): r["vl_conta"]
@@ -218,7 +218,12 @@ def test_dfp_2024_traz_ebit_e_dividas_sem_arrendamento() -> None:
     assert valores[("BPP", "2.01.04.01")] == 15887000.0
     assert valores[("BPP", "2.02.01.01")] == 127539000.0
     assert valores[("BPP", "2.01.04.02")] == 0.0
-    assert not {"2.01.04", "2.01.04.03", "2.02.01.03"} & {cd for _, cd in valores}
+    # Conta-pai e arrendamento vao ao raw (o builder decide o uso); subconta fora da lista nao.
+    assert valores[("BPP", "2.01.04")] == 68783000.0
+    assert valores[("BPP", "2.02.01")] == 304684000.0
+    assert valores[("BPP", "2.01.04.03")] == 52896000.0
+    assert valores[("BPP", "2.02.01.03")] == 177145000.0
+    assert ("BPP", "2.01.04.01.01") not in valores
 
     itau = [
         r

@@ -17,6 +17,7 @@ import urllib.parse
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
+from zoneinfo import ZoneInfo
 
 from lxml import etree
 from sqlalchemy import select
@@ -37,6 +38,11 @@ logger = logging.getLogger(__name__)
 
 RSS_ENDPOINT = "https://news.google.com/rss/search"
 
+# O pubDate do RSS so tem a data. A hora que vem junto e 00:00 do fuso do Pacifico
+# (o servidor do Google fica la), convertido para UTC. Ver data_de_meia_noite_pacifica.
+FUSO_PACIFICO = ZoneInfo("America/Los_Angeles")
+FUSO_BRASIL = ZoneInfo("America/Sao_Paulo")
+
 # O Google anexa " - Veiculo" ao titulo. Isso e ruido para o FinBERT e atrapalha a
 # deduplicacao por titulo, entao e removido na entrada.
 _SOURCE_SUFFIX_RE = re.compile(r"\s+-\s+[^-]+$")
@@ -50,6 +56,27 @@ class NewsItem:
     published_at: dt.datetime
     source_name: str | None
     source_domain: str | None
+    # 'date' quando so a data e real (published_at e 00:00 de Sao Paulo do dia); 'datetime' senao.
+    published_precision: str = "datetime"
+    # 'rss' quando a hora veio do pubDate; None quando so a data e conhecida.
+    published_time_source: str | None = "rss"
+
+
+def data_de_meia_noite_pacifica(publicado: dt.datetime) -> dt.date | None:
+    """Data do Pacifico, se o horario cair exatamente em 00:00:00 de Los Angeles.
+
+    E o sinal de que o Google so entregou a data: a hora gravada no RSS e meia-noite
+    local do servidor, nao a hora da publicacao. Devolve None para horario real.
+    """
+    local = publicado.astimezone(FUSO_PACIFICO)
+    if local.time() == dt.time.min:
+        return local.date()
+    return None
+
+
+def inicio_do_dia_brasil(data: dt.date) -> dt.datetime:
+    """00:00 de Sao Paulo da data, em UTC (mesma convencao de cvm_ipe.artigo_de_ipe)."""
+    return dt.datetime.combine(data, dt.time.min, tzinfo=FUSO_BRASIL).astimezone(dt.UTC)
 
 
 def _clean_title(title: str, source_name: str | None) -> str:
@@ -94,6 +121,14 @@ def parse_rss(xml: str | bytes) -> list[NewsItem]:
         if published.tzinfo is None:
             published = published.replace(tzinfo=dt.UTC)
 
+        # Meia-noite do Pacifico = so a data e real: a hora gravada seria falsa.
+        data_pacifica = data_de_meia_noite_pacifica(published)
+        if data_pacifica is not None:
+            published = inicio_do_dia_brasil(data_pacifica)
+            precisao, origem_hora = "date", None
+        else:
+            precisao, origem_hora = "datetime", "rss"
+
         source_node = node.find("source")
         source_name = (source_node.text or "").strip() if source_node is not None else None
         source_url = source_node.get("url") if source_node is not None else None
@@ -106,6 +141,8 @@ def parse_rss(xml: str | bytes) -> list[NewsItem]:
                 published_at=published,
                 source_name=source_name or None,
                 source_domain=_domain_of(source_url),
+                published_precision=precisao,
+                published_time_source=origem_hora,
             )
         )
     return items
@@ -260,6 +297,8 @@ class GoogleNewsCollector(Collector):
                 "source_name": item.source_name,
                 "source_domain": item.source_domain,
                 "published_at": item.published_at,
+                "published_precision": item.published_precision,
+                "published_time_source": item.published_time_source,
                 "lang": lang,
                 "collected_at": now,
             }

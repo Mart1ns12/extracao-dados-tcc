@@ -169,8 +169,13 @@ class RawLlmJuizaRun(Base):
     n_itens: Mapped[int] = mapped_column(Integer, nullable=False)
     tokens_entrada: Mapped[int | None] = mapped_column(Integer)
     tokens_saida: Mapped[int | None] = mapped_column(Integer)
+    custo_usd: Mapped[float | None] = mapped_column(Double)
     latencia_ms: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
+    # producao | backlog | concordancia: o teto mensal e a verba do backlog somam por aqui.
+    finalidade: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="producao", server_default="producao",
+    )
     erro: Mapped[str | None] = mapped_column(Text)
     resposta_bruta: Mapped[str | None] = mapped_column(LongText)
     iniciado_em: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
@@ -208,3 +213,27 @@ class StagingNoticiaJulgamento(Base):
     qualidade: Mapped[float] = mapped_column(Double, nullable=False)
     confianca: Mapped[float] = mapped_column(Double, nullable=False)
     julgado_em: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+
+
+class StagingJuizaTentativa(Base):
+    """Tentativas da juiza por par (artigo, ticker) e versao do prompt, inclusive as que falharam.
+
+    Fica fora da staging de julgamentos: la, "linha existe" quer dizer "julgado".
+    """
+
+    __tablename__ = f"{PREFIXO_TABELA}staging_juiza_tentativas"
+
+    article_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "raw_articles.id", ondelete="CASCADE",
+            name="fk_staging_juiza_tentativas_article_id",
+        ),
+        primary_key=True,
+    )
+    ticker: Mapped[str] = mapped_column(String(12), primary_key=True)
+    prompt_versao: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tentativas: Mapped[int] = mapped_column(Integer, nullable=False)
+    ultimo_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    ultimo_erro: Mapped[str | None] = mapped_column(Text)
+    atualizado_em: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)

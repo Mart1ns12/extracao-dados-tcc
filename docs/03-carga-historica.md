@@ -43,7 +43,7 @@ Cada passo é uma unidade de trabalho com um coletor e um ano. Os passos globais
 | 10 | `enriquecimento` | Cada segmento | Corpo dos artigos | Não (`resume=False`); só entram os pendentes |
 | 11 | `finbert` | Cada segmento | Sentimento dos artigos pendentes | Não se aplica (função) |
 | 12 | `juiza` | Cada segmento | Até `JUIZA_MAX_ITENS_DIA` pares por segmento | Não se aplica (função) |
-| 13 | `build_entrega` | Cada segmento | Monta as 8 tabelas da entrega | Não se aplica (função) |
+| 13 | `build_entrega` | Cada segmento | Monta as 9 tabelas da entrega | Não se aplica (função) |
 
 A carga não segue a ordem do daily: primeiro vêm os passos globais, depois os passos ano a ano. Os coletores são os mesmos do daily (ver [02](02-pipeline-diaria.md), seção 3).
 
@@ -107,16 +107,20 @@ Status da carga: `em_andamento`, `pausando`, `pausada`, `cancelando`, `cancelada
 |---|---|---|
 | Google News | 6 a 9 horas por ano de notícias | Spec de entrega, seção 9.2. A ADR registra 6 a 9 horas para as 9.010 janelas da v1 |
 | CVM, B3, BCB e Yahoo | Minutos para cinco anos | Spec de entrega, seção 9.2 |
-| Juíza e análise (Gemini) | Sujeitas ao teto de US$ 5/mês | [04](04-juiza-e-llm.md). A juíza e a análise compartilham o mesmo teto |
+| Juíza e análise (Gemini) | Juíza do backlog: verba de US$ 15, cumulativa. Juíza diária e análise: dentro do teto de US$ 5/mês | [04](04-juiza-e-llm.md), seção 2.5. A juíza diária tem teto próprio de US$ 3/mês |
 | Carga completa | Não medida neste código | Não há medição de uma carga multi-ano |
 
-**Atenção ao custo da juíza.** A juíza roda uma vez por segmento, com até `JUIZA_MAX_ITENS_DIA` itens (padrão 2.000) em cada um. Uma carga de cinco segmentos pode mandar até 10.000 pares ao Gemini numa só execução. O código não confere o teto mensal. Antes de rodar uma carga grande, confira a estimativa de custo da juíza em [04](04-juiza-e-llm.md).
+**Atenção ao custo da juíza.** Em cada segmento, a juíza roda em modo backlog: sem teto de itens, limitada pela verba de US$ 15 (`JUIZA_BACKLOG_VERBA_USD`), que é cumulativa entre execuções. A checagem é feita antes de cada lote, e o estouro máximo é de um lote. Antes de uma carga grande, confira `judge-news --status` (verba e gasto do backlog) e a estimativa em [04](04-juiza-e-llm.md).
 
 A carga disputa o mesmo banco, o mesmo throttle e as mesmas fontes que o daily (ADR, decisão sobre a carga histórica no executor). Por isso ela não deve rodar ao mesmo tempo que o daily. A regra da seção 7 garante isso no caminho do painel.
 
 ## 10. Limitações e pontos em aberto
 
-- **`DATA_START` define a faixa da carga e também outras coisas.** O `.env.example` traz `DATA_START=2025-09-01`, ou seja, cerca de um ano. O contrato da API do painel cita carga de cinco anos, com anos de 2021 a 2026. Para cobrir cinco anos, `DATA_START` teria de recuar. Só que `DATA_START` também é usado pelo BCB, pelo CVM e pela janela do dataset v1 (`build-dataset`). O código não separa essas duas coisas. É uma decisão pendente do autor.
+- **Janela de cinco anos: `DATA_START=2021-02-01`** (decisão do autor, 2026-10-23). O `.env.example` traz esse valor. O default de `config.py` continua `2025-09-01`, então cada ambiente (local e Railway) precisa definir `DATA_START` no `.env` ou nas variáveis do serviço.
+  - Com `2021-02-01`, as janelas derivadas ficam: notícias e IPE a partir de 2021-01-01 (`DATA_START − 31 dias`), preços a partir de 2019-12-29 (`DATA_START − 400 dias`) e balanços CVM a partir de 2020.
+  - `DATA_START` também move a janela do dataset v1 (`build-dataset`). O código não separa as duas coisas.
+  - Comando da carga: `historico --anos 2021 --anos 2022 --anos 2023 --anos 2024 --anos 2025 --anos 2026`. CDI e IPCA só começam em 2021 se a carga incluir `--anos 2021` (`collectors/indices.py` usa 1º de janeiro do ano pedido).
+  - O Google News devolve pouco para 2021 e 2022 (cobertura validada só para cerca de 2 anos). A contagem real por ano sai de `scripts/relatorio_qualidade.py`.
 - **Anos aceitos pela API e pelo executor são diferentes.** A API aceita 2021 a 2026. O executor ignora os anos fora da faixa calculada por `DATA_START`, e recusa o comando se nenhum cair nela.
 - **Contagem de passos com `resume=False`.** Pelo código de `ProgressoHistorico.plano`, quando um passo com `resume=False` é retomado depois de uma pausa, o total passa a somar as unidades já feitas com todas as unidades de novo. Isso pode contar unidades duas vezes em `unidades_total` e `unidades_feitas`. Não foi testado com uma carga real.
 - **`reprocessar_erros` não se aplica** a `finbert`, `juiza` e `build_entrega`. Eles rodam igual a `pendentes`.

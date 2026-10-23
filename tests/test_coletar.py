@@ -144,6 +144,69 @@ RECUSAS = [
     ({"itens": [{"coletor": "yahoo", "tickers": ["XPTO3"]}]}, "ticker fora do universo"),
     ({"itens": [{"coletor": "bcb"}], "xpto": 1}, "parâmetro desconhecido"),
     ({"itens": [{"coletor": "bcb", "refazer": "sim"}]}, "refazer deve ser"),
+    ({"itens": [{"coletor": "corrigir_horas"}]}, "aplicar é obrigatório"),
+    (
+        {"itens": [{"coletor": "corrigir_horas", "aplicar": "sim"}]},
+        "aplicar deve ser true ou false",
+    ),
+    (
+        {"itens": [{"coletor": "corrigir_horas", "aplicar": None}]},
+        "aplicar deve ser true ou false",
+    ),
+    (
+        {"itens": [{"coletor": "corrigir_horas", "aplicar": True, "limite": 0}]},
+        "limite deve ser um inteiro maior que zero",
+    ),
+    (
+        {"itens": [{"coletor": "corrigir_horas", "aplicar": True, "limite": True}]},
+        "limite deve ser um inteiro maior que zero",
+    ),
+    (
+        {"itens": [{"coletor": "corrigir_horas", "aplicar": True, "limite": "10"}]},
+        "limite deve ser um inteiro maior que zero",
+    ),
+    (
+        {"itens": [{"coletor": "corrigir_horas", "aplicar": True, "anos": [2025]}]},
+        "não aceita o parâmetro anos",
+    ),
+    (
+        {"itens": [{"coletor": "corrigir_horas", "aplicar": True, "xpto": 1}]},
+        "não aceita o parâmetro xpto",
+    ),
+    (
+        {"itens": [{"coletor": "corrigir_horas", "aplicar": True, "refazer": True}]},
+        "refazer não se aplica",
+    ),
+    ({"itens": [{"coletor": "juiza_concordancia"}]}, "n é obrigatório"),
+    ({"itens": [{"coletor": "juiza_concordancia", "n": 9}]}, "n deve ser um inteiro de 10 a 1000"),
+    (
+        {"itens": [{"coletor": "juiza_concordancia", "n": 1001}]},
+        "n deve ser um inteiro de 10 a 1000",
+    ),
+    (
+        {"itens": [{"coletor": "juiza_concordancia", "n": "200"}]},
+        "n deve ser um inteiro de 10 a 1000",
+    ),
+    (
+        {"itens": [{"coletor": "juiza_concordancia", "n": True}]},
+        "n deve ser um inteiro de 10 a 1000",
+    ),
+    (
+        {"itens": [{"coletor": "juiza_concordancia", "n": 200, "semente": "42"}]},
+        "semente deve ser um inteiro",
+    ),
+    (
+        {"itens": [{"coletor": "juiza_concordancia", "n": 200, "tickers": ["PETR4"]}]},
+        "não aceita o parâmetro tickers",
+    ),
+    (
+        {"itens": [{"coletor": "juiza_concordancia", "n": 200, "anos": [2025]}]},
+        "não aceita o parâmetro anos",
+    ),
+    (
+        {"itens": [{"coletor": "juiza_concordancia", "n": 200, "refazer": True}]},
+        "refazer não se aplica",
+    ),
 ]
 
 
@@ -215,15 +278,18 @@ def test_google_news_tickers_viram_dict_e_periodo_vira_date(monkeypatch, setting
     assert init[0]["ate"] == date(2026, 1, 12)
 
 
-def test_juiza_recebe_limite_do_settings(monkeypatch, settings) -> None:
+def test_juiza_roda_em_backlog_com_os_anos_pedidos(monkeypatch, settings) -> None:
     registro: list = []
     _instalar(monkeypatch, registro)
-    plano = montar_plano({"itens": [{"coletor": "juiza"}]}, settings)
+    ano = settings.inicio_noticias.year
+    plano = montar_plano({"itens": [{"coletor": "juiza", "anos": [ano]}]}, settings)
 
     resultado = plano.etapas[0].run(None, _Obs())
 
     chamada = [kw for tipo, nome, kw in registro if nome == "julgar_pendentes"]
-    assert chamada[0]["limite_itens"] == settings.juiza_max_itens_dia
+    assert chamada[0]["modo"] == "backlog"
+    assert chamada[0]["anos"] == [ano]
+    assert "limite_itens" not in chamada[0]
     assert resultado.status == "concluida"
     assert resultado.itens == 9
 
@@ -259,3 +325,160 @@ def test_montar_entrega_chama_build_entrega_com_a_tabela(monkeypatch, settings) 
     assert resultado.status == "concluida"
     assert resultado.itens == 3
     assert chamadas[0]["tabelas"] == ["balancos"]
+
+
+# --- acoes avulsas do painel: corrigir_horas e juiza_concordancia ---------------------------
+
+ACEITOS_ACOES = [
+    {"coletor": "corrigir_horas", "aplicar": True},
+    {"coletor": "corrigir_horas", "aplicar": False, "limite": 500},
+    {"coletor": "corrigir_horas", "aplicar": True, "limite": None},
+    {"coletor": "juiza_concordancia", "n": 10},
+    {"coletor": "juiza_concordancia", "n": 1000, "semente": 7},
+    {"coletor": "juiza_concordancia", "n": 200, "semente": None},
+]
+
+
+class _ObsLog(_Obs):
+    """Observador que guarda as linhas de log, para conferir o que o painel vai mostrar."""
+
+    def __init__(self) -> None:
+        self.logs: list[tuple[str, str]] = []
+
+    def log(self, nivel: str, mensagem: str) -> None:
+        self.logs.append((nivel, mensagem))
+
+
+class _Concordancia:
+    """Duble do ResultadoConcordancia: so o que a etapa e o log leem."""
+
+    decisao = "jev_decide"
+    amostra = 200
+    custo_usd = 0.0123
+
+    def resumo(self) -> dict:
+        return {"pedidos": 200, "amostra": 200, "decisao": "jev_decide"}
+
+
+def _instalar_funcao(monkeypatch, registro: list, retorno) -> None:
+    """Troca o resolvedor: todo alvo vira uma funcao que registra os kwargs e devolve `retorno`."""
+
+    def falso(alvo: str):
+        nome = alvo.split(":")[1]
+
+        def falsa(**kwargs):
+            registro.append(("func", nome, kwargs))
+            return retorno
+
+        return falsa
+
+    monkeypatch.setattr(coletores, "resolver", falso)
+
+
+@pytest.mark.parametrize("item", ACEITOS_ACOES)
+def test_acoes_avulsas_aceitam_o_contrato(item: dict, settings: Settings) -> None:
+    plano = montar_plano({"itens": [item]}, settings)
+
+    assert [e.id for e in plano.etapas] == [item["coletor"]]
+    assert plano.verificacoes == ()
+
+
+def test_plano_com_as_duas_acoes_na_ordem_enviada(settings: Settings) -> None:
+    plano = montar_plano(
+        {
+            "itens": [
+                {"coletor": "corrigir_horas", "aplicar": True, "limite": 500},
+                {"coletor": "juiza_concordancia", "n": 200, "semente": 42},
+            ]
+        },
+        settings,
+    )
+
+    assert [e.id for e in plano.etapas] == ["corrigir_horas", "juiza_concordancia"]
+    assert [e.ordem for e in plano.etapas] == [1, 2]
+
+
+def test_corrigir_horas_aplicar_com_limite_chama_a_funcao_e_loga(monkeypatch, settings) -> None:
+    registro: list = []
+    _instalar_funcao(monkeypatch, registro, {"gravados": 3, "remarcados_para_date": 2})
+    plano = montar_plano(
+        {"itens": [{"coletor": "corrigir_horas", "aplicar": True, "limite": 500}]}, settings
+    )
+    obs = _ObsLog()
+
+    resultado = plano.etapas[0].run(None, obs)
+
+    assert registro == [("func", "corrigir_horas_publicacao", {"dry_run": False, "limite": 500})]
+    assert resultado.status == "concluida"
+    assert resultado.itens == 3
+    assert ("info", "corrigir_horas: aplicado") in obs.logs
+    assert ("info", "corrigir_horas: gravados = 3") in obs.logs
+    assert ("info", "corrigir_horas: remarcados_para_date = 2") in obs.logs
+
+
+def test_corrigir_horas_aplicar_false_e_simulacao_sem_limite(monkeypatch, settings) -> None:
+    registro: list = []
+    _instalar_funcao(monkeypatch, registro, {"gravados": 0})
+    plano = montar_plano({"itens": [{"coletor": "corrigir_horas", "aplicar": False}]}, settings)
+    obs = _ObsLog()
+
+    resultado = plano.etapas[0].run(None, obs)
+
+    assert registro == [("func", "corrigir_horas_publicacao", {"dry_run": True})]
+    assert resultado.itens == 0
+    assert ("info", "corrigir_horas: simulação, nada gravado") in obs.logs
+
+
+def test_corrigir_horas_limite_null_nao_vai_para_a_funcao(monkeypatch, settings) -> None:
+    registro: list = []
+    _instalar_funcao(monkeypatch, registro, {"gravados": 0})
+    plano = montar_plano(
+        {"itens": [{"coletor": "corrigir_horas", "aplicar": True, "limite": None}]}, settings
+    )
+
+    plano.etapas[0].run(None, _ObsLog())
+
+    assert registro == [("func", "corrigir_horas_publicacao", {"dry_run": False})]
+
+
+def test_concordancia_chama_medir_com_n_e_semente_e_loga_o_resumo(monkeypatch, settings) -> None:
+    registro: list = []
+    _instalar_funcao(monkeypatch, registro, _Concordancia())
+    plano = montar_plano(
+        {"itens": [{"coletor": "juiza_concordancia", "n": 200, "semente": 7}]}, settings
+    )
+    obs = _ObsLog()
+
+    resultado = plano.etapas[0].run(None, obs)
+
+    assert registro == [("func", "medir_concordancia", {"n": 200, "semente": 7})]
+    assert resultado.status == "concluida"
+    assert resultado.itens == 200
+    assert resultado.detalhes["decisao"] == "jev_decide"
+    assert ("info", "juiza_concordancia: pedidos = 200") in obs.logs
+    assert ("info", "juiza_concordancia: decisao = jev_decide") in obs.logs
+
+
+def test_concordancia_sem_semente_usa_42(monkeypatch, settings) -> None:
+    registro: list = []
+    _instalar_funcao(monkeypatch, registro, _Concordancia())
+    plano = montar_plano({"itens": [{"coletor": "juiza_concordancia", "n": 10}]}, settings)
+
+    plano.etapas[0].run(None, _ObsLog())
+
+    assert registro == [("func", "medir_concordancia", {"n": 10, "semente": 42})]
+
+
+def test_concordancia_sem_jev_falha_antes_de_qualquer_chamada(monkeypatch, settings) -> None:
+    from tcc_scraper.llm import juiza_concordancia
+
+    # Sem Jev ligado, a medicao recusa antes de tocar em qualquer API (nao chama Gemini).
+    monkeypatch.setattr(
+        juiza_concordancia,
+        "get_settings",
+        lambda: Settings(gemini_api_key="x", jev_enabled=False, jev_api_key=""),
+    )
+    plano = montar_plano({"itens": [{"coletor": "juiza_concordancia", "n": 10}]}, settings)
+
+    with pytest.raises(RuntimeError, match="concordancia exige o Jev"):
+        plano.etapas[0].run(None, _ObsLog())

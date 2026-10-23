@@ -22,13 +22,15 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from itertools import zip_longest
 
-from sqlalchemy import bindparam, select
+from sqlalchemy import and_, bindparam, func, or_, select
 
 from tcc_scraper.collectors.base import Collector, UnitResult, WorkUnit
+from tcc_scraper.collectors.google_news import data_de_meia_noite_pacifica, inicio_do_dia_brasil
 from tcc_scraper.config import ARTICLE_ALLOWLIST
 from tcc_scraper.db.models import Article, ArticleBody
 from tcc_scraper.db.session import session_scope
 from tcc_scraper.db.upsert import bulk_upsert
+from tcc_scraper.enrich.data_publicacao import extrair_data_publicacao, refinar_publicacao
 from tcc_scraper.enrich.link_resolver import resolve
 
 logger = logging.getLogger(__name__)
@@ -106,6 +108,159 @@ def intercalar_por_dominio(
     ]
 
 
+# Meia-noite em Los Angeles cai em 07:00 UTC (PDT) ou 08:00 UTC (PST). Serve so para
+# pre-filtrar no SQL; a conferencia exata e feita em Python, com o fuso.
+_HORAS_UTC_MEIA_NOITE_PACIFICA = ("07:00:00", "08:00:00")
+
+
+@dataclass
+class PlanoHora:
+    """O que o fix-news-times vai fazer, decidido antes de qualquer gravacao.
+
+    remarcar: (id, published_at novo) -- datetime em meia-noite pacifica vira 'date'.
+    paginas: (id, resolved_url, published_at de base) -- 'date' com pagina para baixar.
+    """
+
+    remarcar: list[tuple[int, dt.datetime]]
+    paginas: list[tuple[int, str, dt.datetime]]
+    sem_url: int = 0
+    fora_da_allowlist: int = 0
+
+
+def buscar_candidatos_hora() -> list[tuple[int, dt.datetime, str, str | None, str | None]]:
+    """Artigos do Google News que podem ter hora falsa: so data, ou meia-noite pacifica.
+
+    Devolve (id, published_at, published_precision, resolved_url, source_domain).
+    """
+    with session_scope() as session:
+        rows = session.execute(
+            select(
+                Article.id,
+                Article.published_at,
+                Article.published_precision,
+                Article.resolved_url,
+                Article.source_domain,
+            ).where(
+                Article.origem == "google_news",
+                or_(
+                    Article.published_precision == "date",
+                    and_(
+                        Article.published_precision == "datetime",
+                        func.time(Article.published_at).in_(_HORAS_UTC_MEIA_NOITE_PACIFICA),
+                    ),
+                ),
+            )
+        ).all()
+    return [tuple(r) for r in rows]
+
+
+def planejar_correcao_hora(
+    candidatos: Iterable[tuple[int, dt.datetime, str, str | None, str | None]],
+) -> PlanoHora:
+    """Decide, sem tocar no banco nem na rede, o que remarcar e o que baixar.
+
+    Um 'datetime' so entra na remarcacao se o horario for exatamente meia-noite pacifica
+    (o SQL so pre-filtra). O novo published_at e 00:00 de Sao Paulo do mesmo dia.
+    """
+    plano = PlanoHora(remarcar=[], paginas=[])
+    for article_id, publicado_em, precisao, resolved_url, dominio in candidatos:
+        base = publicado_em
+        if precisao == "datetime":
+            data_pacifica = data_de_meia_noite_pacifica(publicado_em)
+            if data_pacifica is None:
+                continue
+            base = inicio_do_dia_brasil(data_pacifica)
+            plano.remarcar.append((article_id, base))
+        if not resolved_url:
+            plano.sem_url += 1
+        elif not is_allowed(dominio):
+            plano.fora_da_allowlist += 1
+        else:
+            plano.paginas.append((article_id, resolved_url, base))
+    return plano
+
+
+def _gravar_horas(linhas: list[dict]) -> None:
+    """UPDATE em lote de published_at, precisao e origem da hora, por id.
+
+    Uma ida ao banco para o lote inteiro (executemany), como manda a convencao do projeto.
+    """
+    if not linhas:
+        return
+    with session_scope() as session:
+        session.execute(
+            Article.__table__.update()
+            .where(Article.__table__.c.id == bindparam("_id"))
+            .values(
+                published_at=bindparam("_hora"),
+                published_precision=bindparam("_precisao"),
+                published_time_source=bindparam("_origem"),
+            ),
+            linhas,
+        )
+
+
+def corrigir_horas_publicacao(limite: int | None = None, dry_run: bool = False) -> dict[str, int]:
+    """Fix-news-times: corrige a hora falsa das noticias do Google News.
+
+    Fase (a): artigos em meia-noite pacifica viram 'date', com published_at em 00:00 de SP.
+    Fase (b): os 'date' com resolved_url de veiculo da allowlist baixam a pagina; se ela
+    trouxer hora dentro da regra de refinamento, vira 'datetime' com origem 'pagina'.
+
+    Em dry_run nada e gravado, mas a fase (b) ainda baixa as paginas para medir o efeito
+    (leitura, com throttle). O limite vale so para essas paginas.
+    """
+    plano = planejar_correcao_hora(buscar_candidatos_hora())
+    alvos = plano.paginas[:limite] if limite is not None else plano.paginas
+    corrigidas: list[tuple[int, dt.datetime]] = []
+    sem_hora = fora_da_janela = falhas = 0
+
+    with ArticleBodyCollector() as coletor:
+        for article_id, url, publicado_em in alvos:
+            try:
+                html = coletor.fetch(url).text
+            except Exception as exc:
+                logger.debug("pagina do artigo %s nao baixada: %s", article_id, exc)
+                falhas += 1
+                continue
+            extraida = extrair_data_publicacao(html)
+            if extraida is None:
+                sem_hora += 1
+                continue
+            nova = refinar_publicacao(publicado_em, extraida)
+            if nova is None:
+                fora_da_janela += 1
+                continue
+            corrigidas.append((article_id, nova))
+
+    if not dry_run:
+        _gravar_horas(
+            [
+                {"_id": i, "_hora": h, "_precisao": "date", "_origem": None}
+                for i, h in plano.remarcar
+            ]
+        )
+        _gravar_horas(
+            [
+                {"_id": i, "_hora": h, "_precisao": "datetime", "_origem": "pagina"}
+                for i, h in corrigidas
+            ]
+        )
+
+    return {
+        "remarcados_para_date": len(plano.remarcar),
+        "paginas_candidatas": len(plano.paginas),
+        "paginas_baixadas": len(alvos) - falhas,
+        "falhas_download": falhas,
+        "hora_corrigida_pela_pagina": len(corrigidas),
+        "pagina_sem_hora": sem_hora,
+        "hora_fora_da_janela": fora_da_janela,
+        "sem_resolved_url": plano.sem_url,
+        "fora_da_allowlist": plano.fora_da_allowlist,
+        "gravados": 0 if dry_run else len(plano.remarcar) + len(corrigidas),
+    }
+
+
 class ArticleBodyCollector(Collector):
     """Baixa e extrai o corpo dos artigos elegiveis."""
 
@@ -124,6 +279,11 @@ class ArticleBodyCollector(Collector):
         self.throttle.set_default(self.settings.throttle_article_fetch)
         self.throttle.configure("news.google.com", self.settings.throttle_link_resolve)
 
+        # Artigos do lote que so tem a data (id -> published_at) e as horas recuperadas
+        # das paginas, gravadas depois do lote por _persist_horas.
+        self._publicados_em: dict[int, dt.datetime] = {}
+        self._horas_da_pagina: list[tuple[int, dt.datetime]] = []
+
     def _pending(self) -> list[tuple[int, str, str | None]]:
         """Artigos da allowlist que ainda nao tem corpo.
 
@@ -132,10 +292,17 @@ class ArticleBodyCollector(Collector):
         """
         with session_scope() as session:
             rows = session.execute(
-                select(Article.id, Article.url, Article.source_domain)
+                select(
+                    Article.id,
+                    Article.url,
+                    Article.source_domain,
+                    Article.published_at,
+                    Article.published_precision,
+                )
                 .outerjoin(ArticleBody, ArticleBody.article_id == Article.id)
                 .where(ArticleBody.article_id.is_(None))
             ).all()
+        self._publicados_em = {r[0]: r[3] for r in rows if r[4] == "date"}
         return [(r[0], r[1], r[2]) for r in rows if is_allowed(r[2])]
 
     def work_units(self) -> Iterable[WorkUnit]:
@@ -164,6 +331,7 @@ class ArticleBodyCollector(Collector):
                 return None
 
             html = self.fetch(real_url).text
+            self._tentar_hora_da_pagina(article_id, html)
 
             texto = extract_with_trafilatura(html)
             if not texto:
@@ -172,6 +340,33 @@ class ArticleBodyCollector(Collector):
         except Exception as exc:
             logger.debug("artigo %s (%s) falhou: %s", article_id, domain, exc)
             return None
+
+    def _tentar_hora_da_pagina(self, article_id: int, html: str) -> None:
+        """Se o artigo so tem a data, procura a hora real no HTML da materia.
+
+        Roda nas threads dos workers, entao so guarda a correcao; quem grava e
+        _persist_horas, ao fim do lote.
+        """
+        publicado_em = self._publicados_em.get(article_id)
+        if publicado_em is None:
+            return
+        extraida = extrair_data_publicacao(html)
+        if extraida is None:
+            return
+        nova = refinar_publicacao(publicado_em, extraida)
+        if nova is not None:
+            self._horas_da_pagina.append((article_id, nova))
+
+    def _persist_horas(self) -> None:
+        """Grava as horas recuperadas das paginas deste lote."""
+        if not self._horas_da_pagina:
+            return
+        linhas = [
+            {"_id": article_id, "_hora": hora, "_precisao": "datetime", "_origem": "pagina"}
+            for article_id, hora in self._horas_da_pagina
+        ]
+        self._horas_da_pagina = []
+        _gravar_horas(linhas)
 
     def process(self, unit: WorkUnit) -> UnitResult:
         """Processa o lote em paralelo.
@@ -193,6 +388,7 @@ class ArticleBodyCollector(Collector):
                     extraidos.append(resultado)
 
         self._persist(extraidos)
+        self._persist_horas()
         return UnitResult(items_found=len(extraidos))
 
     def _persist(self, bodies: list[ExtractedBody]) -> None:

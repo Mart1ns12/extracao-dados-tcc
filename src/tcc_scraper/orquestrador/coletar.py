@@ -18,6 +18,8 @@ from tcc_scraper.orquestrador.etapas import (
     ResultadoEtapa,
     de_stats,
     montar_entrega,
+    resultado_concordancia,
+    resultado_corrigir_horas,
     resultado_finbert,
     resultado_juiza,
 )
@@ -87,6 +89,10 @@ def _etapa_do_item(ordem: int, item: Any, settings: Settings) -> EtapaDef:
         args["tickers"] = _tickers(cid, item["tickers"])
     if "desde" in item or "ate" in item:
         args.update(_periodo(cid, item.get("desde"), item.get("ate"), settings))
+    if cid == "corrigir_horas":
+        args.update(_args_corrigir_horas(item))
+    elif cid == "juiza_concordancia":
+        args.update(_args_concordancia(item))
     args.update(args_fixos(cid, settings))
     resume = False if refazer else defn.resume
     return _etapa_coletor(ordem, defn, args, resume)
@@ -149,6 +155,45 @@ def _periodo(cid: str, desde: Any, ate: Any, settings: Settings) -> dict:
     return {"desde": ini_periodo, "ate": fim_periodo}
 
 
+def _args_corrigir_horas(item: dict) -> dict:
+    # aplicar=false e a simulacao: corrige_horas_publicacao roda com dry_run=True e nao grava.
+    if "aplicar" not in item:
+        raise ValueError("corrigir_horas: aplicar é obrigatório (false simula, sem gravar)")
+    aplicar = item["aplicar"]
+    if not isinstance(aplicar, bool):
+        raise ValueError("corrigir_horas: aplicar deve ser true ou false")
+    limite = item.get("limite")
+    if limite is not None and (
+        isinstance(limite, bool) or not isinstance(limite, int) or limite < 1
+    ):
+        raise ValueError("corrigir_horas: limite deve ser um inteiro maior que zero, ou null")
+    args: dict[str, Any] = {"dry_run": not aplicar}
+    if limite is not None:
+        args["limite"] = limite
+    return args
+
+
+def _args_concordancia(item: dict) -> dict:
+    if item.get("n") is None:
+        raise ValueError("juiza_concordancia: n é obrigatório (inteiro de 10 a 1000)")
+    n = item["n"]
+    if isinstance(n, bool) or not isinstance(n, int) or not 10 <= n <= 1000:
+        raise ValueError("juiza_concordancia: n deve ser um inteiro de 10 a 1000")
+    # semente ausente ou null vale o padrao da medicao (42).
+    semente = item.get("semente")
+    if semente is None:
+        semente = 42
+    if isinstance(semente, bool) or not isinstance(semente, int):
+        raise ValueError("juiza_concordancia: semente deve ser um inteiro")
+    return {"n": n, "semente": semente}
+
+
+def _logar_contagens(p: Any, cid: str, valores: dict) -> None:
+    # Uma linha por contagem: e o que o painel mostra no log da execucao.
+    for chave, valor in valores.items():
+        p.log("info", f"{cid}: {chave} = {valor}")
+
+
 def _tabelas(valor: Any) -> list[str]:
     if valor is None:
         return []
@@ -170,6 +215,14 @@ def _etapa_coletor(ordem: int, defn: ColetorDef, args: dict, resume: bool) -> Et
             return resultado_juiza(bruto)
         if defn.id == "finbert":
             return resultado_finbert(bruto)
+        if defn.id == "corrigir_horas":
+            modo = "simulação, nada gravado" if args["dry_run"] else "aplicado"
+            p.log("info", f"corrigir_horas: {modo}")
+            _logar_contagens(p, defn.id, bruto)
+            return resultado_corrigir_horas(bruto)
+        if defn.id == "juiza_concordancia":
+            _logar_contagens(p, defn.id, bruto.resumo())
+            return resultado_concordancia(bruto)
         return de_stats(bruto)
 
     return EtapaDef(defn.id, ordem, defn.nome, defn.id, run)

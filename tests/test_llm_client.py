@@ -142,8 +142,3 @@ def test_chamar_api_sem_busca_sem_tools_direto():
 def test_jev_sem_chave_levanta():
     with pytest.raises(ValueError, match="JEV_API_KEY"):
         JevClient("")
-
-
-def test_jev_classificar_lote_desligado():
-    with pytest.raises(NotImplementedError, match="JEV_ENABLED=false"):
-        JevClient("x").classificar_lote([])

@@ -118,12 +118,14 @@ python -m tcc_scraper.cli collect-indices --anos 2026
 
 | Comando | Opções | O que faz |
 |---|---|---|
-| `judge-news` | `--limite N` (máximo de itens nesta rodada); `--avaliar` (mede precisão e revocação no conjunto-ouro, sem gravar) | Juíza de notícias: regra barata, Jev (desligado) e Gemini sobre as pendentes. Grava `v1-raw_llm_juiza_runs` e `v1-staging_noticias_julgamento` |
-| `build-entrega` | `--csv` (grava também cada tabela em CSV); `--tabela NOME` (repetível, nomes como em `MODELOS`: `noticias`, `precos`, `cadastro`, `mudancas_ticker`, `balancos`, `acoes_emitidas`, `proventos`, `indices`) | Monta as 8 tabelas da entrega no banco. Os CSVs vão para `ENTREGA_CSV_DIR`. Com `--tabela`, monta só as indicadas |
+| `judge-news` | `--limite N` (teto de itens da rodada); `--backlog` (julga o passado, em ordem crescente, com teto em US$); `--orcamento-usd X` (teto extra em US$ da rodada, só com `--backlog`); `--anos ANO` (repetível, só com `--backlog`); `--status` (mostra pendentes, gasto e verbas, sem julgar); `--concordancia N` (mede a concordância Jev × Gemini em N pares, sem gravar julgamento); `--semente S` (semente da amostra de `--concordancia`, padrão 42) | Juíza de notícias: regra barata, Jev (se `JEV_ENABLED=true`) e Gemini sobre as pendentes. Sem `--backlog`, roda o modo diário, com teto mensal em US$. Grava `v1-raw_llm_juiza_runs`, `v1-staging_noticias_julgamento` e `v1-staging_juiza_tentativas` |
+| `build-entrega` | `--csv` (grava também cada tabela em CSV); `--tabela NOME` (repetível, nomes como em `MODELOS`: `noticias`, `precos`, `cadastro`, `mudancas_ticker`, `balancos`, `acoes_emitidas`, `proventos`, `indices`, `composicao_ibov`) | Monta as 9 tabelas da entrega no banco. Os CSVs vão para `ENTREGA_CSV_DIR`. Com `--tabela`, monta só as indicadas |
 
 ```bash
 python -m tcc_scraper.cli judge-news --limite 50
-python -m tcc_scraper.cli judge-news --avaliar
+python -m tcc_scraper.cli judge-news --status
+python -m tcc_scraper.cli judge-news --concordancia 200
+python -m tcc_scraper.cli judge-news --backlog --limite 50 --anos 2025
 python -m tcc_scraper.cli build-entrega --csv
 python -m tcc_scraper.cli build-entrega --tabela noticias --tabela precos
 ```
@@ -154,57 +156,33 @@ ali. Os caminhos de `EXPORT_DIR`, `ENTREGA_CSV_DIR` e `HF_CACHE_DIR` são padrõ
 
 | Variável | Padrão | No `.env.example` | Uso |
 |---|---|---|---|
-| `IP_BANCO` | vazio (obrigatória) | sim | Host do MySQL. Use o IP, não `localhost` |
-| `USER_BANCO` | vazio (obrigatória) | sim | Usuário do MySQL |
-| `SENHA_BANCO` | vazio (obrigatória) | sim | Senha. Escapada pelo SQLAlchemy |
-| `PORTA_BANCO` | `3306` | sim | Porta do MySQL |
-| `NOME_BANCO` | `tcc_scraper` | sim | Nome do banco. Deve ser criado com `utf8mb4` |
-
-### 3.2 Janela e preços
-
-| Variável | Padrão | No `.env.example` | Uso |
-|---|---|---|---|
-| `DATA_START` | `2025-09-01` | sim | Início da janela do dataset |
-| `DATA_END` | `2026-09-01` | sim | Fim da janela do dataset. Não muda com a coleta diária |
-| `PRICE_WARMUP_DAYS` | `400` | sim | Dias corridos antes de `DATA_START` para aquecer as janelas de 20 pregões |
-| `DATA_FIM_COLETA` | vazio = hoje | comentada | Fim rolante da coleta diária. Fixar só para reproduzir um dia |
-
-### 3.3 Coleta e limites de requisição
-
-| Variável | Padrão | No `.env.example` | Uso |
-|---|---|---|---|
-| `USER_AGENT` | `TCC-Scraper/1.0 (pesquisa academica)` | sim | Identificação nas requisições. Troque o contato antes de usar |
-| `THROTTLE_GOOGLE_NEWS` | `2.0` | sim | Segundos entre requisições ao Google News |
-| `THROTTLE_YAHOO` | `1.0` | sim | Segundos entre requisições ao Yahoo |
-| `THROTTLE_BCB` | `0.5` | sim | Segundos entre requisições ao BCB |
-| `THROTTLE_ARTICLE_FETCH` | `1.5` | sim | Segundos entre downloads de corpo de artigo |
-| `THROTTLE_LINK_RESOLVE` | `0.4` | sim | Segundos entre resoluções do link do Google News. É o gargalo do enriquecimento |
-| `ENRICH_WORKERS` | `6` | sim | Workers paralelos do enriquecimento. Acima de cerca de 8 não ganha |
-| `THROTTLE_CVM` | `1.0` | sim | Segundos entre requisições à CVM |
-| `THROTTLE_B3` | `1.0` | sim | Segundos entre requisições à B3 |
-
-### 3.4 LLM: análise diária e juíza
-
-| Variável | Padrão | No `.env.example` | Uso |
-|---|---|---|---|
 | `GEMINI_API_KEY` | vazio | sim | Chave do Gemini. Sem ela, `analyze-llm` falha com mensagem clara |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | sim | Modelo da análise diária. Só Gemini 3 ou superior aceita busca e JSON schema juntos |
 | `LLM_TIMEOUT_S` | `180` | sim | Timeout de cada chamada |
 | `LLM_MAX_ATTEMPTS` | `3` | sim | Tentativas por chamada |
 | `LLM_TZ` | `America/Sao_Paulo` | sim | Fuso da data de referência da análise diária |
 | `JUIZA_MODELO` | `gemini-3.1-flash-lite` | sim | Modelo da juíza de notícias |
-| `JUIZA_MAX_ITENS_DIA` | `2000` | sim | Teto de itens julgados por dia. Protege o custo |
+| `JUIZA_MAX_ITENS_DIA` | `2000` | sim | Teto de pares pagos na etapa diária. Junto com o teto em US$, protege o custo |
+| `JUIZA_ORCAMENTO_MENSAL_USD` | `3.0` | sim | Teto em US$ da juíza diária, por mês |
+| `JUIZA_BACKLOG_VERBA_USD` | `15.0` | sim | Verba única, em US$, do backlog (cumulativa entre execuções) |
 | `JUIZA_LOTE` | `50` | sim | Itens por lote enviado à juíza |
-| `JUIZA_CONFIANCA_MINIMA` | `0.5` | sim | Confiança mínima (0 a 1) para aceitar um item |
-| `JEV_ENABLED` | `false` | sim | Liga a fonte Jev. Desligada por padrão |
+| `JUIZA_PAGINA` | `5000` | sim | Pares lidos do banco por página |
+| `JUIZA_MAX_TENTATIVAS` | `3` | sim | Tentativas por par antes de sair da fila |
+| `JUIZA_CONFIANCA_MINIMA` | `0.5` | sim | Confiança mínima do Jev para aceitar, com `JUIZA_JEV_DECIDE=true`. Não filtra o Gemini |
+| `JUIZA_JEV_DECIDE` | `false` | sim | `true`: o Jev decide. `false`: o Jev só aceita descartes. Ligar só depois de `judge-news --concordancia` (seção 5.1) |
+| `JUIZA_CONFIANCA_TRIAGEM` | `0.9` | sim | Confiança mínima do Jev para aceitar um descarte, com `JUIZA_JEV_DECIDE=false` |
+| `JUIZA_PRECO_ENTRADA_USD_MTOK`, `JUIZA_PRECO_SAIDA_USD_MTOK` | `0.25`, `1.50` | sim | Preço do Gemini da juíza, em US$ por milhão de tokens |
+| `JEV_ENABLED` | `false` | sim | Liga o Jev. Sem `JEV_API_KEY`, não roda |
 | `JEV_API_KEY` | vazio | sim | Chave do Jev |
-| `JEV_MODELO` | `jev-1.13.0` | sim | Modelo do Jev |
+| `JEV_MODELO` | `jev-1.13.0` | sim | Modelo do Jev, fixado. Nunca `latest` |
+| `JEV_PRECO_ENTRADA_USD_MTOK` | `0.042` | sim | Preço do Jev, em US$ por milhão de tokens de entrada. Saída grátis |
+| `JEV_LOTE`, `JEV_CONCORRENCIA`, `JEV_TIMEOUT_S` | `50`, `8`, `30.0` | sim | Pares por lote, requisições em paralelo e timeout de cada uma |
 
 ### 3.5 Entrega, executor e daily
 
 | Variável | Padrão | No `.env.example` | Uso |
 |---|---|---|---|
-| `ENTREGA_FILTRO_JUIZA` | `false` | sim | Se `true`, a entrega filtra pela juíza |
+| `ENTREGA_FILTRO_JUIZA` | `false` | sim | Se `true`, a entrega filtra pela juíza. Fica `false` no código até o backlog zerar (seção 5.1) |
 | `PAINEL_API_URL` | vazio | sim | URL base da API do painel, sem barra final. Vazio = sem painel |
 | `EXECUTOR_TOKEN` | vazio | sim | Bearer do executor. Tem que ser igual ao da API do painel |
 | `EXECUTOR_POLL_S` | `5` | sim | Segundos entre buscas de comandos |
@@ -269,8 +247,8 @@ Esta é a ordem. Cada passo depende do anterior.
 
 1. **Confirmar o servidor.** MySQL 8.0 ou superior, banco `tcc_scraper` com `utf8mb4`. Fazer backup antes de
    qualquer DDL. Ver [Banco de dados](06-banco-de-dados.md), seções 1 e 4.
-2. **Conferir o schema.** O schema atual já está aplicado no MySQL de produção, com as 39 tabelas (14 sem prefixo e 25
-   com `v1-`). Não há passo pendente. Confira com `python -m tcc_scraper.cli db-info`, que só lê. Para banco vazio, aplique
+2. **Conferir o schema.** `sql/schema.mysql.sql` tem as 41 tabelas do estado atual (14 sem prefixo e 27
+   com `v1-`). O MySQL de produção ainda não recebeu os ALTERs de 2026-10-23: são o passo 1 da seção 5.1. Confira com `python -m tcc_scraper.cli db-info`, que só lê. Para banco vazio, aplique
    `sql/schema.mysql.sql` com usuário que tem DDL. Alterações futuras seguem [06](06-banco-de-dados.md), seção 4.2.
 3. **Conferir o `.env` local.** Pendência do dono: remover `DB_TARGET` e `DATABASE_URL`, variáveis do antigo
    PostgreSQL. O código não as lê, mas elas confundem. O `.env` não é versionado.
@@ -284,6 +262,19 @@ Esta é a ordem. Cada passo depende do anterior.
 
 Carga histórica: depois do passo 7, dispare `historico` pelo painel, com `--anos` dos anos desejados. Ela tem
 prioridade sobre o daily, e o daily espera a carga pausar ou terminar.
+
+### 5.1 Juíza: julgar 100% dos pares (2026-10-23)
+
+Passo a passo para levar a juíza ao estado novo: julga todos os pares, com teto em US$, e filtra a entrega. Cada passo depende do anterior. O DDL é aplicado à mão, com usuário com DDL, backup e aprovação do dono ([06](06-banco-de-dados.md), seção 4.2). A partir do passo 2, tudo é feito pelo painel: as ações e a tela **Qualidade** de 2026-10-23 estão em [Executor e painel](07-executor-e-painel.md), seção 4.1.
+
+1. **Aplicar o lote de 2026-10-23 à mão** no MySQL do `.env`, da máquina local: `sql/lotes/2026-10-23_lote.mysql.sql`. Ele junta, na ordem, os três ALTERs de `sql/alteracoes/2026-10-23_*`: a coluna `raw_articles.published_time_source`, as colunas `custo_usd` e `finalidade` em `v1-raw_llm_juiza_runs` com a tabela `v1-staging_juiza_tentativas`, e a tabela `v1-composicao_ibov`. Rode uma vez só: DDL do MySQL não tem rollback. O fim do arquivo traz a conferência, que deve devolver 5 linhas.
+2. **Subir o código novo.** Só depois do passo 1. Se a juíza roda no Railway, as variáveis `JEV_*` e `JUIZA_*` vão no painel do Railway, e o executor não aplica ALTER.
+3. **Conferir pelo painel.** Na tela **Qualidade**, o card **Status da juíza** mostra `pendentes`, `esgotados`, o gasto do mês e o do backlog contra as verbas. Se uma seção aparecer em `erros` (por exemplo, coluna ainda inexistente), o lote não foi aplicado completo.
+4. **Medir a concordância pelo painel.** Na tela **Qualidade**, o formulário "Medir concordância" (N e semente), com a confirmação "gasta API real (Jev + Gemini)". Exige `JEV_ENABLED=true`, `JEV_API_KEY` e `GEMINI_API_KEY` no executor; sem elas, a execução falha com a mensagem `concordancia exige o Jev` ou `concordancia exige o Gemini`. Anote a decisão, a concordância e o kappa de `papel` e de `tipo_conteudo`, e o custo do resumo. A medição não grava julgamento e não tem teto.
+5. **Decidir o modo do Jev (dono).** Pela regra da seção 2.7: se o mínimo entre a concordância de `papel` e a de `tipo_conteudo` for pelo menos 0,85, a decisão é `jev_decide`, e o dono pode definir `JUIZA_JEV_DECIDE=true`. Senão, `JUIZA_JEV_DECIDE=false` (triagem). O painel só mostra a decisão; não altera a config.
+6. **Julgar o backlog pelo painel.** Na tela **Faltantes**, a verificação "Pares sem julgamento" (`juiza_pendentes`): marque os anos e confirme. O painel envia o comando `coletar` com o item `{"coletor": "juiza", "anos": [...]}`, e a juíza roda em modo backlog, com a verba de US$ 15, que é cumulativa (o que a carga histórica já gastou conta). Para conferir o custo, comece por um ano só e olhe o card **Status da juíza** antes de seguir.
+7. **Conferir.** O card **Status da juíza** mostra `pendentes`, `esgotados`, `gasto_backlog_usd` contra `verba_backlog_usd` e o gasto do mês. Repita o passo 6 até `pendentes` ficar perto de zero. Pares `esgotados` já gastaram as tentativas e saem da fila.
+8. **Ligar o filtro da entrega.** Com `pendentes` perto de zero, defina `ENTREGA_FILTRO_JUIZA=true` (variável do executor, não é ação do painel) e monte a entrega pelo painel: na tela de disparo, a etapa `entrega` monta as 9 tabelas. O CSV continua sendo gerado localmente (`build-entrega --csv`), porque o disco do Railway é efêmero. Ligar o filtro antes de julgar o backlog derruba cerca de 92% da `v1-noticias`, porque o par sem julgamento fica de fora. Por isso o padrão em código só passa a `true` depois deste passo (a troca de padrão é a última fase do plano de 2026-10-23).
 
 ## 6. Problemas conhecidos e soluções
 
@@ -315,6 +306,5 @@ Estes pontos ficaram sem medição ou sem teste no fim do trabalho:
 - **Memória do FinBERT no Railway não foi medida.** O spike S4 previa `docker stats` e um plano B, ainda sem
   resultado.
 - **Subida do executor no Railway não foi confirmada.** O passo 5 da seção 5 é o teste real.
-- **`judge-news --avaliar` sem `GEMINI_API_KEY`** deveria avisar e sair com código 0. Não foi conferido.
 - **`THROTTLE_LINK_RESOLVE` (0,4 s)** foi medido em 2026-09-21, com os números registrados no `.env.example`. A
   medição não foi repetida neste trabalho.

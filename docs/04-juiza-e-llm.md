@@ -6,7 +6,7 @@ Este documento cobre a juíza de notícias (julgamento de pares artigo-ticker se
 
 | Camada | Função | Usa busca na web | Grava em | Entra na entrega |
 |---|---|---|---|---|
-| Juíza | Julga pares (artigo, ticker) já coletados | Não | `v1-raw_llm_juiza_runs`, `v1-staging_noticias_julgamento` | Sim, como filtro e como colunas `papel`, `tipo_conteudo`, `evento`, `qualidade` de `v1-noticias` |
+| Juíza | Julga pares (artigo, ticker) já coletados | Não | `v1-raw_llm_juiza_runs`, `v1-staging_noticias_julgamento`, `v1-staging_juiza_tentativas` | Sim, como filtro e como colunas `papel`, `tipo_conteudo`, `evento`, `qualidade` de `v1-noticias` |
 | Análise diária v3 | Pesquisa as notícias do dia e produz sinais por ação | Sim (`google_search`) | `raw_llm_prompts`, `raw_llm_runs`, `staging_llm_*` | Não. A montagem da entrega não lê estas tabelas |
 
 A juíza roda na etapa `juiza` do daily (ordem 6), antes da montagem da entrega. A análise roda na etapa `analise` (ordem 9), depois dela.
@@ -15,23 +15,27 @@ A juíza roda na etapa `juiza` do daily (ordem 6), antes da montagem da entrega.
 
 ### 2.1 Fluxo por par pendente
 
-1. **Pendentes.** Pares (artigo, ticker) com vínculo em `article_tickers` e sem linha em `v1-staging_noticias_julgamento` para a versão vigente do prompt (`VERSAO` em `llm/juiza_prompt.py`, hoje `1`). A ordem é a publicação mais recente primeiro. O limite é `JUIZA_MAX_ITENS_DIA`.
-2. **Regra barata** (seção 2.2). Resolve o caso óbvio sem LLM e grava com `modelo = 'regra'`.
-3. **Jev** (seção 2.4). Só roda se `JEV_ENABLED=true` e um cliente for injetado. Nem a CLI nem a etapa injetam cliente, então hoje o passo não executa.
+1. **Pendentes.** Pares (artigo, ticker) com vínculo em `article_tickers` e sem linha em `v1-staging_noticias_julgamento` para a versão vigente do prompt (`VERSAO` em `llm/juiza_prompt.py`, hoje `1`). Pares que já gastaram `JUIZA_MAX_TENTATIVAS` tentativas (padrão 3) saem da fila. A leitura é paginada, com `JUIZA_PAGINA` pares por página. A ordem depende do modo (seção 2.5): o diário vai do mais recente para o mais antigo; o backlog, do mais antigo para o mais recente.
+2. **Regra barata** (seção 2.2). Resolve o caso óbvio sem LLM e grava com `modelo = 'regra'`. A regra não conta para o teto de itens.
+3. **Jev** (seção 2.4). Roda se `JEV_ENABLED=true` e houver `JEV_API_KEY`. Recebe o que a regra não resolveu, em lotes de `JEV_LOTE` pares. O que ele não aceita segue para o Gemini.
 4. **Gemini.** Lotes de `JUIZA_LOTE` itens (padrão 50). Uma chamada por lote, sem `google_search`, com `temperature = 0` e saída em JSON conforme o schema.
-5. **Validação.** A resposta é validada pelo modelo `LoteJulgamento`. Um item com valor de enum inválido faz o lote inteiro falhar. Só entram os pares pedidos no lote, sem duplicatas.
-6. **Gravação.** Cada chamada gera uma linha em `v1-raw_llm_juiza_runs`, inclusive as que falharam. Só os julgamentos aceitos vão para `v1-staging_noticias_julgamento`, na mesma transação da run.
+5. **Validação.** A resposta é validada item a item. Um item inválido (enum fora da lista, nota fora de 0 a 1 etc.) vira erro da run e não derruba o lote: os demais itens válidos entram. Só entram os pares pedidos no lote, sem duplicatas. JSON inválido ou resposta sem a lista `itens` derrubam o lote inteiro.
+6. **Gravação.** Cada chamada paga gera uma linha em `v1-raw_llm_juiza_runs`, com `custo_usd` e `finalidade`, inclusive as que falharam. Só os julgamentos aceitos vão para `v1-staging_noticias_julgamento`, na mesma transação da run. Cada par pedido ao Gemini e não aceito ganha uma tentativa em `v1-staging_juiza_tentativas` (seção 2.6).
+7. **Teto.** Antes de cada lote pago, o teto em US$ é conferido (seção 2.5). Cada par que gasta LLM conta uma vez no teto de itens, mesmo que passe pelo Jev e depois pelo Gemini.
 
-O processo é retomável. Um par sem linha de julgamento para a versão vigente volta como pendente na execução seguinte. Lote que falha deixa a run com status de erro e não grava julgamento; os pares desse lote continuam pendentes.
+O processo é retomável. Um par sem julgamento para a versão vigente continua pendente na execução seguinte, até esgotar as tentativas. Os pares de um lote que falhou continuam pendentes, com uma tentativa a mais, exceto na falha da API (`erro_api`), que não conta tentativa.
 
-| `status` da run | Significado |
-|---|---|
-| `ok` | Resposta validada. Os julgamentos foram gravados |
-| `erro_api` | A chamada ao Gemini falhou depois das tentativas de retry |
-| `erro_json` | A resposta não é JSON válido |
-| `erro_validacao` | O JSON não segue o schema (enum fora da lista, nota fora de 0 a 1 etc.) |
+| `status` da run | Significado | Tentativa para os pares não aceitos |
+|---|---|---|
+| `ok` | Todos os pedidos vieram julgados e válidos | Não se aplica |
+| `parcial` | Parte dos itens veio inválida ou faltou. Os válidos foram gravados | Sim |
+| `erro_validacao` | Nenhum item válido, ou a resposta não tem a lista `itens` | Sim |
+| `erro_json` | A resposta não é JSON válido | Sim |
+| `erro_api` | A chamada falhou depois das tentativas de retry | Não |
 
-Sem `GEMINI_API_KEY`, os pares que sobram da regra barata ficam pendentes e o log registra um aviso. A etapa `juiza` termina como concluída com zero itens julgados pela LLM.
+As runs do Jev usam `ok`, `parcial` ou `erro_api`. Os pares que o Jev não aceita não ganham tentativa: seguem para o Gemini.
+
+Sem `GEMINI_API_KEY`, os pares que sobram da regra barata (e do Jev) ficam pendentes e o log registra um aviso. A etapa `juiza` termina como concluída, com zero itens julgados pela LLM. Sem chave de nenhum dos dois, só a primeira página de regra roda.
 
 ### 2.2 Regra barata (`llm/juiza_regras.py`)
 
@@ -65,43 +69,63 @@ Os nomes casam como palavra inteira, sem acento e sem diferença de maiúscula. 
 
 - **Prompt versionado:** template em `llm/prompts/juiza_v1.txt`, `VERSAO = 1` em `llm/juiza_prompt.py`. O sha256 cobre o template e o schema. `garantir_prompt` grava o prompt em `raw_llm_prompts` com `nome = 'juiza'` e recusa a execução se o texto mudar sem subir a versão.
 
-### 2.4 Jev: desligado, e por quê
+### 2.4 Jev: segunda exceção paga, medida por concordância
 
-- **Estado atual:** `JEV_ENABLED=false` no padrão. `llm/jev_client.py` tem o adaptador, mas `classificar_lote` levanta `NotImplementedError`. Não existe chamada real ao Jev no código.
-- **Por que está desligado** (desenho, seção 6.3, e ADR do Jev):
-  1. O Jev é API paga (a spec cita US$ 0,042 por milhão de tokens de entrada). O projeto tem custo zero, com exceção única do Gemini. Ligar o Jev exige exceção explícita do dono, com teto próprio. Essa aprovação está pendente.
-  2. O teste em português ainda não foi feito. A documentação do Jev diz que o inglês é o idioma principal. O conjunto-ouro, que serviria para esse teste, não existe ainda (seção 2.7).
-  3. Conta, lista de espera e forma de pagamento não foram confirmadas (spec 6.3, risco 2).
-  4. A versão precisa ser fixada (`jev-1.13.0`, nunca `jev-latest`).
-- **Efeito de falha:** se o Jev falhar, o lote segue para o Gemini e o aviso vai para o log.
+O Jev (TypeSafe AI, modelo `jev-1.13.0`) é a segunda exceção paga do projeto, aprovada pelo dono em 2026-10-23. Não há conjunto-ouro: a qualidade do Jev é medida por concordância com o Gemini (seção 2.7). A decisão está no [ADR](ADR.md), em "Jev medido por concordância, sem conjunto-ouro".
+
+- **Estado.** `JEV_ENABLED=false` no padrão. Com `JEV_ENABLED=true` e `JEV_API_KEY` definida, `julgar_pendentes` cria o cliente sozinho (`JevClient`, em `llm/jev_client.py`). Sem a chave, o Jev não roda e não há erro.
+- **Chamada.** Uma requisição `POST /v1/systemone` por par (a API não aceita lote). As requisições do lote correm em paralelo (`JEV_CONCORRENCIA`, padrão 8), com retry em falhas transitórias e timeout de `JEV_TIMEOUT_S` (30 s). O estado enviado traz empresa, apelidos, fonte, título e trecho.
+- **Perguntas.** `papel`, `tipo_conteudo` e `evento` são escolhas com os rótulos do schema da juíza. `qualidade` é uma escala de 5 níveis, convertida para `(nível − 1) / 4`. O Jev não devolve `tickers_adicionais`, que sai sempre vazio.
+- **Versão fixa.** Modelo `jev-1.13.0`, nunca `latest`. As perguntas são versionadas em `JEV_PERGUNTAS_VERSAO` (hoje `1`): mudou texto ou critério, sobe o número. A staging registra o modelo como `jev-1.13.0/q1`.
+- **Confiança.** A confiança do julgamento é a menor entre a de `papel` e a de `tipo_conteudo`.
+- **Preço.** US$ 0,042 por milhão de tokens de entrada. A saída é grátis. Chamada real de teste, em 2026-10-23: HTTP 200, 507 ms, 453 tokens.
+- **Critério de aceite.** Depende de `JUIZA_JEV_DECIDE`:
+  - `false` (triagem, padrão): o Jev só aceita **descarte**. Aceita se a confiança for pelo menos `JUIZA_CONFIANCA_TRIAGEM` (0,9) e a regra de entrega reprovar o par. O resto vai ao Gemini.
+  - `true` (o Jev decide): aceita o julgamento se a confiança for pelo menos `JUIZA_CONFIANCA_MINIMA` (0,5). O que ele não aceita vai ao Gemini.
+- **Falha.** Um par que falha no Jev segue para o Gemini, sem tentativa. Se o Jev lançar exceção, ou falhar em todos os pares do lote, o lote inteiro vai ao Gemini. A run fica como `erro_api`, com o modelo do Jev.
+- **Custo.** O custo do Jev entra nas mesmas somas da juíza (seção 2.5). Não tem teto próprio.
 
 ### 2.5 Limites e custo
 
 | Limite | Valor padrão | Onde atua |
 |---|---|---|
-| `JUIZA_MAX_ITENS_DIA` | 2.000 | Teto de pares julgados por execução da etapa `juiza` do daily e do `historico`. Não é um contador por dia civil |
-| `--limite` em `judge-news` | Não informado: usa o teto acima | Troca o teto da rodada. Pode ser maior que `JUIZA_MAX_ITENS_DIA` |
+| `JUIZA_MAX_ITENS_DIA` | 2.000 | Teto de pares pagos na etapa `juiza` do daily. Não é um contador por dia civil |
+| `JUIZA_ORCAMENTO_MENSAL_USD` | 3,0 | Teto em US$ da juíza diária: soma das runs `producao` desde o dia 1 do mês (fuso `DAILY_TZ`) |
+| `JUIZA_BACKLOG_VERBA_USD` | 15,0 | Verba única do backlog: soma das runs `backlog`, de todas as execuções. Vale para a carga histórica e para `judge-news --backlog` |
+| `--orcamento-usd` (`judge-news --backlog`) | Sem valor | Teto extra da rodada. Vale o menor entre ele e a verba que sobra |
+| `--limite` (`judge-news`) | Sem valor | Teto de itens da rodada. No backlog, sem valor, não há teto de itens: vale só a verba |
+| `JUIZA_MAX_TENTATIVAS` | 3 | Tentativas por par antes de sair da fila (seção 2.6) |
+| `JUIZA_PAGINA` | 5.000 | Pares lidos por página, com cursor |
 | `JUIZA_LOTE` | 50 | Itens por chamada ao Gemini |
-| `JUIZA_CONFIANCA_MINIMA` | 0,5 | Ver a seção 4: hoje só vale para o Jev |
+| `JEV_LOTE` | 50 | Pares por lote enviado ao Jev (a API recebe um par por requisição) |
 
-- A juíza compartilha o teto de **US$ 5/mês** do Gemini com a análise diária (`CLAUDE.md`, seção 9).
-- Preço do `gemini-3.1-flash-lite`, conforme a tabela comparativa da seção 3.6 (verificada em 2026-10-15): US$ 0,25 por milhão de tokens de entrada e US$ 1,50 de saída.
-- **Custo real da juíza ainda não foi medido.** O spike de custo está pendente (seção 4).
-- A etapa `juiza` termina como `concluida` mesmo com lotes em erro. Os erros aparecem no campo `erros` dos detalhes. Ela só fica `falhou` quando a execução é interrompida por orçamento ou cancelamento.
+- **Teto em US$.** Antes de cada lote pago, o custo já gasto mais o custo do lote anterior é comparado com o teto. Se ultrapassar, a execução para com `parada=orcamento_usd`. O estouro máximo é de um lote.
+- **Diário.** O teto é `JUIZA_ORCAMENTO_MENSAL_USD` menos o gasto de `producao` no mês. Não se reinicia a cada execução.
+- **Backlog e carga histórica.** A carga histórica roda a juíza em modo `backlog`, uma vez por ano, sem teto de itens. O que limita é a verba de US$ 15, cumulativa entre execuções. A verba não entra no teto mensal do diário.
+- **Teto compartilhado.** O total de US$ 5/mês do Gemini continua compartilhado com a análise diária (seção 3.6). A juíza diária usa até US$ 3 desse total.
+- **Concordância não tem teto.** O `judge-news --concordancia` não consulta nenhum teto; o custo aparece no resumo (seção 2.7).
+- **Preço do Gemini.** `gemini-3.1-flash-lite`, conforme a tabela da seção 3.6 (verificada em 2026-10-15): US$ 0,25 por milhão de tokens de entrada e US$ 1,50 de saída. O pensamento, quando o modelo informa, é cobrado como saída.
+- **Gemini Batch API: rejeitada por ora.** O desconto seria pequeno em valor absoluto, e o job assíncrono aumenta a complexidade. Ver o ADR "Teto em US$ e verba do backlog; Batch API rejeitada".
+- **Custo real.** O custo da juíza em produção ainda não foi medido. A concordância mede o custo de uma amostra.
+- A etapa `juiza` termina como `concluida` mesmo com lotes em erro. Os erros aparecem no campo `erros` dos detalhes. Ela só fica `falhou` quando a execução é cancelada. Parada por orçamento ou por teto de itens não é falha.
 
 ### 2.6 Persistência
 
-**`v1-raw_llm_juiza_runs`** (append-only, uma linha por chamada ao Gemini)
+**`v1-raw_llm_juiza_runs`** (append-only, uma linha por chamada paga e por run-resumo da concordância)
 
 | Coluna | Conteúdo |
 |---|---|
 | `id` | Chave primária |
 | `prompt_id` | FK para `raw_llm_prompts` |
-| `modelo`, `n_itens` | Modelo usado e quantidade de itens do lote |
-| `tokens_entrada`, `tokens_saida`, `latencia_ms` | Medidas da chamada |
+| `modelo`, `n_itens` | Modelo usado (`jev-1.13.0/q1` no Jev, `concordancia` na run-resumo) e quantidade de itens do lote |
+| `tokens_entrada`, `tokens_saida`, `latencia_ms` | Medidas da chamada. O Jev não informa tokens de saída |
+| `custo_usd` | Custo da chamada em US$, calculado pelo código. `NULL` na run-resumo da concordância |
+| `finalidade` | `producao` (etapa diária), `backlog` (carga histórica e `--backlog`) ou `concordancia` (medição, sem teto). Padrão `producao` |
 | `status`, `erro` | Ver a tabela de status na seção 2.1 |
 | `resposta_bruta` | Texto devolvido pelo modelo, para auditoria |
 | `iniciado_em`, `finalizado_em` | Início e fim da chamada, em UTC |
+
+Os tetos em US$ são somas de `custo_usd` por `finalidade`, com o índice `ix_raw_llm_juiza_runs_finalidade` (`finalidade`, `iniciado_em`).
 
 **`v1-staging_noticias_julgamento`** (um julgamento por par e versão)
 
@@ -109,7 +133,7 @@ Os nomes casam como palavra inteira, sem acento e sem diferença de maiúscula. 
 |---|---|
 | `article_id`, `ticker`, `prompt_versao` | Chave primária. `article_id` referencia `raw_articles` |
 | `run_id` | FK para `v1-raw_llm_juiza_runs`. Vazio quando o julgamento veio da regra barata |
-| `modelo` | `'regra'`, ou o nome do modelo que julgou |
+| `modelo` | `'regra'`, o nome do modelo do Gemini, ou `jev-1.13.0/q1` quando o Jev decidiu |
 | `papel`, `tipo_conteudo`, `evento` | Valores da seção 2.3 |
 | `tickers_adicionais` | JSON com a lista de tickers do universo |
 | `qualidade`, `confianca` | `Double` |
@@ -117,17 +141,33 @@ Os nomes casam como palavra inteira, sem acento e sem diferença de maiúscula. 
 
 A gravação usa `bulk_upsert` sem colunas para atualizar. Se já existe linha para (artigo, ticker, versão), a linha antiga é mantida. Uma nova versão do prompt cria linhas novas, e por isso os pares voltam a ser pendentes quando `VERSAO` sobe.
 
-### 2.7 Conjunto-ouro e `judge-news --avaliar`
+**`v1-staging_juiza_tentativas`** (uma linha por par que o Gemini não aceitou, por versão)
 
-- **Comando:** `python -m tcc_scraper.cli judge-news --avaliar`. Não grava nada.
-- **Arquivo esperado:** `tests/fixtures/juiza_gold.csv`, com as colunas `article_id`, `ticker`, `titulo`, `papel` e `tipo_conteudo`.
-- **Estado atual:** o arquivo **não existe** no repositório. O comando imprime "conjunto ouro ausente" e encerra. A rotulagem é tarefa do dono do projeto (cerca de 300 pares, estratificados por caso: homônimos, marcas, panoramas, matriz estrangeira, opinião).
-- **O que mede:** precisão, revocação e suporte por `papel`, acurácia total e a contagem de quantos pares foram resolvidos pela regra e quantos pela LLM. Itens sem resposta válida contam como `sem_resposta`.
-- **Limites da medição:**
-  - Só `papel` entra na métrica. `tipo_conteudo` está no CSV mas não é avaliado.
-  - O conjunto não traz origem, domínio nem trecho. A regra barata roda sem esses campos e o Gemini não vê o trecho. A medição, portanto, é mais pobre que a produção. Isso é uma limitação da avaliação, não do juiz em produção.
+| Coluna | Conteúdo |
+|---|---|
+| `article_id`, `ticker`, `prompt_versao` | Chave primária. `article_id` referencia `raw_articles` (cascata na exclusão) |
+| `tentativas` | Número de tentativas feitas. Ao chegar a `JUIZA_MAX_TENTATIVAS`, o par sai da fila |
+| `ultimo_status`, `ultimo_erro` | Status e erro da última tentativa |
+| `atualizado_em` | Momento da última tentativa, em UTC |
 
-Número para o TCC: a precisão e a revocação por classe saem daqui, depois que o conjunto estiver rotulado.
+A tabela existe só para contar tentativas. Em `v1-staging_noticias_julgamento`, "linha existe" continua querendo dizer "julgado". O contador é calculado no código, a partir do valor lido, e gravado com `bulk_upsert`.
+
+### 2.7 Concordância Jev × Gemini (`judge-news --concordancia`)
+
+Substitui o conjunto-ouro, que foi removido em 2026-10-23. Não há rótulo feito por pessoa: a medição compara o Jev com o Gemini.
+
+- **Comando:** `python -m tcc_scraper.cli judge-news --concordancia N [--semente S]`. Semente padrão: 42. Exige `JEV_ENABLED=true`, `JEV_API_KEY` e `GEMINI_API_KEY`. Sem eles, falha antes de qualquer chamada.
+- **Amostra.** N pares (artigo, ticker), sorteados por estrato (ano de publicação × fonte). As 10 fontes mais frequentes ficam em estratos próprios; as demais caem no estrato `outras`. A alocação é proporcional ao tamanho do estrato, com pelo menos 1 par por estrato não vazio, ajustada pelo maior resto. Pares que a regra barata resolve são descartados e contados, mas não entram. Artigos do IPE (`cvm_ipe`) ficam fora.
+- **Reprodutível.** A ordem dentro de cada estrato é `crc32(id|ticker|semente)`. A mesma semente gera a mesma amostra.
+- **Julgamento.** Cada par vai ao Jev (em lotes de `JEV_LOTE`) e ao Gemini (em lotes de `JUIZA_LOTE`). O Gemini é a referência.
+- **O que não grava.** Nada vai para `v1-staging_noticias_julgamento` nem para `v1-staging_juiza_tentativas`, e nenhum teto é consultado. Cada chamada paga vira uma run com `finalidade='concordancia'` e `custo_usd` preenchido. A run-resumo tem `modelo='concordancia'`, `custo_usd` nulo e, em `resposta_bruta`, o JSON com semente, alocação, modelos, métricas e pares.
+- **Métricas.** Para `papel`, `tipo_conteudo` e `entrega` (se o par seria aprovado para a entrega com o filtro da juíza): concordância (fração de pares com o mesmo rótulo), kappa de Cohen e n. Também a cobertura do Jev (fração dos pares com confiança do Jev de pelo menos `JUIZA_CONFIANCA_MINIMA`) e a concordância só nesses pares confiantes.
+- **Regra de decisão.** Se o mínimo entre a concordância de `papel` e a de `tipo_conteudo` for pelo menos 0,85, a decisão é `jev_decide`. Senão, é `gemini_decide`.
+  - `jev_decide`: o dono pode ligar `JUIZA_JEV_DECIDE=true`. O Jev decide, e o Gemini só entra abaixo de `JUIZA_CONFIANCA_MINIMA`.
+  - `gemini_decide`: `JUIZA_JEV_DECIDE` fica `false`. O Jev vira triagem: só aceita descarte com confiança de pelo menos 0,9. O resto vai ao Gemini.
+- **Quem decide.** O comando só imprime a decisão e não altera a configuração. Quem liga `JUIZA_JEV_DECIDE` é o dono.
+- **Limitação.** Concordância não é acurácia. Dois modelos que erram do mesmo jeito concordam. Sem rótulo humano, não há precisão nem revocação. O número para o TCC é a concordância, com essa ressalva.
+- **Resultado.** Ainda não medido. O passo a passo que o produz está em [08-operacao-e-deploy.md](08-operacao-e-deploy.md), seção 5.1.
 
 ### 2.8 Consultas de leitura
 
@@ -154,6 +194,14 @@ Quantos julgamentos vieram da regra e quantos do Gemini:
 SELECT modelo, COUNT(*) AS pares
   FROM `v1-staging_noticias_julgamento`
  GROUP BY modelo;
+```
+
+Gasto da juíza por finalidade (os tetos em US$ usam essas somas):
+
+```sql
+SELECT finalidade, ROUND(SUM(custo_usd), 4) AS usd
+  FROM `v1-raw_llm_juiza_runs`
+ GROUP BY finalidade;
 ```
 
 Nomes de tabela com hífen exigem crase no MySQL, como nos exemplos acima.
@@ -240,16 +288,26 @@ Se o template da versão atual mudar sem subir `VERSAO`, `garantir_prompt` recus
 | `LLM_MAX_ATTEMPTS` | `3` | Tentativas com backoff em falhas transitórias |
 | `LLM_TZ` | `America/Sao_Paulo` | Fuso que define a `data_referencia` |
 | `JUIZA_MODELO` | `gemini-3.1-flash-lite` | Modelo da juíza |
-| `JUIZA_MAX_ITENS_DIA` | `2000` | Teto de pares por execução (seção 2.5) |
-| `JUIZA_LOTE` | `50` | Itens por chamada |
-| `JUIZA_CONFIANCA_MINIMA` | `0.5` | Ver a seção 4 |
-| `JEV_ENABLED` | `false` | Liga o adaptador do Jev. Sem cliente injetado, não roda |
+| `JUIZA_MAX_ITENS_DIA` | `2000` | Teto de pares pagos na etapa diária (seção 2.5) |
+| `JUIZA_LOTE` | `50` | Itens por chamada ao Gemini |
+| `JUIZA_PAGINA` | `5000` | Pares lidos do banco por página |
+| `JUIZA_MAX_TENTATIVAS` | `3` | Tentativas por par antes de sair da fila |
+| `JUIZA_CONFIANCA_MINIMA` | `0.5` | Confiança mínima do Jev para aceitar, com `JUIZA_JEV_DECIDE=true`. Não filtra o Gemini |
+| `JUIZA_CONFIANCA_TRIAGEM` | `0.9` | Confiança mínima do Jev para aceitar um descarte, com `JUIZA_JEV_DECIDE=false` |
+| `JUIZA_JEV_DECIDE` | `false` | `true`: o Jev decide. `false`: triagem, o Jev só descarta. Ligar só depois de medir com `--concordancia` (seção 2.7) |
+| `JUIZA_ORCAMENTO_MENSAL_USD` | `3.0` | Teto em US$ da juíza diária, por mês |
+| `JUIZA_BACKLOG_VERBA_USD` | `15.0` | Verba única, em US$, do backlog (cumulativa entre execuções) |
+| `JUIZA_PRECO_ENTRADA_USD_MTOK`, `JUIZA_PRECO_SAIDA_USD_MTOK` | `0.25`, `1.50` | Preço do Gemini da juíza, em US$ por milhão de tokens |
+| `JEV_ENABLED` | `false` | Liga o Jev. Sem `JEV_API_KEY`, não roda |
 | `JEV_API_KEY`, `JEV_MODELO` | vazio, `jev-1.13.0` | Chave e versão fixada do Jev |
-| `ENTREGA_FILTRO_JUIZA` | `false` | Aplica o filtro da juíza na `v1-noticias` (ver [05-entrega.md](05-entrega.md)) |
+| `JEV_PRECO_ENTRADA_USD_MTOK` | `0.042` | Preço do Jev, em US$ por milhão de tokens de entrada. Saída grátis |
+| `JEV_LOTE`, `JEV_CONCORRENCIA` | `50`, `8` | Pares por lote e requisições em paralelo |
+| `JEV_TIMEOUT_S` | `30.0` | Timeout de cada requisição ao Jev |
+| `ENTREGA_FILTRO_JUIZA` | `false` | Filtro da juíza na `v1-noticias` (ver [05-entrega.md](05-entrega.md)). `false` no código até o backlog zerar. O dono decidiu que o filtro deve ficar ligado; a troca do padrão é o último passo de [08](08-operacao-e-deploy.md), seção 5.1 |
 
 ### 3.6 Custo
 
-**Teto aprovado: US$ 5/mês** para o Gemini, somando análise e juíza. É a única dependência paga do projeto, com exceção explícita à regra de custo zero (`CLAUDE.md`, seção 9).
+**Teto aprovado: US$ 5/mês** para o Gemini, somando análise diária e juíza. A juíza diária tem teto próprio de US$ 3/mês (`JUIZA_ORCAMENTO_MENSAL_USD`), e o backlog tem verba única de US$ 15 (`JUIZA_BACKLOG_VERBA_USD`, seção 2.5). O Jev é a segunda exceção paga, com US$ 0,042 por milhão de tokens de entrada; o custo dele entra nas somas da juíza. Essas exceções estão em `CLAUDE.md`, seção 9.
 
 Preço do `gemini-3.8-flash`, verificado em 2026-10-15: US$ 0,75 por milhão de tokens de entrada e US$ 3,75 por milhão de saída (inclui o raciocínio). Buscas do Google: 5.000 por mês grátis; depois, US$ 14 por mil. O preço vale até 31/12/2026 e dobra em 2027.
 
@@ -313,12 +371,11 @@ SELECT ticker, titulo, fonte, url, sentimento, relevancia
 
 ## 4. Lacunas e pendências
 
-- **Conjunto-ouro não existe.** `tests/fixtures/juiza_gold.csv` está ausente. A rotulagem depende do dono do projeto. Sem ela, não há precisão nem revocação da juíza para o TCC.
-- **`JUIZA_CONFIANCA_MINIMA` só vale para o Jev.** O código aplica o limiar apenas em `_etapa_jev`. O julgamento do Gemini não é filtrado por `confianca`. O comentário em `.env.example` diz que a variável define a confiança mínima para aceitar um item, o que não corresponde ao código atual.
-- **`JUIZA_MAX_TOKENS_DIA` não existe.** A spec (seção 6.2) prevê um teto de tokens por dia. O código tem só o teto de itens.
+- **Sem conjunto-ouro.** Foi removido em 2026-10-23. A qualidade da juíza e do Jev é medida por concordância (seção 2.7). Concordância não é acurácia, e não há precisão nem revocação por rótulo humano.
+- **`JUIZA_CONFIANCA_MINIMA` só vale para o Jev, com `JUIZA_JEV_DECIDE=true`.** O Gemini não é filtrado por confiança. O `.env.example` ainda descreve a variável como mínimo para qualquer item. Isso não bate com o código.
+- **`JUIZA_MAX_TOKENS_DIA` não existe.** A spec (seção 6.2) prevê um teto de tokens por dia. O código tem só o teto de itens e o teto em US$.
 - **Chamada sem busca não confirmada em produção.** O método `classificar` envia `generation_config` com `temperature = 0` na Interactions API. A confirmação numa chamada real é o spike S7, ainda pendente em `progress.md`.
 - **Custo real da juíza não medido.** Está pendente o spike de custo com um dia de artigos, antes de processar o histórico.
-- **Avaliação mede só `papel`.** `tipo_conteudo` não entra na métrica do `--avaliar`.
-- **Jev não implementado.** O adaptador levanta `NotImplementedError`. Ligar o Jev depende de aprovação do dono, de conta e de teste em português. A entrada "Fonte JEV implementada, mas desligada" do [ADR](ADR.md) registra o motivo.
+- **Jev ainda desligado.** Aprovado como exceção paga, mas `JEV_ENABLED=false` no padrão. Para medir a concordância, é preciso ligá-lo e definir `JEV_API_KEY`.
 - **Julgamentos de versões diferentes.** Um par pode ter julgamento de mais de uma versão do prompt. A montagem da entrega usa a versão mais alta.
-- **Limite por execução, não por dia civil.** O teto `JUIZA_MAX_ITENS_DIA` vale por execução de `daily` ou de `historico`. Duas execuções no mesmo dia somam o dobro.
+- **Teto de itens por execução, não por dia civil.** `JUIZA_MAX_ITENS_DIA` vale por execução de `daily`. Duas execuções no mesmo dia somam o dobro. O teto em US$ do diário é mensal e não reinicia por execução.

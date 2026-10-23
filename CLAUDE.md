@@ -34,8 +34,8 @@ pregões — sem isso, os 20 primeiros dias do dataset sairiam sem `retorno_20d`
 **O dataset é materializado em `features_dataset_v1`** pelo `build-dataset`, além de
 exportado em Parquet/CSV. Upsert por `(data, ticker)`: remontar sobrescreve, não duplica.
 
-**Restrição dominante do projeto: custo zero, exceto a LLM do Google (teto US$ 5/mês).**
-A análise diária por LLM (Gemini) é a única dependência paga. A juíza de notícias usa o mesmo Gemini e compartilha o teto aprovado de US$ 5/mês.
+**Restrição dominante do projeto: custo zero, exceto a LLM do Google (teto US$ 5/mês) e o Jev.**
+A análise diária por LLM (Gemini) e a juíza de notícias são as dependências pagas. A juíza usa o mesmo Gemini, com teto próprio de US$ 3/mês e verba única de US$ 15 para o backlog, dentro do total de US$ 5/mês. O Jev (TypeSafe AI) é a segunda exceção paga, aprovada em 2026-10-23, a US$ 0,042 por milhão de tokens de entrada; o custo dele entra nas somas da juíza.
 Qualquer outra proposta que exija API paga, cartão de crédito ou plano pago deve ser rejeitada.
 
 ---
@@ -177,8 +177,8 @@ o que se perdeu com isso.**
 - **Deduplicação por `url_hash`**, nunca pela URL crua (querystrings de tracking variam).
 - **Alteração de schema é manual:** muda o model em `src/tcc_scraper/db/`, atualiza `sql/schema.mysql.sql` e escreve o ALTER em `sql/alteracoes/AAAA-MM-DD_descricao.mysql.sql`. Quem aplica é o dono, com usuário com DDL, após aprovação. Nada de `CREATE TABLE` solto.
 - **Prefixo `v1-` só nas tabelas criadas pela pipeline nova** (`PREFIXO_TABELA` em `db/models.py`):
-  as que nasceram nas antigas migrations 0004–0007 (25 tabelas: `painel_*`, fontes/juíza e as 8 de
-  entrega). O nome real é `v1-painel_logs`, `v1-raw_ipe_docs`, `v1-noticias` … `v1-indices` (o CSV
+  as que nasceram nas antigas migrations 0004–0007 e nas alterações depois delas (27 tabelas: `painel_*`,
+  fontes/juíza e as 9 de entrega, sendo a 9ª `v1-composicao_ibov`, de 2026-10-23). O nome real é `v1-painel_logs`, `v1-raw_ipe_docs`, `v1-noticias` … `v1-indices` (o CSV
   continua com o nome da spec). As 14 antigas mantêm o nome, inclusive `raw_articles`, `raw_prices` e
   `raw_llm_runs`; ficam sem prefixo também `features_dataset_v1`. O hífen exige
   crase em SQL escrito à mão: `` `v1-raw_ipe_docs` ``.
@@ -210,8 +210,8 @@ python -m tcc_scraper.cli collect-cvm          # ITR e DFP (CVM)
 python -m tcc_scraper.cli collect-cadastro     # cadastro das companhias (CVM e B3)
 python -m tcc_scraper.cli collect-proventos    # proventos (B3)
 python -m tcc_scraper.cli collect-indices      # CDI e IPCA (BCB)
-python -m tcc_scraper.cli judge-news [--limite N] [--avaliar]   # juiza de noticias
-python -m tcc_scraper.cli build-entrega [--csv] [--tabela X]    # 8 tabelas da entrega
+python -m tcc_scraper.cli judge-news [--limite N] [--backlog [--anos A] [--orcamento-usd X]] [--status] [--concordancia N [--semente S]]   # juiza de noticias
+python -m tcc_scraper.cli build-entrega [--csv] [--tabela X]    # 9 tabelas da entrega
 python -m tcc_scraper.cli executor             # worker do painel (Railway): comandos, daily das 08:00 BRT, carga historica
 python -m tcc_scraper.cli daily [--etapa ID]   # daily de 9 etapas, sem painel (bloqueante)
 python -m tcc_scraper.cli historico --anos 2025 --anos 2026 [--modo pendentes]  # carga historica (bloqueante)
@@ -285,8 +285,8 @@ JSON schema **na mesma chamada** (só Gemini 3+ aceita os dois juntos). Modelo e
 `raw_llm_runs` (append-only, uma linha por tentativa, mesmo em erro) e `staging_llm_*`
 (substituídas por dia). O `features_dataset_v1` **fica intacto**.
 
-**Exceção aprovada à regra de custo:** é a única dependência paga do projeto, com teto de
-US$ 5/mês (~30 chamadas), compartilhado com a juíza (ver [docs/04-juiza-e-llm.md](docs/04-juiza-e-llm.md), seção 3.6). Roda como etapa `analise` do daily, agendada pelo executor às 08:00 de Brasília (ver [docs/07-executor-e-painel.md](docs/07-executor-e-painel.md)).
+**Exceção aprovada à regra de custo:** é a dependência paga principal do projeto, com teto de
+US$ 5/mês (~30 chamadas), compartilhado com a juíza, que tem teto próprio de US$ 3/mês e verba de US$ 15 para o backlog (ver [docs/04-juiza-e-llm.md](docs/04-juiza-e-llm.md), seção 3.6). Roda como etapa `analise` do daily, agendada pelo executor às 08:00 de Brasília (ver [docs/07-executor-e-painel.md](docs/07-executor-e-painel.md)).
 
 **Citações:** o prompt exige `fonte` e `url` dentro de cada item do JSON. As anotações
 `url_citation` da API vão para `citacoes_json` só como auditoria, nunca como fonte de dados.

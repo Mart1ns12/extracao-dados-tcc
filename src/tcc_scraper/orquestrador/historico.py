@@ -205,6 +205,7 @@ def _passos(settings: Settings, anos: list[int]) -> list[Passo]:
     primeiro = ordem[0]
     passos = [
         Passo(primeiro, "yahoo"),
+        Passo(primeiro, "b3_indices", {"anos": ordem}),
         Passo(primeiro, "bcb"),
         Passo(primeiro, "indices_bcb", {"anos": ordem}),
         Passo(primeiro, "cvm_cadastro"),
@@ -218,7 +219,7 @@ def _passos(settings: Settings, anos: list[int]) -> list[Passo]:
             Passo(seg.ano, "cvm_ipe", {"anos": [seg.ano]}),
             Passo(seg.ano, "enriquecimento"),
             Passo(seg.ano, "finbert"),
-            Passo(seg.ano, "juiza", args_fixos("juiza", settings)),
+            Passo(seg.ano, "juiza", {"anos": [seg.ano], **args_fixos("juiza", settings)}),
             Passo(seg.ano, "build_entrega"),
         ]
     return passos

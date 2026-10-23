@@ -8,7 +8,6 @@ fixture `engine` de conftest.py e filtra os pendentes para os artigos que ele cr
 from __future__ import annotations
 
 import contextlib
-import csv
 import datetime as dt
 import json
 from types import SimpleNamespace
@@ -20,7 +19,8 @@ from sqlalchemy.orm import Session
 from tcc_scraper.config import get_settings
 from tcc_scraper.db.models import Article, ArticleBody, ArticleTicker, url_hash
 from tcc_scraper.db.models_fontes import RawLlmJuizaRun, StagingNoticiaJulgamento
-from tcc_scraper.llm import juiza
+from tcc_scraper.llm import juiza, juiza_custo
+from tcc_scraper.llm.jev_client import RespostaJev
 
 # --------------------------------------------------------------------------------------
 # Fakes
@@ -60,13 +60,26 @@ class ClienteFalso:
 
 
 class JevFalso:
-    def __init__(self, respostas: list[dict]) -> None:
-        self.respostas = respostas
-        self.chamadas = 0
+    """Imita JevClient.classificar_lote: devolve RespostaJev, ou levanta `erro`."""
 
-    def classificar_lote(self, itens: list[dict]) -> list[dict]:
+    def __init__(self, itens: list[dict] | None = None, *, erros: list[dict] | None = None,
+                 erro: Exception | None = None, tokens_entrada: int = 1000) -> None:
+        self.itens = itens or []
+        self.erros = erros or []
+        self.erro = erro
+        self.tokens_entrada = tokens_entrada
+        self.chamadas = 0
+        self.fechado = False
+
+    def classificar_lote(self, itens: list[dict]) -> RespostaJev:
         self.chamadas += 1
-        return self.respostas
+        if self.erro is not None:
+            raise self.erro
+        return RespostaJev(itens=list(self.itens), tokens_entrada=self.tokens_entrada,
+                           latencia_ms=7, bruto=[], erros=list(self.erros))
+
+    def close(self) -> None:
+        self.fechado = True
 
 
 class ObservadorFalso:
@@ -105,7 +118,10 @@ class _SessaoFalsa:
 
 @pytest.fixture
 def gravacoes(monkeypatch):
-    """Substitui sessao, bulk_upsert e garantir_prompt. Devolve o que seria gravado."""
+    """Substitui sessao, bulk_upsert, garantir_prompt e o gasto do banco (zero).
+
+    Devolve o que seria gravado.
+    """
     registro = SimpleNamespace(upserts=[], sessoes=[])
 
     @contextlib.contextmanager
@@ -121,13 +137,22 @@ def gravacoes(monkeypatch):
     monkeypatch.setattr(juiza, "session_scope", scope)
     monkeypatch.setattr(juiza, "bulk_upsert", upsert)
     monkeypatch.setattr(juiza, "garantir_prompt", lambda session, prompt: 7)
+    monkeypatch.setattr(juiza_custo, "gasto_usd", lambda finalidade, desde=None: 0.0)
     return registro
 
 
 @pytest.fixture
 def pendentes_falsos(monkeypatch):
-    def definir(itens: list[dict]) -> None:
-        monkeypatch.setattr(juiza, "pendentes", lambda versao, limite=None: list(itens))
+    """Devolve os itens so na 1a chamada. Devolve a lista de kwargs recebidos por pendentes()."""
+    def definir(itens: list[dict]) -> list[dict]:
+        chamadas: list[dict] = []
+
+        def falso(versao, limite=None, **kw):
+            chamadas.append({"limite": limite, **kw})
+            return list(itens) if len(chamadas) == 1 else []
+
+        monkeypatch.setattr(juiza, "pendentes", falso)
+        return chamadas
 
     return definir
 
@@ -150,6 +175,11 @@ def _staging(gravacoes) -> list[dict]:
 def _runs(gravacoes) -> list[RawLlmJuizaRun]:
     return [o for s in gravacoes.sessoes for o in s.objetos
             if isinstance(o, RawLlmJuizaRun)]
+
+
+def _tentativas(gravacoes) -> list[dict]:
+    return [r for nome, rows, _ in gravacoes.upserts
+            if nome == "v1-staging_juiza_tentativas" for r in rows]
 
 
 # --------------------------------------------------------------------------------------
@@ -253,25 +283,180 @@ def test_jev_desligado_nunca_e_chamado(gravacoes, pendentes_falsos, settings) ->
     assert res.jev == 0
 
 
-def test_jev_ligado_aceita_so_com_confianca_suficiente(
+def test_jev_triagem_aceita_so_descarte_com_confianca_alta(
     gravacoes, pendentes_falsos, settings, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "jev_enabled", True)
+    pendentes_falsos([_item(4), _item(5), _item(6)])
+    jev = JevFalso([
+        _julgamento(4, "VALE3", papel="mencao", confianca=0.95),  # descarte com confianca: aceito
+        _julgamento(5, "VALE3", confianca=0.99),                  # protagonista: vai ao Gemini
+        _julgamento(6, "VALE3", papel="mencao", confianca=0.8),   # descarte, confianca baixa
+    ])
+    cliente = ClienteFalso([_julgamento(5, "VALE3"), _julgamento(6, "VALE3")])
+
+    res = juiza.julgar_pendentes(cliente=cliente, jev=jev)
+
+    assert res.jev == 1 and res.gemini == 2
+    assert cliente.chamadas == 1
+    linhas = {r["article_id"]: r for r in _staging(gravacoes)}
+    assert set(linhas) == {4, 5, 6}
+    assert linhas[4]["modelo"] == f"{settings.jev_modelo}/q{juiza.JEV_PERGUNTAS_VERSAO}"
+    assert linhas[4]["run_id"] is not None
+    assert linhas[5]["modelo"] == settings.juiza_modelo
+
+
+def test_jev_decide_aceita_protagonista_com_confianca_minima(
+    gravacoes, pendentes_falsos, settings, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "jev_enabled", True)
+    monkeypatch.setattr(settings, "juiza_jev_decide", True)
     pendentes_falsos([_item(4), _item(5)])
     jev = JevFalso([
-        _julgamento(4, "VALE3", confianca=0.9),
-        _julgamento(5, "VALE3", confianca=0.2),  # abaixo do minimo: volta para o Gemini
+        _julgamento(4, "VALE3", confianca=0.6),  # protagonista com 0.6: decide, sem Gemini
+        _julgamento(5, "VALE3", confianca=0.4),  # abaixo do minimo: volta para o Gemini
     ])
     cliente = ClienteFalso([_julgamento(5, "VALE3")])
 
     res = juiza.julgar_pendentes(cliente=cliente, jev=jev)
 
-    assert res.jev == 1
+    assert res.jev == 1 and res.gemini == 1
     assert cliente.chamadas == 1
-    linhas = _staging(gravacoes)
-    jev_linha = [r for r in linhas if r["article_id"] == 4]
-    assert jev_linha and jev_linha[0]["modelo"] == settings.jev_modelo
-    assert jev_linha[0]["run_id"] is None
+    assert {r["article_id"]: r["modelo"] for r in _staging(gravacoes)}[4] == (
+        f"{settings.jev_modelo}/q{juiza.JEV_PERGUNTAS_VERSAO}")
+
+
+def test_jev_com_excecao_manda_o_lote_inteiro_ao_gemini_sem_tentativa(
+    gravacoes, pendentes_falsos, settings, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "jev_enabled", True)
+    pendentes_falsos([_item(4), _item(5)])
+    jev = JevFalso(erro=RuntimeError("Jev: todos os 2 itens falharam"))
+    cliente = ClienteFalso([_julgamento(4, "VALE3"), _julgamento(5, "VALE3")])
+
+    res = juiza.julgar_pendentes(cliente=cliente, jev=jev)
+
+    assert res.jev == 0 and res.gemini == 2
+    assert cliente.chamadas == 1
+    assert _tentativas(gravacoes) == []
+    jev_runs = [r for r in _runs(gravacoes) if r.modelo.startswith(settings.jev_modelo)]
+    assert [(r.status, r.custo_usd) for r in jev_runs] == [("erro_api", 0.0)]
+    assert "todos os 2" in jev_runs[0].erro
+
+
+def test_item_em_erros_do_jev_segue_ao_gemini_sem_tentativa(
+    gravacoes, pendentes_falsos, settings, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "jev_enabled", True)
+    pendentes_falsos([_item(4), _item(5)])
+    jev = JevFalso([_julgamento(4, "VALE3", papel="mencao", confianca=0.95)],
+                   erros=[{"id": "5", "ticker": "VALE3", "erro": "HTTP 500"}])
+    cliente = ClienteFalso([_julgamento(5, "VALE3")])
+
+    res = juiza.julgar_pendentes(cliente=cliente, jev=jev)
+
+    assert res.jev == 1 and res.gemini == 1
+    assert cliente.chamadas == 1
+    assert _tentativas(gravacoes) == []
+    jev_runs = [r for r in _runs(gravacoes) if r.modelo.startswith(settings.jev_modelo)]
+    assert [r.status for r in jev_runs] == ["parcial"]
+    assert "HTTP 500" in jev_runs[0].resposta_bruta
+
+
+def test_custo_do_jev_soma_ao_do_gemini_e_fica_na_run(
+    gravacoes, pendentes_falsos, settings, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "jev_enabled", True)
+    pendentes_falsos([_item(4), _item(5)])
+    jev = JevFalso([_julgamento(4, "VALE3", papel="mencao", confianca=0.95)],
+                   tokens_entrada=2_000_000)
+    cliente = ClienteFalso([_julgamento(5, "VALE3")])
+
+    res = juiza.julgar_pendentes(cliente=cliente, jev=jev)
+
+    custo_jev = juiza_custo.custo_jev(2_000_000, settings)
+    custo_gem = juiza_custo.custo_gemini(100, 20, None, settings)
+    assert res.custo_usd == pytest.approx(custo_jev + custo_gem)
+    jev_run = [r for r in _runs(gravacoes) if r.modelo.startswith(settings.jev_modelo)][0]
+    assert jev_run.custo_usd == pytest.approx(custo_jev)
+    assert jev_run.finalidade == "producao"
+
+
+def test_teto_de_itens_conta_o_par_que_passa_pelo_jev_e_pelo_gemini_uma_vez(
+    gravacoes, settings, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "jev_enabled", True)
+    monkeypatch.setattr(settings, "juiza_pagina", 2)
+    pub = dt.datetime(2026, 10, 1, tzinfo=dt.UTC)
+    paginas = [
+        [{**_item(4), "published_at": pub}, {**_item(5), "published_at": pub}],
+        [{**_item(6), "published_at": pub}, {**_item(7), "published_at": pub}],
+    ]
+    chamadas: list[dict] = []
+
+    def falso(versao, limite=None, **kw):
+        chamadas.append(kw)
+        return paginas[len(chamadas) - 1] if len(chamadas) <= len(paginas) else []
+
+    monkeypatch.setattr(juiza, "pendentes", falso)
+    jev = JevFalso([])  # nada decidido: todo par segue ao Gemini
+    cliente = ClienteFalso([_julgamento(i, "VALE3") for i in (4, 5, 6, 7)])
+
+    res = juiza.julgar_pendentes(cliente=cliente, jev=jev, limite_itens=3, lote=10)
+
+    # 3 pares no total: 2 na 1a pagina e 1 na 2a. O par do Jev que vai ao Gemini nao conta 2x.
+    assert jev.chamadas == 2
+    assert res.gemini == 3
+    assert res.parada == "teto_itens"
+    assert len(chamadas) == 2
+
+
+def test_julgar_pendentes_fecha_o_jev_que_criou(
+    gravacoes, pendentes_falsos, settings, monkeypatch
+) -> None:
+    from tcc_scraper.llm import jev_client
+
+    criados: list[JevFalso] = []
+
+    class JevCriado(JevFalso):
+        def __init__(self, api_key, modelo, timeout_s, concorrencia):
+            super().__init__([])
+            criados.append(self)
+
+    monkeypatch.setattr(jev_client, "JevClient", JevCriado)
+    monkeypatch.setattr(settings, "jev_enabled", True)
+    monkeypatch.setattr(settings, "jev_api_key", "chave-falsa")
+    pendentes_falsos([_item(4)])
+
+    juiza.julgar_pendentes(cliente=ClienteFalso([_julgamento(4, "VALE3")]))
+
+    assert len(criados) == 1 and criados[0].fechado
+
+
+def test_contar_pendentes_devolve_pendentes_esgotados_e_julgados(monkeypatch) -> None:
+    class _Sessao:
+        def execute(self, consulta):
+            linha = SimpleNamespace(pendentes=3, esgotados=1, julgados=7)
+            return SimpleNamespace(one=lambda: linha)
+
+    @contextlib.contextmanager
+    def scope():
+        yield _Sessao()
+
+    monkeypatch.setattr(juiza, "session_scope", scope)
+
+    assert juiza.contar_pendentes(3) == {"pendentes": 3, "esgotados": 1, "julgados": 7}
+
+
+def test_consulta_contagem_compila_em_mysql_com_os_joins_de_pendentes() -> None:
+    from sqlalchemy.dialects import mysql
+
+    sql = str(juiza._consulta_contagem(3).compile(dialect=mysql.dialect()))
+
+    assert sql.count("LEFT OUTER JOIN") == 3
+    assert "`v1-staging_juiza_tentativas`" in sql
+    assert "`v1-staging_noticias_julgamento`" in sql
+    assert "count(CASE WHEN" in sql
 
 
 def test_sem_chave_gemini_so_a_regra_roda(gravacoes, pendentes_falsos, settings, monkeypatch):
@@ -302,38 +487,132 @@ def test_lotes_respeitam_o_tamanho_e_avisam_o_observador(
     assert len(_runs(gravacoes)) == 3
 
 
-def test_avaliar_conjunto_ouro_calcula_precisao_e_revocacao(
-    tmp_path, monkeypatch, settings
+def test_parcial_aceita_os_validos_e_tenta_o_invalido(
+    gravacoes, pendentes_falsos, settings
 ) -> None:
-    caminho = tmp_path / "gold.csv"
-    with caminho.open("w", newline="", encoding="utf-8") as f:
-        escritor = csv.DictWriter(
-            f, fieldnames=["article_id", "ticker", "titulo", "papel", "tipo_conteudo"])
-        escritor.writeheader()
-        escritor.writerow({"article_id": "1", "ticker": "VALE3",
-                           "titulo": "Ibovespa sobe com Petrobras, Itaú e Bradesco",
-                           "papel": "mencao", "tipo_conteudo": "resumo_mercado"})
-        escritor.writerow({"article_id": "2", "ticker": "VALE3",
-                           "titulo": "Vale anuncia novo diretor",
-                           "papel": "protagonista", "tipo_conteudo": "reportagem"})
-        escritor.writerow({"article_id": "3", "ticker": "VALE3",
-                           "titulo": "Vale anuncia novo diretor",
-                           "papel": "errada", "tipo_conteudo": "reportagem"})
-    cliente = ClienteFalso([_julgamento("2", "VALE3"), _julgamento("3", "VALE3")])
-    from tcc_scraper.llm import gemini_client
-    monkeypatch.setattr(gemini_client, "GeminiClient", lambda *a, **k: cliente)
+    pendentes_falsos([_item(4), _item(5), _item(6)])
+    cliente = ClienteFalso([
+        _julgamento(4, "VALE3"), _julgamento(5, "VALE3"),
+        _julgamento(6, "VALE3", papel="inventado"),
+    ])
 
-    resultado = juiza.avaliar_conjunto_ouro(caminho)
+    res = juiza.julgar_pendentes(cliente=cliente)
 
-    assert resultado["n"] == 3
-    assert resultado["n_regra"] == 1
-    assert resultado["acuracia"] == pytest.approx(2 / 3)
-    classes = resultado["por_classe"]
-    assert classes["protagonista"]["precisao"] == pytest.approx(0.5)
-    assert classes["protagonista"]["revocacao"] == pytest.approx(1.0)
-    assert classes["mencao"]["precisao"] == pytest.approx(1.0)
-    assert classes["errada"]["precisao"] is None
-    assert classes["errada"]["revocacao"] == pytest.approx(0.0)
+    assert [r.status for r in _runs(gravacoes)] == ["parcial"]
+    assert sorted(r["article_id"] for r in _staging(gravacoes)) == [4, 5]
+    assert [(t["article_id"], t["tentativas"], t["ultimo_status"])
+            for t in _tentativas(gravacoes)] == [(6, 1, "parcial")]
+    assert res.gemini == 2 and res.invalidos == 1 and res.erros == 1
+
+
+def test_erro_da_api_nao_gera_tentativa(gravacoes, pendentes_falsos, settings) -> None:
+    pendentes_falsos([_item(4)])
+
+    juiza.julgar_pendentes(cliente=ClienteFalso(erro=RuntimeError("503 indisponivel")))
+
+    assert _tentativas(gravacoes) == []
+
+
+def test_erro_json_registra_tentativa_para_todos_os_pedidos(
+    gravacoes, pendentes_falsos, settings
+) -> None:
+    pendentes_falsos([_item(4), _item(5)])
+
+    juiza.julgar_pendentes(cliente=ClienteFalso(texto="isto nao e json"))
+
+    assert [(t["article_id"], t["tentativas"], t["ultimo_status"])
+            for t in _tentativas(gravacoes)] == [(4, 1, "erro_json"), (5, 1, "erro_json")]
+
+
+def test_tentativa_soma_a_partir_do_valor_que_veio_do_pendentes(
+    gravacoes, pendentes_falsos, settings
+) -> None:
+    pendentes_falsos([{**_item(4), "tentativas": 2}])
+
+    juiza.julgar_pendentes(cliente=ClienteFalso(texto="isto nao e json"))
+
+    assert _tentativas(gravacoes)[0]["tentativas"] == 3
+
+
+def test_teto_de_itens_nao_conta_a_regra(gravacoes, pendentes_falsos, settings) -> None:
+    pendentes_falsos([_item(1, origem="cvm_ipe", dominio="cvm.gov.br"), _item(4), _item(5),
+                      _item(6)])
+    cliente = ClienteFalso([_julgamento(4, "VALE3"), _julgamento(5, "VALE3"),
+                            _julgamento(6, "VALE3")])
+
+    res = juiza.julgar_pendentes(cliente=cliente, limite_itens=2)
+
+    assert res.regra == 1
+    assert res.gemini == 2
+    assert res.parada == "teto_itens"
+    assert sorted(r["article_id"] for r in _staging(gravacoes)
+                  if r["modelo"] != "regra") == [4, 5]
+
+
+def test_teto_em_usd_para_antes_do_lote_que_estouraria(
+    gravacoes, pendentes_falsos, settings, monkeypatch
+) -> None:
+    custo = juiza_custo.custo_gemini(100, 20, None, settings)
+    monkeypatch.setattr(settings, "juiza_orcamento_mensal_usd", custo * 1.5)
+    pendentes_falsos([_item(4), _item(5), _item(6)])
+    cliente = ClienteFalso([_julgamento(i, "VALE3") for i in (4, 5, 6)])
+
+    res = juiza.julgar_pendentes(cliente=cliente, lote=1)
+
+    assert cliente.chamadas == 1
+    assert res.parada == "orcamento_usd"
+    assert res.custo_usd == pytest.approx(custo)
+    runs = _runs(gravacoes)
+    assert len(runs) == 1 and runs[0].custo_usd == pytest.approx(custo)
+
+
+def test_duas_falhas_de_api_seguidas_param_a_execucao(
+    gravacoes, pendentes_falsos, settings
+) -> None:
+    pendentes_falsos([_item(4), _item(5), _item(6)])
+    cliente = ClienteFalso(erro=RuntimeError("503"))
+
+    res = juiza.julgar_pendentes(cliente=cliente, lote=1)
+
+    assert cliente.chamadas == 2
+    assert res.parada == "erro_api"
+
+
+def test_backlog_pagina_em_ordem_crescente_e_grava_finalidade_backlog(
+    gravacoes, pendentes_falsos, settings
+) -> None:
+    chamadas = pendentes_falsos([_item(4)])
+    cliente = ClienteFalso([_julgamento(4, "VALE3")])
+
+    juiza.julgar_pendentes(cliente=cliente, modo="backlog", anos=[2025])
+
+    assert chamadas[0]["ordem"] == "asc"
+    assert chamadas[0]["anos"] == [2025]
+    assert [r.finalidade for r in _runs(gravacoes)] == ["backlog"]
+
+
+def test_paginas_seguem_o_cursor_keyset(gravacoes, settings, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "juiza_pagina", 2)
+    pub = dt.datetime(2026, 10, 1, tzinfo=dt.UTC)
+    paginas = [
+        [{**_item(4), "published_at": pub}, {**_item(5), "published_at": pub}],
+        [{**_item(6), "published_at": pub}],
+    ]
+    chamadas: list[dict] = []
+
+    def falso(versao, limite=None, **kw):
+        chamadas.append(kw)
+        return paginas[len(chamadas) - 1] if len(chamadas) <= len(paginas) else []
+
+    monkeypatch.setattr(juiza, "pendentes", falso)
+    cliente = ClienteFalso([_julgamento(i, "VALE3") for i in (4, 5, 6)])
+
+    res = juiza.julgar_pendentes(cliente=cliente, lote=10)
+
+    assert len(chamadas) == 2
+    assert chamadas[0]["apos"] is None
+    assert chamadas[1]["apos"] == (pub, 5, "VALE3")
+    assert res.gemini == 3 and cliente.chamadas == 2
 
 
 # --------------------------------------------------------------------------------------
@@ -399,8 +678,8 @@ def test_banco_julga_so_o_que_falta_e_a_segunda_execucao_nao_reenvia(
     monkeypatch.setattr(juiza, "session_scope", scope)
     # Restringe aos artigos deste teste: o banco de desenvolvimento pode ter pendentes reais.
     monkeypatch.setattr(juiza, "pendentes",
-                        lambda versao, limite=None: [p for p in original(versao, None)
-                                                     if p["id"] in ids])
+                        lambda versao, limite=None, **kw: [p for p in original(versao, None, **kw)
+                                                           if p["id"] in ids])
     try:
         cliente = ClienteFalso([_julgamento(id_real[4], "VALE3"), _julgamento(id_real[5], "PETR4")])
         res1 = juiza.julgar_pendentes(cliente=cliente, lote=50)

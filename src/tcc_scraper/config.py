@@ -121,11 +121,27 @@ class Settings(BaseSettings):
     juiza_max_itens_dia: int = 2000
     juiza_lote: int = 50
     juiza_confianca_minima: float = 0.5
+    # Tentativas por par antes de desistir, pagina de pares por ciclo e precos do Gemini (US$/MTok).
+    juiza_max_tentativas: int = 3
+    juiza_pagina: int = 5000
+    juiza_preco_entrada_usd_mtok: float = 0.25
+    juiza_preco_saida_usd_mtok: float = 1.50
+    # Teto mensal (US$) da juiza de producao e verba (US$) do backlog. Somam as runs do banco.
+    juiza_orcamento_mensal_usd: float = 3.0
+    juiza_backlog_verba_usd: float = 15.0
+    # Modo "Jev decide" (manual): o Jev decide sozinho com confianca >= juiza_confianca_minima.
+    # Desligado (padrao) = triagem: o Jev so aceita descarte com confianca >= 0.9.
+    juiza_jev_decide: bool = False
+    juiza_confianca_triagem: float = 0.9
 
     # JEV. Desligado por padrao.
     jev_enabled: bool = False
     jev_api_key: str = ""
     jev_modelo: str = "jev-1.13.0"
+    jev_preco_entrada_usd_mtok: float = 0.042
+    jev_lote: int = 50
+    jev_concorrencia: int = 8
+    jev_timeout_s: float = 30.0
 
     # Entrega: filtro pela juiza e pasta dos CSVs exportados.
     entrega_filtro_juiza: bool = False
@@ -467,20 +483,63 @@ def universo_coleta() -> list[str]:
     return sorted({t for t, _, _ in UNIVERSO_HISTORICO})
 
 
-# Trocas de codigo (antigo, novo, data da troca). None ate o levantamento nos avisos da
-# B3 (spike S5). A tabela e de troca de codigo, NAO de fusao: fusoes como BRF + Marfrig ->
-# MBRF3 (dois codigos antigos para um novo) ficam de fora, porque nao renomeiam um ticker.
+# Trocas de codigo (antigo, novo, data da troca). A data e o primeiro pregao com o codigo
+# novo. Fontes: comunicados das companhias e avisos da B3, conferidos na imprensa (2026-10-23).
+# A tabela e de troca de codigo, NAO de fusao: fusoes como BRF + Marfrig -> MBRF3 (dois
+# codigos antigos para um novo) ficam de fora, porque nao renomeiam um ticker.
+# Tres trocas passaram por codigo intermediario, que fica fora da tabela:
+#   ELET6 -> AXIA6 (2025-11-10) -> AXIA3 (2026-06-08, conversao 1,1 ON por PN)
+#   CPLE6 -> CPLE5 (2025-11-10) -> CPLE3 (2025-12-22, migracao ao Novo Mercado)
+#   AZUL4 -> AZUL54/AZUL53 (jan/2026) -> AZUL3 (2026-04-20, grupamento 150.000:1)
 MUDANCAS_TICKER: list[tuple[str, str, date | None]] = [
-    ("EMBR3", "EMBJ3", None),
-    ("ELET3", "AXIA3", None),
-    ("ELET6", "AXIA3", None),
-    ("JBSS3", "JBSS32", None),
-    ("CPLE6", "CPLE3", None),
-    ("NTCO3", "NATU3", None),
-    ("ODPV3", "SAUD3", None),
-    ("AZUL4", "AZUL3", None),
-    ("PETZ3", "AUAU3", None),
-    ("CCRO3", "MOTV3", None),
+    ("EMBR3", "EMBJ3", date(2025, 11, 3)),
+    ("ELET3", "AXIA3", date(2025, 11, 10)),
+    ("ELET6", "AXIA3", date(2026, 6, 8)),
+    ("JBSS3", "JBSS32", date(2025, 6, 9)),
+    ("CPLE6", "CPLE3", date(2025, 12, 22)),
+    ("NTCO3", "NATU3", date(2025, 7, 2)),
+    ("ODPV3", "SAUD3", date(2026, 5, 5)),
+    ("AZUL4", "AZUL3", date(2026, 4, 20)),
+    ("PETZ3", "AUAU3", date(2026, 1, 5)),
+    ("CCRO3", "MOTV3", date(2025, 5, 2)),
+]
+
+# Rebalanceamentos do IBOV depois da carteira oficial de set/2024 (a ultima do repositorio
+# paccafelipe). Fonte: comunicados da B3 e imprensa, conferidos em 2026-10-23. Cada tupla e
+# (vigencia a partir de, entram, saem). O numero no fim e a quantidade de papeis que a B3 diz.
+# Trocas de MUDANCAS_TICKER que um evento explicito ja trata (o antigo sai ou o novo entra
+# no mesmo par) sao ignoradas; ver composicao_ibov.eventos_trocas.
+REBALANCEAMENTOS_IBOV: list[tuple[date, tuple[str, ...], tuple[str, ...]]] = [
+    (date(2025, 1, 6), ("POMO4", "PSSA3"), ("ALPA4", "EZTC3")),  # 87
+    (date(2025, 5, 5), ("DIRR3", "SMFT3"), ("AMOB3", "LWSA3")),  # 87
+    (date(2025, 9, 1), ("CURY3", "CEAB3"), ("SMTO3", "PETZ3")),  # 84
+    # AXIA7, RENT4 e CYRE4 entram por proventos em acoes (ver comunicado da data).
+    (date(2026, 1, 5), ("CSMG3", "AXIA7", "RENT4", "CYRE4"), ("CVCB3",)),  # 85
+    (date(2026, 5, 4), (), ("AXIA7", "CYRE4", "IRBR3", "RENT4")),  # 79
+    (date(2026, 9, 8), ("TEND3",), ("RECV3", "SLCE3")),  # 76
+]
+
+# Eventos da carteira que nao sao rebalanceamento: fusoes, cisoes, recuperacoes, OPAs,
+# deslistagens e trocas de codigo com mais de um papel. Mesmo formato de REBALANCEAMENTOS_IBOV.
+# Fonte: comunicados da B3 e das companhias, conferidos na imprensa em 2026-10-23. A data e o
+# primeiro pregao em que a mudanca vale. Papel que sai sem estar na carteira gera aviso.
+EVENTOS_IBOV_EXTRAORDINARIOS: list[tuple[date, tuple[str, ...], tuple[str, ...]]] = [
+    (date(2024, 9, 9), ("BRAV3",), ("RRRP3",)),  # 3R vira Brava: troca de codigo
+    (date(2024, 11, 18), ("ISAE4",), ("TRPL4",)),  # ISA CTEEP vira ISA Energia: troca de codigo
+    (date(2024, 12, 16), ("AMOB3",), ()),  # cisao da Vamos: inclusao automatica
+    (date(2025, 5, 30), (), ("AZUL4",)),  # recuperacao judicial; exclusao no fechamento de 29/05
+    (date(2025, 6, 2), (), ("CRFB3",)),  # deslistagem; ultimo pregao 30/05
+    (date(2025, 6, 9), (), ("JBSS3",)),  # vira BDR JBSS32, que nao entra no indice
+    (date(2025, 9, 23), ("MBRF3",), ("BRFS3", "MRFG3")),  # fusao BRF + Marfrig
+    (date(2025, 10, 6), (), ("STBP3",)),  # OPA e deslistagem; ultimo pregao 03/10
+    # ELET5 -> AXIA5 nao se aplica: ELET5 nunca esteve na base (set/2024).
+    (date(2025, 11, 10), ("AXIA3", "AXIA6", "CPLE5"), ("ELET3", "ELET6", "CPLE6")),
+    (date(2025, 12, 22), ("CPLE3",), ("CPLE5",)),  # migracao ao Novo Mercado
+    (date(2026, 3, 12), (), ("PCAR3",)),  # recuperacao extrajudicial; ultimo pregao 11/03
+    (date(2026, 3, 13), (), ("RAIZ4",)),  # ultimo pregao 12/03
+    # AXIA6 convertida em AXIA3, que ja esta. AXIA5 nunca entrou (ELET5 nao estava na base).
+    (date(2026, 6, 8), (), ("AXIA6",)),
+    (date(2026, 8, 26), (), ("BRKM5",)),  # recuperacao extrajudicial; exclusao em 25/08
 ]
 
 # (qtd ON, qtd PN) por unit. Conferir no RI (spike S6). So units do universo.
@@ -734,6 +793,12 @@ CONTAS_CVM: dict[str, dict[str, str]] = {
         "2.02.01.01": "emprestimos_longo_prazo",
         "2.02.01.02": "emprestimos_longo_prazo",
     },
+}
+# Contas que vao ao raw sem entrar em CONTAS_CVM (so o filtro do coletor as ve). CSN, Sabesp,
+# Rede D'Or, Magalu e CMIN lancam a divida so na conta-pai e deixam as subcontas zeradas; o
+# arrendamento (.03) tira o que nao e emprestimo do pai. O builder decide o uso, nunca a soma.
+CONTAS_CVM_AUXILIARES: dict[str, set[str]] = {
+    "BPP": {"2.01.04", "2.02.01", "2.01.04.03", "2.02.01.03"},
 }
 
 # DFC metodo indireto: ajustes ao lucro (6.01.01.NN) nao tem codigo padronizado; a D&A e

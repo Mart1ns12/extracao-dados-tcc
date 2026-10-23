@@ -1,4 +1,4 @@
-"""Montagem das 8 tabelas da entrega a partir das fontes raw/staging.
+"""Montagem das 9 tabelas da entrega a partir das fontes raw/staging.
 
 Cada `montar_*` e pura: recebe listas de dicts (linhas das fontes) e devolve `list[dict]` com
 as chaves de `COLUNAS`. `build_entrega` carrega as fontes, monta cada tabela, grava por upsert
@@ -43,6 +43,7 @@ from tcc_scraper.db.models_entrega import (
     AcoesEmitida,
     Balanco,
     Cadastro,
+    ComposicaoIbov,
     Indice,
     MudancaTicker,
     Noticia,
@@ -60,6 +61,12 @@ from tcc_scraper.db.models_fontes import (
 )
 from tcc_scraper.db.session import session_scope
 from tcc_scraper.db.upsert import bulk_upsert
+from tcc_scraper.entrega.composicao_ibov import (
+    PASTA_CARTEIRAS,
+    carregar_carteiras_csv,
+    linha_do_tempo_ibov,
+    montar_vigencias,
+)
 from tcc_scraper.entrega.filtros import Julgamento, aprovado_para_entrega
 from tcc_scraper.entrega.writers import escrever_csv
 from tcc_scraper.llm.juiza_prompt import VERSAO as VERSAO_JUIZA
@@ -111,6 +118,7 @@ CHAVES: dict[str, list[str]] = {
     "acoes_emitidas": ["cnpj", "data_referencia"],
     "proventos": ["ticker", "tipo", "data_com"],
     "indices": ["data", "indice"],
+    "composicao_ibov": ["ticker", "vigencia_inicio"],
 }
 MODELOS = {
     "noticias": Noticia,
@@ -121,6 +129,7 @@ MODELOS = {
     "acoes_emitidas": AcoesEmitida,
     "proventos": Provento,
     "indices": Indice,
+    "composicao_ibov": ComposicaoIbov,
 }
 
 
@@ -260,6 +269,25 @@ def _volume(valor: int | None) -> int | None:
     return int(valor) if valor else None
 
 
+def _anula_abertura_repetida(linhas: list[dict]) -> list[dict]:
+    """Abertura igual ao fechamento do pregao anterior vira None (defeito do Yahoo no IBOV).
+
+    Recebe as linhas de um unico ticker e devolve copias ordenadas por data; as originais nao mudam.
+    """
+    saida: list[dict] = []
+    fechamento_anterior: float | None = None
+    for linha in sorted(linhas, key=lambda r: r["data"]):
+        abertura = linha["abertura"]
+        repetida = (
+            abertura is not None
+            and fechamento_anterior is not None
+            and round(abertura, 2) == round(fechamento_anterior, 2)
+        )
+        saida.append({**linha, "abertura": None if repetida else abertura})
+        fechamento_anterior = linha["fechamento"]
+    return saida
+
+
 def montar_precos(raw_prices: list[dict]) -> list[dict]:
     """Acoes (sem .SA), IVVB11 e as series de MACRO_ENTREGA. Indices vao para `indices`."""
     linhas: list[dict] = []
@@ -286,6 +314,10 @@ def montar_precos(raw_prices: list[dict]) -> list[dict]:
             "fechamento_ajustado": ajustado,
             "volume": volume,
         })
+    # O Yahoo repete o fechamento anterior como abertura do IBOV em ~32% dos dias:
+    # esse valor fica vazio.
+    ibov = _anula_abertura_repetida([r for r in linhas if r["ticker"] == "IBOV"])
+    linhas = [r for r in linhas if r["ticker"] != "IBOV"] + ibov
     linhas.sort(key=lambda r: (r["data"], r["ticker"]))
     return linhas
 
@@ -358,6 +390,21 @@ def montar_mudancas() -> list[dict]:
     ]
 
 
+def montar_composicao(fechamentos: dict[tuple[str, dt.date], dt.date | None]) -> list[dict]:
+    """Vigencias do IBOV: carteiras oficiais, rebalanceamentos e trocas (composicao_ibov.py).
+
+    `fechamentos`: (ticker, vigencia_inicio) -> vigencia_fim gravada pelo coletor
+    b3_carteira_ibov. Quando o coletor fechou uma vigencia que a reconstrucao deixa aberta,
+    vale o fechamento do banco, porque veio da carteira publicada pela B3.
+    """
+    linhas = montar_vigencias(linha_do_tempo_ibov(carregar_carteiras_csv(PASTA_CARTEIRAS)))
+    for linha in linhas:
+        fim = fechamentos.get((linha["ticker"], linha["vigencia_inicio"]))
+        if fim is not None:
+            linha["vigencia_fim"] = fim
+    return linhas
+
+
 # -- balancos e acoes emitidas (CVM) --------------------------------------------------------
 
 def _valor_escalado(linha: dict) -> float:
@@ -424,6 +471,33 @@ def _soma_das_contas(linhas: list[dict], demonstracao: str, coluna: str) -> floa
         linha["valor"] for linha in linhas
         if linha["cd_conta"] in codigos and _aceita_conta(coluna, linha["ds_conta"])
     ])
+
+
+# Conta-pai e arrendamento (.03) de cada prazo: usados quando as subcontas vem zeradas.
+_PAI_EMPRESTIMOS: dict[str, tuple[str, str]] = {
+    "emprestimos_curto_prazo": ("2.01.04", "2.01.04.03"),
+    "emprestimos_longo_prazo": ("2.02.01", "2.02.01.03"),
+}
+
+
+def _emprestimos(bpp: list[dict], coluna: str) -> float | None:
+    """Emprestimos de curto ou longo prazo. As subcontas (.01 e .02) valem quando somam > 0.
+    Senao, a conta-pai menos o arrendamento (.03): CSN, Sabesp, Rede D'Or, Magalu e CMIN
+    lancam a divida so no pai. O arrendamento fica fora, como pede a spec. Limitacao da
+    fonte: se a empresa preenche so o pai e deixa o .03 em 0, o valor pode incluir
+    arrendamento, que a CVM nao separa."""
+    soma = _soma_das_contas(bpp, "BPP", coluna)
+    if soma is not None and soma > 0:
+        return soma
+    pai, arrendamento = _PAI_EMPRESTIMOS[coluna]
+    total = _soma([
+        linha["valor"] for linha in bpp
+        if linha["cd_conta"] == pai and _aceita_conta(coluna, linha["ds_conta"])
+    ])
+    if total is None or total == 0:
+        return soma
+    arrendado = _soma([linha["valor"] for linha in bpp if linha["cd_conta"] == arrendamento])
+    return float(Decimal(str(total)) - Decimal(str(arrendado or 0.0)))
 
 
 def _e_depreciacao(ds_conta: str | None) -> bool:
@@ -502,8 +576,8 @@ def montar_balancos(balancos: list[dict]) -> list[dict]:
         patrimonio = _valor_da_conta(bpp, "BPP", "patrimonio_liquido")
         # Posicoes no fim do periodo: copiadas para todas as linhas da DRE (como o PL).
         posicoes = {
-            "emprestimos_curto_prazo": _soma_das_contas(bpp, "BPP", "emprestimos_curto_prazo"),
-            "emprestimos_longo_prazo": _soma_das_contas(bpp, "BPP", "emprestimos_longo_prazo"),
+            "emprestimos_curto_prazo": _emprestimos(bpp, "emprestimos_curto_prazo"),
+            "emprestimos_longo_prazo": _emprestimos(bpp, "emprestimos_longo_prazo"),
             "caixa": _valor_da_conta(bpa, "BPA", "caixa"),
             "aplicacoes_financeiras": _valor_da_conta(bpa, "BPA", "aplicacoes_financeiras"),
         }
@@ -843,6 +917,15 @@ class _Fontes:
             select(RawB3Suplemento.issuing_company, RawB3Suplemento.tipo, RawB3Suplemento.payload)
         )
 
+    @cached_property
+    def composicao_fechamentos(self) -> dict[tuple[str, dt.date], dt.date | None]:
+        linhas = _consulta(
+            select(
+                ComposicaoIbov.ticker, ComposicaoIbov.vigencia_inicio, ComposicaoIbov.vigencia_fim
+            ).where(ComposicaoIbov.vigencia_fim.is_not(None))
+        )
+        return {(r["ticker"], r["vigencia_inicio"]): r["vigencia_fim"] for r in linhas}
+
 
 def _montar(tabela: str, f: _Fontes, exigir_juiza: bool, modelos: dict[str, str]) -> list[dict]:
     if tabela == "noticias":
@@ -863,6 +946,8 @@ def _montar(tabela: str, f: _Fontes, exigir_juiza: bool, modelos: dict[str, str]
         return montar_proventos(f.proventos, f.suplemento, f.b3_cadastro)
     if tabela == "indices":
         return montar_indices(f.precos_raw, f.macro)
+    if tabela == "composicao_ibov":
+        return montar_composicao(f.composicao_fechamentos)
     raise ValueError(f"tabela de entrega desconhecida: {tabela!r}")
 
 

@@ -1,7 +1,8 @@
-"""Modelos das 8 tabelas de entrega, sem banco.
+"""Modelos das 9 tabelas de entrega, sem banco.
 
-Garante o contrato do schema em sql/schema.mysql.sql: nomes fixos pela spec, colunas na ordem da spec
-(parte 2), chaves primarias compostas como na spec, indices uteis e nenhum Float (so Double).
+Garante o contrato do schema em sql/schema.mysql.sql: nomes fixos pela spec, colunas na ordem
+da spec (parte 2), chaves primarias compostas como na spec, indices uteis e nenhum Float (so
+Double). A composicao do IBOV nao esta na spec; entra no mesmo contrato.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ PKS_ESPERADAS = {
     "acoes_emitidas": ["cnpj", "data_referencia"],
     "proventos": ["ticker", "tipo", "data_com"],
     "indices": ["data", "indice"],
+    "composicao_ibov": ["ticker", "vigencia_inicio"],
 }
 
 INDICES_ESPERADOS = {
@@ -36,13 +38,14 @@ def _tabela(nome: str):
     return Base.metadata.tables[f"{PREFIXO_TABELA}{nome}"]
 
 
-def test_oito_tabelas_de_entrega_no_metadata() -> None:
+def test_nove_tabelas_de_entrega_no_metadata() -> None:
     assert set(ENTREGA_TABLES) == {
         "v1-noticias", "v1-precos", "v1-cadastro", "v1-mudancas_ticker",
         "v1-balancos", "v1-acoes_emitidas", "v1-proventos", "v1-indices",
+        "v1-composicao_ibov",
     }
     assert set(ENTREGA_TABLES) <= set(Base.metadata.tables)
-    assert len(ENTREGA_TABLES) == 8
+    assert len(ENTREGA_TABLES) == 9
 
 
 def test_nomes_passam_no_filtro_de_camada() -> None:

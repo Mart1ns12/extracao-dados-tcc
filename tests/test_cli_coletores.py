@@ -231,48 +231,39 @@ def test_judge_news_repassa_limite_e_imprime_contagens(monkeypatch) -> None:
     assert "pendentes" in r.output
 
 
-def test_judge_news_avaliar_sem_conjunto_ouro_avisa_e_sai_zero(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr("tcc_scraper.config.PROJECT_ROOT", tmp_path)
+def test_judge_news_backlog_repassa_anos_e_orcamento(monkeypatch) -> None:
+    chamadas: list = []
+    _juiza_falso(monkeypatch, chamadas)
 
-    r = runner.invoke(app, ["judge-news", "--avaliar"])
+    r = runner.invoke(app, [
+        "judge-news", "--backlog", "--orcamento-usd", "2.5",
+        "--anos", "2025", "--anos", "2026", "--limite", "100",
+    ])
 
     assert r.exit_code == 0, r.output
-    assert "ausente" in r.output
+    assert chamadas == [{
+        "limite_itens": 100, "modo": "backlog", "anos": [2025, 2026], "orcamento_usd": 2.5,
+    }]
 
 
-def _ouro_em(tmp_path) -> None:
-    fixtures = tmp_path / "tests" / "fixtures"
-    fixtures.mkdir(parents=True)
-    (fixtures / "juiza_gold.csv").write_text("article_id\n", encoding="utf-8")
-
-
-def test_judge_news_avaliar_imprime_metricas(monkeypatch, tmp_path) -> None:
-    _ouro_em(tmp_path)
-    monkeypatch.setattr("tcc_scraper.config.PROJECT_ROOT", tmp_path)
+def test_judge_news_status_mostra_fila_e_gasto_sem_julgar(monkeypatch) -> None:
+    chamadas: list = []
+    _juiza_falso(monkeypatch, chamadas)
     monkeypatch.setattr(
-        "tcc_scraper.llm.juiza.avaliar_conjunto_ouro",
-        lambda caminho: {"precisao": {"regra": 0.9}},
+        "tcc_scraper.llm.juiza.contar_pendentes",
+        lambda max_tentativas: {"pendentes": 7, "esgotados": 1, "julgados": 9},
+    )
+    monkeypatch.setattr(
+        "tcc_scraper.llm.juiza_custo.gasto_usd",
+        lambda finalidade, desde=None: 1.25 if finalidade == "backlog" else 0.5,
     )
 
-    r = runner.invoke(app, ["judge-news", "--avaliar"])
+    r = runner.invoke(app, ["judge-news", "--status"])
 
     assert r.exit_code == 0, r.output
-    assert "precisao" in r.output
-
-
-def test_judge_news_avaliar_sem_gemini_avisa_e_sai_zero(monkeypatch, tmp_path) -> None:
-    _ouro_em(tmp_path)
-    monkeypatch.setattr("tcc_scraper.config.PROJECT_ROOT", tmp_path)
-
-    def sem_chave(caminho):
-        raise ValueError("GEMINI_API_KEY ausente")
-
-    monkeypatch.setattr("tcc_scraper.llm.juiza.avaliar_conjunto_ouro", sem_chave)
-
-    r = runner.invoke(app, ["judge-news", "--avaliar"])
-
-    assert r.exit_code == 0, r.output
-    assert "GEMINI_API_KEY ausente" in r.output
+    assert chamadas == []
+    assert "gasto_backlog_usd" in r.output
+    assert "1.25" in r.output
 
 
 def _historico_falso(monkeypatch, registro: list) -> None:

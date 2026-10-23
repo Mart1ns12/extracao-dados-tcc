@@ -581,7 +581,14 @@ def test_etapa_juiza_concluida_soma_regra_jev_e_gemini(monkeypatch) -> None:
     assert r.status == "concluida"
     assert r.itens == 9
     assert r.detalhes["tokens_saida"] == 20
-    assert chamadas == [{"limite_itens": ctx.settings.juiza_max_itens_dia, "observador": obs}]
+    assert r.detalhes["custo_usd"] == 0.0
+    assert r.detalhes["parada"] is None
+    assert r.detalhes["invalidos"] == 0
+    assert chamadas == [{
+        "limite_itens": ctx.settings.juiza_max_itens_dia,
+        "observador": obs,
+        "modo": "diario",
+    }]
 
 
 def test_etapa_juiza_concluida_mesmo_so_com_a_regra_barata(monkeypatch) -> None:

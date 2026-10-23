@@ -104,7 +104,7 @@ Commits: `e6deca9`, `59b9f11`.
 - `GeminiClient.classificar` sem busca na web (T23). Cliente do Jev criado, desligado por padrão.
 - Schema de saída e prompt `juiza_v1` (T24).
 - Regra barata, sem LLM: panorama de mercado, mídia sem texto e CVM (T25).
-- Juíza com persistência e conjunto-ouro (T26).
+- Juíza com persistência e conjunto-ouro (T26). *O conjunto-ouro foi removido em 2026-10-23 (seção 15).*
 - Regressão do dataset v1 e do filtro da juíza, contra banco (T27).
 
 Commits: `b4e2ded`, `0661dae`, `463b6b3`, `b31f4f1`, `ed2d89d`.
@@ -283,8 +283,8 @@ esteja errado. Onde o ledger não registra custo, a célula tem `-`.
 - **Deploy no Railway**: serviço do executor, variáveis e `EXECUTOR_TOKEN` igual ao da API do painel.
 - **Merge do `feat/executor-painel`** na `main`. Decisão do dono.
 - **Revisão final do branch**: não concluída. Pode ser retomada com um revisor novo.
-- **Aprovação do Jev** como segunda exceção paga do projeto. Enquanto isso, `JEV_ENABLED=false`.
-- **Conjunto-ouro** para `judge-news --avaliar`. A rotulagem é do dono.
+- **Aprovação do Jev** como segunda exceção paga do projeto. Enquanto isso, `JEV_ENABLED=false`. *Aprovada em 2026-10-23; o padrão segue `false` (seção 15).*
+- **Conjunto-ouro** para `judge-news --avaliar`. A rotulagem é do dono. *Removido em 2026-10-23: a qualidade passou a ser medida por concordância Jev × Gemini (seção 15).*
 - **Rubrica da juíza**: validada só com chamada real. Rodar `judge-news --limite 50`, com contagem de tokens.
 - **Spike S7**: confirmar numa chamada real que a Interactions API aceita `generation_config`.
 - **Fator de grupamento**: conferir a conversão com um grupamento conhecido (decisão em aberto na seção 7).
@@ -305,7 +305,7 @@ Estes pontos não foram confirmados no código ou no ambiente. Não há evidênc
 - **Ponta a ponta no MySQL de produção não foi feito.** O T30 rodou no PostgreSQL local.
 - **Número de preços: resolvido na etapa final de docs.** `raw_prices` tem 48.564 linhas (coleta); `v1-precos` tem 48.561, montadas na verificação de ponta a ponta.
 - **Subida do executor no Railway não foi confirmada.** Depende do deploy da seção 8.
-- **`judge-news --avaliar` sem chave** deveria avisar e sair com código 0. Não foi conferido.
+- **`judge-news --avaliar` sem chave** deveria avisar e sair com código 0. Não foi conferido. *O comando foi removido em 2026-10-23.*
 - **Spike S3 (hora do IPE no RAD)** ficou fora do plano: a publicação é tratada como `precision='date'`, com
   `momento_pregao='desconhecido'`.
 
@@ -351,3 +351,194 @@ roda inteira e só cabe uma por vez. O comando `coletar` faz a coleta pontual. D
   reenviado.
 - Depois de um reinício do executor, um coletar `agendada` ou `em_andamento` vira `falhou`, com a mensagem
   `reenvie o comando`.
+
+## 11. Abertura do IBOV repetida pela fonte (2026-10-23)
+
+**O problema.** Em ~32% dos dias, o Yahoo (`^BVSP`) devolve a abertura igual ao fechamento do pregão anterior. O pipeline recebe o valor como vem da fonte.
+
+**Decisão.** A abertura repetida vira vazia (`NULL`) só na entrega, em `v1-precos`, ticker `IBOV`. A camada `raw_prices` não muda, então a regra pode ser revista sem recoleta. Só o IBOV é tratado: outras séries não foram medidas com o mesmo defeito.
+
+**Arquivos alterados:**
+
+- `src/tcc_scraper/entrega/builder.py`: helper `_anula_abertura_repetida` e aplicação em `montar_precos`.
+- `tests/test_entrega_builder.py`: `_preco` aceita `abertura=`; 3 testes novos (repetida vira vazia; normal e primeiro dia mantêm; só o IBOV é afetado).
+- `docs/05-entrega.md`: seção 3, regra da coluna `abertura` do IBOV.
+
+## 12. Hora falsa das notícias do Google News (2026-10-23)
+
+**O problema.** ~91% das notícias do Google News chegam com hora 00:00:00 do fuso de Los Angeles (04:00 ou 05:00 em SP). O pubDate do RSS traz só a data, e o servidor do Google preenche a hora com a meia-noite local. Como essa hora é falsa, a notícia parece publicada de madrugada, e o experimento vaza futuro: uma notícia da tarde do dia `t` entra como se já existisse de manhã.
+
+**Decisão.**
+
+1. **No parse do RSS** (`collectors/google_news.py`, `parse_rss`): se o pubDate, convertido para `America/Los_Angeles`, cair exatamente em 00:00:00, o artigo grava `published_precision='date'`, com `published_at` em 00:00 de São Paulo da data do Pacífico (em UTC) e `published_time_source` NULL. Horário real grava `'datetime'` e `published_time_source='rss'`.
+2. **No enriquecimento** (`enrich/article_fetcher.py`, `_extrair_um`): quando o artigo está com `published_precision='date'` e a página da allowlist traz hora com fuso (meta `article:published_time`, `og:published_time`, `itemprop=datePublished`, JSON-LD `datePublished` ou `<time datetime>`, em `enrich/data_publicacao.py`), a hora só é aceita se a data da página, em SP, estiver a no máximo 1 dia da data gravada. Aceita, grava `published_at` (UTC), `published_precision='datetime'` e `published_time_source='pagina'`. Sem fuso, o valor é ignorado: a hora não é adivinhada.
+3. **Comando `fix-news-times`** (`cli.py`, com `--dry-run` e `--limite`) para o histórico já gravado. Fase (a): remarca como `date` os artigos `google_news` em meia-noite de Los Angeles. Fase (b): para os `date` com `resolved_url` de veículo da allowlist, baixa a página (com o throttle do coletor) e aplica a regra do item 2. `--dry-run` conta tudo e não grava. A fase (b) baixa as páginas mesmo em dry-run, porque é leitura.
+
+**Coluna nova.** `raw_articles.published_time_source VARCHAR(8)`, NULL. Modelo em `db/models.py`, `sql/schema.mysql.sql` e `sql/alteracoes/2026-10-23_articles_hora_origem.mysql.sql`. Aplicação manual, com usuário com DDL, após aprovação do dono. A migração depende de `published_precision`, que já existe no modelo.
+
+**Limitações.**
+
+- Artigos já enriquecidos (com corpo) não são baixados de novo pelo enrich; só a fase (b) do `fix-news-times` revisita os `date`.
+- A fase (b) do `fix-news-times` é sequencial. Passa pelo mesmo throttle por domínio, por isso é lenta em carga grande.
+- Página de veículo que não traz hora continua como `date`. Esse é o caso que a regra existe para não adivinhar.
+- O `schema.mysql.sql` já não tinha `published_precision` nem `origem` antes desta mudança. Essa divergência não foi corrigida aqui e fica como pendência.
+
+**Arquivos alterados:**
+
+- `src/tcc_scraper/collectors/google_news.py`: `FUSO_PACIFICO`, `FUSO_BRASIL`, `data_de_meia_noite_pacifica`, `inicio_do_dia_brasil`, campos novos em `NewsItem` e em `parse_rss`, `_persist`.
+- `src/tcc_scraper/enrich/data_publicacao.py` (novo): `extrair_data_publicacao` e `refinar_publicacao`.
+- `src/tcc_scraper/enrich/article_fetcher.py`: `_pending`, `_extrair_um`, `_tentar_hora_da_pagina`, `_persist_horas`, `corrigir_horas_publicacao` e os helpers da fase (a) e (b).
+- `src/tcc_scraper/cli.py`: comando `fix-news-times`.
+- `src/tcc_scraper/db/models.py`, `sql/schema.mysql.sql`, `sql/alteracoes/2026-10-23_articles_hora_origem.mysql.sql`.
+- `tests/test_data_publicacao.py`, `tests/test_google_news_precisao.py`, `tests/test_fix_news_times.py` (novos).
+- `docs/05-entrega.md`: seção 2.3, nota sobre a precisão da hora.
+
+
+## 12. IDIV, SMLL e IFIX pela B3 (2026-10-23)
+
+**O problema.** O Yahoo devolve só 1 dia de histórico para `IDIV.SA`, `SMLL.SA` e `IFIX.SA` (`range=5y` trouxe 1 ponto, medido). Sem os 5 anos, os índices não cobriam a janela do dataset.
+
+**Decisão.** Os três índices saem do Yahoo e vêm da B3, pelo endpoint `indexStatisticsProxy/IndexCall/GetPortfolioDay`, sem autenticação, um ano por chamada. Cada resposta traz 31 linhas (dia do mês) com `rateValue1..12`, o fechamento do dia em cada mês, em texto pt-BR (`"6.831,31"`). `null` quer dizer que não houve pregão ou que o dia não existe no mês. Os valores gravados em `raw_prices` usam `ticker` = código do índice (`IDIV`, sem `.SA`), que é a chave que a entrega usa em `INDICES_YAHOO`, e `source = 'b3'`. Esse endpoint só traz o fechamento: `open`, `high`, `low` e `volume` ficam nulos, e `adj_close` recebe o próprio `close`, como já era para os índices do Yahoo.
+
+Na etapa `precos` do daily, o coletor refaz só o ano corrente. A carga histórica e o comando `coletar` usam `janela_anos`, como os demais coletores que têm anos.
+
+**Arquivos alterados:**
+
+- `src/tcc_scraper/collectors/b3_indices.py` (novo): `B3IndicesCollector`, `parse_portfolio_day` e `montar_raw_prices`.
+- `src/tcc_scraper/collectors/b3_base.py`: `url_b3` e `B3Collector.get_json` aceitam `base=` para outro proxy da B3. O padrão não mudou.
+- `src/tcc_scraper/collectors/prices_yahoo.py`: `tickers_padrao` não inclui mais `INDICES_YAHOO`.
+- `src/tcc_scraper/orquestrador/coletores.py`: catálogo do coletor `b3_indices`, com `janela_anos` da faixa de preços.
+- `src/tcc_scraper/orquestrador/etapas.py`: `etapa_precos` roda o Yahoo e o `b3_indices` por `_executa_partes`. Id, nome e coletor da etapa continuam os mesmos.
+- `src/tcc_scraper/orquestrador/historico.py`: `_passos` inclui `b3_indices` logo após `yahoo`.
+- `scripts/capturar_fixtures.py`: `_grava_b3_indice` e a seção de captura dos três índices.
+- `tests/fixtures/b3_indices_idiv_2022.json`, `b3_indices_smll_2022.json` e `b3_indices_ifix_2022.json` (novos, respostas reais de 2022).
+- `tests/test_b3_indices.py` (novo). `tests/test_coletores.py`, `tests/test_historico.py` e `tests/test_google_news_janelas.py` foram ajustados ao catálogo e ao Yahoo sem os índices.
+- `docs/01-visao-geral.md`, `docs/02-pipeline-diaria.md` e `docs/05-entrega.md`.
+
+**Efeitos.** A linha de 1 dia que o Yahoo gravou para cada índice é sobrescrita pelo upsert da B3 na mesma data, com as colunas que a B3 não traz zeradas. Para os 5 anos entrarem no banco, é preciso rodar a carga histórica (ou o `coletar` com o coletor `b3_indices`) e depois `build-entrega`.
+
+
+## 13. Empréstimos de quem lança a dívida só no pai (2026-10-23)
+
+**O problema.** No DFP 2025 consolidado (CSN, cd_cvm 4030), a dívida vem só na conta-pai: `2.01.04` "Empréstimos e Financiamentos" = 10.428.559 e `2.02.01` = 42.495.988 (em MIL). Todas as subcontas (`2.01.04.01`, `.01.01`, `.01.02`, `.02`, `.03` e as de `2.02.01`) vêm 0. Sabesp, Rede D'Or, Magalu e CMIN também. A entrega saía com `emprestimos_*` = 0 por dois motivos: o coletor só gravava as contas de `CONTAS_CVM`, então o pai nem chegava ao raw, e o builder somava `.01` + `.02` = 0.
+
+**Decisão.**
+
+- `config.py`: `CONTAS_CVM_AUXILIARES` com `2.01.04`, `2.02.01`, `2.01.04.03` e `2.02.01.03`. Só o filtro do coletor as usa. `CONTAS_CVM`, que define as colunas, não mudou.
+- `collectors/cvm_demonstracoes.py`: o filtro do BPP aceita `CONTAS_CVM` ou `CONTAS_CVM_AUXILIARES`. O filtro de `ORDEM_EXERC = ÚLTIMO` e da versão continua igual.
+- `entrega/builder.py`, `_emprestimos`: se a soma de `.01` + `.02` for > 0, vale a soma, como antes. Senão, se o pai (descrição "emprestimos e financiamentos") for diferente de 0, vale pai menos arrendamento (`.03`, None como 0). Sem pai e sem subcontas, fica None.
+- Aplicações financeiras zeradas continuam valendo 0 (o pai também é 0 nesses casos). A regra não mudou.
+
+**Limitação da fonte.** Se a empresa preenche só o pai e deixa o `.03` em 0, o valor pode incluir arrendamento, que a CVM não separa.
+
+**Arquivos alterados:**
+
+- `src/tcc_scraper/config.py`: `CONTAS_CVM_AUXILIARES`.
+- `src/tcc_scraper/collectors/cvm_demonstracoes.py`: filtro do BPP e import.
+- `src/tcc_scraper/entrega/builder.py`: `_PAI_EMPRESTIMOS` e `_emprestimos`, usados em `montar_balancos`.
+- `tests/test_entrega_builder.py`: casos CSN, pai menos arrendamento, subcontas ignoram pai e pai zerado sem subcontas.
+- `tests/test_cvm_demonstracoes.py`: `test_dfp_2024_traz_ebit_dividas_pai_e_arrendamento` (antes `..._sem_arrendamento`), que agora confere que pai e `.03` são gravados.
+- `docs/05-entrega.md` (seção 6) e este arquivo.
+
+**Efeitos.** O raw atual não tem as contas-pai. Para o caso CSN e os demais, é preciso recoletar `cvm_itr_dfp` (ITR e DFP) e só então rodar `build-entrega`. Sem a recoleta, a regra nova não tem o que ler e os valores seguem em 0.
+
+## 14. Composição do IBOV por data (2026-10-23)
+
+**O problema.** A entrega precisa saber quais ações estavam no IBOV em cada data (`v1-composicao_ibov`). Não há fonte única: as carteiras quadrimestrais oficiais (jan/2021 a set/2024) estão no repositório MIT paccafelipe/ibov-data-from-b3; o que vem depois são comunicados de rebalanceamento; e a carteira atual vem da API da B3.
+
+**Decisão.**
+
+- Carteiras de jan/2021 a set/2024 copiadas para `data/composicao_ibov/` (12 CSVs, com `LEIAME.md` de atribuição). `data/` estava no `.gitignore`: liberada só essa pasta (`!data/composicao_ibov/`).
+- Rebalanceamentos de 2025 a 2026-09-08 em `REBALANCEAMENTOS_IBOV` e eventos extraordinários de 2024-09 a 2026-08 em `EVENTOS_IBOV_EXTRAORDINARIOS` (`config.py`), cada um com a data do primeiro pregão em que vale e a fonte em comentário. As trocas de `MUDANCAS_TICKER` entram na mesma linha do tempo; uma troca só vale se o código antigo estava na carteira e se nenhum evento explícito já trata o par.
+- Módulo puro `entrega/composicao_ibov.py`: `carregar_carteiras_csv`, `aplicar_eventos`, `linha_do_tempo_ibov` e `montar_vigencias`. `builder.py` tem `montar_composicao`, que aplica os fechamentos já gravados pelo coletor.
+- Coletor `collectors/b3_carteira_ibov.py` (`B3CarteiraIbovCollector`, fonte `b3_api`): compara a carteira de hoje com as vigências abertas e grava só a diferença, com a data do header. Entra na etapa `precos` do daily e no catálogo, com `resume=False`.
+- Schema: model `ComposicaoIbov` (PK `ticker`, `vigencia_inicio`), bloco na etapa 0010 de `sql/schema.mysql.sql` e `sql/alteracoes/2026-10-23_composicao_ibov.mysql.sql`, para aplicar à mão.
+
+**Arquivos alterados.** `data/composicao_ibov/` (novo), `.gitignore`, `config.py`, `db/models.py`, `db/models_entrega.py`, `entrega/composicao_ibov.py` (novo), `entrega/builder.py`, `collectors/b3_carteira_ibov.py` (novo), `orquestrador/coletores.py`, `orquestrador/etapas.py`, `sql/schema.mysql.sql`, `sql/alteracoes/2026-10-23_composicao_ibov.mysql.sql` (novo), `tests/test_composicao_ibov.py` (novo), `tests/fixtures/b3_carteira_ibov_2026.json` (novo, resposta real de 2026-10-23), `tests/test_batch_regression.py` (27 tabelas v1-), `tests/test_entrega_schema.py` (9 tabelas), `tests/test_coletores.py` (catálogo com 15 ids).
+
+**Verificação.** Suíte inteira: 634 passed, 39 skipped, 1 xfailed. Ruff nos arquivos tocados: limpo. Nada foi gravado no banco nem aplicado SQL. O teste `test_reconstrucao_ate_2026_10_23_bate_com_a_carteira_da_api` confere que a reconstrução até 2026-10-23 tem o mesmo conjunto de 76 papéis da carteira da API.
+
+**Validação contra a B3: fechada.** A primeira reconstrução dava 84 papéis em 2026-10-23, contra 76 da B3. A diferença era de eventos fora dos rebalanceamentos: fusões, cisões, recuperações, OPAs, deslistagens e trocas de código com mais de um papel. Eles foram para `EVENTOS_IBOV_EXTRAORDINARIOS`, com a data do primeiro pregão em que a mudança vale. A diferença final é zero.
+
+Contagem de papéis depois de cada data da linha do tempo:
+
+| Data | Papéis | O que muda |
+|---|---|---|
+| 2024-09-09 | 86 | BRAV3 entra, RRRP3 sai |
+| 2024-11-18 | 86 | ISAE4 entra, TRPL4 sai |
+| 2024-12-16 | 87 | AMOB3 entra (cisão da Vamos) |
+| 2025-01-06 | 87 | Rebalanceamento |
+| 2025-05-02 | 87 | CCRO3 vira MOTV3 |
+| 2025-05-05 | 87 | Rebalanceamento |
+| 2025-05-30 | 86 | AZUL4 sai (recuperação judicial) |
+| 2025-06-02 | 85 | CRFB3 sai (deslistagem) |
+| 2025-06-09 | 84 | JBSS3 sai (vira BDR, fora do índice) |
+| 2025-07-02 | 84 | NTCO3 vira NATU3 |
+| 2025-09-01 | 84 | Rebalanceamento |
+| 2025-09-23 | 83 | BRFS3 e MRFG3 saem, MBRF3 entra (fusão) |
+| 2025-10-06 | 82 | STBP3 sai (OPA) |
+| 2025-11-03 | 82 | EMBR3 vira EMBJ3 |
+| 2025-11-10 | 82 | ELET3, ELET6 e CPLE6 saem; AXIA3, AXIA6 e CPLE5 entram |
+| 2025-12-22 | 82 | CPLE5 sai, CPLE3 entra |
+| 2026-01-05 | 85 | Rebalanceamento |
+| 2026-03-12 | 84 | PCAR3 sai (recuperação extrajudicial) |
+| 2026-03-13 | 83 | RAIZ4 sai |
+| 2026-05-04 | 79 | Rebalanceamento |
+| 2026-05-05 | 79 | ODPV3 vira SAUD3, mas ODPV3 não estava na carteira: sem efeito |
+| 2026-06-08 | 78 | AXIA6 sai (convertida em AXIA3) |
+| 2026-08-26 | 77 | BRKM5 sai (recuperação extrajudicial) |
+| 2026-09-08 | 76 | Rebalanceamento |
+
+**Simplificações.** As trocas intermediárias não têm linha própria. ELET6 → AXIA6 (2025-11-10) → AXIA3 (conversão de 2026-06-08) aparece como AXIA6 até 2026-06-07, e AXIA3 já entra em 2025-11-10 pela troca de ELET3. AZUL4 → AZUL54/AZUL53 → AZUL3 não entra: AZUL4 sai antes, por recuperação judicial. CPLE6 → CPLE5 → CPLE3 aparece como CPLE5 de 2025-11-10 a 2025-12-21.
+
+**Gravação.** Com a reconstrução igual à API, a primeira rodada do coletor `b3_carteira_ibov` não deve gravar mudanças em 2026-10-23. A gravação no banco continua sendo decisão do dono; nada foi gravado nesta etapa.
+
+## 15. Juíza: 100% dos pares, Jev por concordância e teto em US$ (2026-10-23)
+
+**O problema.** A juíza julgava até `JUIZA_MAX_ITENS_DIA` pares por execução, sem teto em US$ e sem contar tentativas. Um par sem julgamento ficava pendente sem limite. O Jev estava desligado porque faltava uma medida de qualidade. O conjunto-ouro previsto (cerca de 300 pares rotulados pelo dono) nunca foi feito.
+
+**Decisão.**
+
+- **Julgar 100% dos pares, com tentativas.** Até `JUIZA_MAX_TENTATIVAS` (3) por par, em `v1-staging_juiza_tentativas`. Esgotado, o par sai da fila e, com o filtro da entrega ligado, fica de fora.
+- **Teto em US$.** Calculado sobre `custo_usd` e `finalidade` em `v1-raw_llm_juiza_runs`. Juíza diária: US$ 3 por mês (`JUIZA_ORCAMENTO_MENSAL_USD`), dentro do total de US$ 5 por mês do Gemini, que segue compartilhado com a análise diária. Backlog: verba única de US$ 15 (`JUIZA_BACKLOG_VERBA_USD`), cumulativa. Concordância não tem teto.
+- **Jev como segunda exceção paga.** US$ 0,042 por milhão de tokens de entrada, saída grátis, uma requisição por par. O custo entra nas somas da juíza.
+- **Qualidade medida por concordância, sem conjunto-ouro.** `judge-news --concordancia N --semente S` compara Jev e Gemini numa amostra reprodutível. Se o mínimo entre a concordância de `papel` e a de `tipo_conteudo` for pelo menos 85%, o dono pode ligar `JUIZA_JEV_DECIDE`. Senão, o Jev fica em triagem, só com descartes de confiança pelo menos 0,9. Concordância não é acurácia: o TCC não terá precisão nem revocação por rótulo humano, e o número a reportar é a concordância, com essa ressalva.
+- **Gemini Batch API rejeitada por ora.** O desconto é pequeno em valor absoluto, e o job assíncrono aumenta a complexidade.
+- **Abertura do IBOV sem fonte alternativa.** A abertura repetida fica vazia na entrega (seção 11). Testado em 2026-10-23: o Stooq bloqueia com desafio JavaScript, a brapi exige token (HTTP 401) e a B3 (GetPortfolioDay e indexStatistics) só tem fechamento.
+
+**Medição do Jev.** Chamada real de teste em 2026-10-23: HTTP 200, 507 ms, 453 tokens de entrada.
+
+**Schema.** `sql/alteracoes/2026-10-23_juiza_custo_tentativas.mysql.sql`: `custo_usd` e `finalidade` em `v1-raw_llm_juiza_runs` (com o índice `ix_raw_llm_juiza_runs_finalidade`) e a tabela `v1-staging_juiza_tentativas`. Aplicar à mão, com usuário com DDL e aprovação do dono, antes de subir o código novo. Ordem completa em [08](08-operacao-e-deploy.md), seção 5.1. Com esta alteração, o schema tem 41 tabelas (14 sem prefixo e 27 com `v1-`).
+
+**Código.** Já estava no working tree quando esta entrada foi escrita: `llm/juiza.py`, `llm/juiza_custo.py`, `llm/jev_client.py`, `llm/juiza_concordancia.py`, `cli.py` (`judge-news`, sem `--avaliar`) e `config.py`. `ENTREGA_FILTRO_JUIZA` segue `false` no código. A troca do padrão para `true` é a última fase (F9), feita só depois de o backlog zerar.
+
+**Documentação.** `docs/04-juiza-e-llm.md` (seções 2.1, 2.4 a 2.7, 3.5, 3.6 e 4), `docs/08-operacao-e-deploy.md` (comandos, variáveis e passo a passo, seção 5.1), `docs/01`, `02`, `03` e `06` (contagens de tabelas e custo), `docs/ADR.md` (três ADRs novos e o do Jev marcado como substituído), `README.md`, `CLAUDE.md`, `docs/README.md` e notas de revisão na spec em `docs/superpowers/specs/`. O conjunto-ouro aparece nas seções antigas com a nota de remoção.
+
+**Verificação.** `pytest -q`: 665 passed, 39 skipped, 1 xfailed. Nenhum teste lê os documentos. Ruff não foi rodado, porque a mudança é só de documentação.
+
+**Não verificado.** A concordância ainda não foi medida, nem o backlog julgado. O custo real da juíza em produção também não foi medido.
+
+## 16. Ações avulsas no painel: corrigir horas e concordância (2026-10-23)
+
+**O problema.** Duas verificações que o dono rodava só pelo CLI (`fix-news-times` e `judge-news --concordancia`) não podiam ser disparadas pelo painel. A tela **Qualidade** precisa delas.
+
+**Decisão.**
+
+- **Dois coletores novos no catálogo** (`orquestrador/coletores.py`), disparados pelo comando `coletar` que já existe:
+  - `corrigir_horas` chama `enrich.article_fetcher.corrigir_horas_publicacao`, a mesma função do CLI. Aceita `aplicar` (bool, obrigatório; `false` é a simulação, que não grava) e `limite` (int ≥ 1, opcional; `null` = sem limite).
+  - `juiza_concordancia` chama `llm.juiza_concordancia.medir_concordancia`, a mesma do CLI. Aceita `n` (int de 10 a 1000, obrigatório) e `semente` (int, opcional, padrão 42).
+- **Fora do daily e da carga histórica.** Não estão em `ETAPAS` nem em `historico._passos`. Não têm checkpoint: `refazer` não se aplica.
+- **Função sem `observador`.** `ColetorDef` ganhou `recebe_observador` (falso para os dois). As funções existentes não mudam.
+- **Resultado no log.** Cada contagem sai numa linha, com origem `daily`. Na concordância, as linhas são as do resumo, incluindo a decisão. Ela continua gravando a run-resumo, como já fazia.
+- **Falta de chave** (Jev ou Gemini) vira erro do item, com mensagem clara, antes de qualquer chamada.
+- **`montar_entrega`** segue como antes: vale para qualquer plano e é anexado no fim. Não recusei a combinação com ações avulsas, porque o padrão atual não recusa e o contrato pedia o mínimo.
+
+**Código.** `orquestrador/coletores.py` (catálogo e `executar`), `orquestrador/coletar.py` (validação e log), `orquestrador/etapas.py` (`resultado_corrigir_horas` e `resultado_concordancia`).
+
+**Testes.** `tests/test_coletores.py` (catálogo, alvos, observador, fora do daily e do histórico) e `tests/test_coletar.py` (aceitação, recusas, plano, chamada das funções por monkeypatch, log e falta de Jev).
+
+**Documentação.** `docs/07-executor-e-painel.md` (seção 4.1: catálogo, regras e recusas), `docs/08-operacao-e-deploy.md` (seção 5.1, agora pelo painel, com o lote `sql/lotes/2026-10-23_lote.mysql.sql` aplicado à mão).
+
+**Verificação.** Suíte inteira: 700 passed, 39 skipped, 1 xfailed. Ruff: sem erros em `src` e `tests`. Nenhum teste com banco foi habilitado.
+
+**Não verificado.** A execução ponta a ponta pelo painel (o painel é outro repositório, editado em paralelo) e a medição real da concordância, que gasta API.

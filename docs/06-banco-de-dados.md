@@ -1,4 +1,4 @@
-# Banco de dados: MySQL 8 único, dicionário das 39 tabelas e schema
+# Banco de dados: MySQL 8 único, dicionário das 41 tabelas e schema
 
 Este documento cobre o banco do projeto: o servidor, o dicionário de todas as tabelas, o schema e as alterações de
 schema, as regras de tipo e de escrita e os testes que gravam no banco. Absorve o antigo roteiro de migração MySQL, que foi removido.
@@ -53,8 +53,8 @@ As camadas são **prefixo no nome da tabela**, não schema: no MySQL, "schema" e
 | `painel_` | Estado do executor e da carga, lido pelo painel | `painel_logs` |
 | sem prefixo de camada | Tabelas de entrega, com nomes fixos pela spec | `noticias` (com `v1-`) |
 
-O prefixo `v1-` (`PREFIXO_TABELA` em `db/models.py`) marca as **25 tabelas criadas pela pipeline nova**
-(criadas nas antigas migrations 0004 a 0007), por pedido do dono: 8 `painel_*`, 9 de fontes e juíza e as 8 de entrega.
+O prefixo `v1-` (`PREFIXO_TABELA` em `db/models.py`) marca as **27 tabelas criadas pela pipeline nova**
+(criadas nas antigas migrations 0004 a 0007 e nas alterações posteriores), por pedido do dono: 8 `painel_*`, 10 de fontes e juíza e as 9 de entrega (incluindo `v1-composicao_ibov`).
 As 14 tabelas que já existiam (antigas migrations 0001 a 0003) mantêm o nome original. `features_dataset_v1` também não
 recebe o prefixo.
 
@@ -67,7 +67,7 @@ SELECT * FROM `v1-painel_logs` ORDER BY ts DESC LIMIT 20;
 A função `tabela_do_projeto(name)` (`db/models.py`) diz se uma tabela pertence ao projeto. Ela tira o `v1-` antes de
 comparar o prefixo de camada.
 
-## 3. Dicionário das 39 tabelas
+## 3. Dicionário das 41 tabelas
 
 Chave primária (PK) segundo o modelo SQLAlchemy. "Escreve" aponta o módulo que grava a tabela. "Linhas" aparece
 só onde o ledger do trabalho registra um número; caso contrário, `-`.
@@ -91,7 +91,7 @@ só onde o ledger do trabalho registra um número; caso contrário, `-`.
 | `staging_llm_acoes_sinais` | staging (LLM) | `llm/job.py`, substituída por dia | `data_referencia`, `ticker` | 0003 | - |
 | `staging_llm_mercados` | staging (LLM) | `llm/job.py`, substituída por dia | `data_referencia`, `nome` | 0003 | - |
 
-### 3.2 Tabelas com prefixo `v1-` (25)
+### 3.2 Tabelas com prefixo `v1-` (27)
 
 Painel (migration 0004). Quem escreve é o executor, salvo `v1-painel_comandos`, que a API do painel cria e confirma.
 
@@ -117,11 +117,12 @@ Fontes oficiais e juíza (migration 0005).
 | `v1-raw_b3_cadastro` | `collectors/b3_cadastro.py` (GetDetail por código CVM) | `cd_cvm` | 0005 | - |
 | `v1-raw_b3_proventos` | `collectors/b3_proventos.py` | `registro_hash` | 0005 | - |
 | `v1-raw_b3_suplemento` | `collectors/b3_proventos.py` (suplemento de proventos) | `registro_hash` | 0005 | - |
-| `v1-raw_llm_juiza_runs` | `llm/juiza.py`: cada chamada ao Gemini, inclusive as com falha | `id` | 0005 | - |
+| `v1-raw_llm_juiza_runs` | `llm/juiza.py`: cada chamada paga (Gemini ou Jev) e a run-resumo da concordância, inclusive as com falha | `id` | 0005; `custo_usd` e `finalidade` em 2026-10-23 | - |
+| `v1-staging_juiza_tentativas` | `llm/juiza.py`: tentativas por par que o Gemini não aceitou | `article_id`, `ticker`, `prompt_versao` | 2026-10-23 (`sql/alteracoes/2026-10-23_juiza_custo_tentativas.mysql.sql`) | - |
 | `v1-staging_noticias_julgamento` | `llm/juiza.py` (julgamento por artigo e ticker) | `article_id`, `ticker`, `prompt_versao` | 0005 | - |
 
 Entrega (migration 0006). Os nomes e as colunas seguem a spec em `spec-entrega-etapa-seguinte.md`. Quem escreve é
-`entrega/builder.py`, que faz upsert e, em `v1-noticias`, remove as reprovadas.
+`entrega/builder.py`, que faz upsert e, em `v1-noticias`, remove as reprovadas. `v1-composicao_ibov` (alteração de 2026-10-23, `sql/alteracoes/2026-10-23_composicao_ibov.mysql.sql`) é escrita pelo builder e pelo coletor `b3_carteira_ibov`, na etapa `precos` do daily.
 
 | Tabela | Chave (PK) | Linhas |
 |---|---|---|
@@ -133,8 +134,10 @@ Entrega (migration 0006). Os nomes e as colunas seguem a spec em `spec-entrega-e
 | `v1-acoes_emitidas` | `cnpj`, `data_referencia` | 170 |
 | `v1-proventos` | `ticker`, `tipo`, `data_com` | 8.392 |
 | `v1-indices` | `data`, `indice` | 210 |
+| `v1-composicao_ibov` | `ticker`, `vigencia_inicio` | - |
+| `v1-composicao_ibov` | `ticker`, `vigencia_inicio` | ainda não gravada (a reconstrução local dá 133 linhas) |
 
-As regras de origem de cada coluna das 8 tabelas estão em [Entrega](05-entrega.md).
+As regras de origem de cada coluna das 9 tabelas estão em [Entrega](05-entrega.md).
 
 ### 3.3 Regra de atualização
 
@@ -163,7 +166,7 @@ descontinuado: o schema atual fica em um arquivo SQL, e cada alteração é escr
 
 ### 4.1 Banco vazio
 
-`sql/schema.mysql.sql` tem o schema completo do estado atual, com as 39 tabelas. Para criar um banco vazio, aplique esse
+`sql/schema.mysql.sql` tem o schema completo do estado atual, com as 41 tabelas. Para criar um banco vazio, aplique esse
 arquivo com um usuário que tem DDL. Ele não cria a tabela `alembic_version`. Banco que já tem as tabelas não precisa dele.
 
 ### 4.2 Alterar o schema

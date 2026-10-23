@@ -52,7 +52,7 @@ TABLE_PREFIXES = ("raw_", "staging_", "features_", "painel_")
 # (o prefixo PREFIXO_TABELA continua valendo para elas no banco).
 _ENTREGA_SEM_PREFIXO = (
     "noticias", "precos", "cadastro", "mudancas_ticker",
-    "balancos", "acoes_emitidas", "proventos", "indices",
+    "balancos", "acoes_emitidas", "proventos", "indices", "composicao_ibov",
 )
 ENTREGA_TABLES = tuple(f"{PREFIXO_TABELA}{nome}" for nome in _ENTREGA_SEM_PREFIXO)
 
@@ -177,6 +177,9 @@ class Article(Base):
     published_precision: Mapped[str] = mapped_column(
         String(8), nullable=False, default="datetime", server_default="datetime"
     )
+    # De onde veio a hora quando published_precision='datetime': 'rss' (pubDate do Google News)
+    # ou 'pagina' (meta, JSON-LD ou <time> do HTML do artigo). NULL quando so a data e conhecida.
+    published_time_source: Mapped[str | None] = mapped_column(String(8))
     lang: Mapped[str] = mapped_column(String(5), nullable=False)
     collected_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
 

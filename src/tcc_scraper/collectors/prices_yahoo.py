@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from tcc_scraper.collectors.base import Collector, UnitResult, WorkUnit
 from tcc_scraper.config import (
     BENCHMARK_TICKER,
-    INDICES_YAHOO,
     IVVB11,
     MACRO_YAHOO,
     get_settings,
@@ -100,8 +99,12 @@ def _adj_ou_close(adj: list | None, index: int, close: float) -> float:
 
 
 def tickers_padrao() -> list[str]:
-    """Simbolos coletados por padrao: universo, Ibovespa, macro, IVVB11 e indices."""
-    return [*universo_coleta(), BENCHMARK_TICKER, *MACRO_YAHOO.values(), IVVB11, *INDICES_YAHOO]
+    """Simbolos coletados por padrao: universo, Ibovespa, macro e IVVB11.
+
+    IDIV, SMLL e IFIX nao estao aqui: o Yahoo so devolve 1 dia deles. Vem da B3
+    (collectors/b3_indices.py).
+    """
+    return [*universo_coleta(), BENCHMARK_TICKER, *MACRO_YAHOO.values(), IVVB11]
 
 
 class YahooPriceCollector(Collector):
