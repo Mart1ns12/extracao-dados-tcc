@@ -16,14 +16,43 @@ from tcc_scraper.db.session import session_scope
 
 _MILHAO = 1_000_000
 
+# US$/MTok do provedor da juiza: (entrada, cache, saida)
+_PRECOS_PADRAO = {"openai": (0.20, 0.02, 1.20), "gemini": (0.25, 0.25, 1.50)}
 
-def custo_gemini(tokens_entrada: int | None, tokens_saida: int | None,
-                 tokens_pensamento: int | None, s) -> float:
-    """Custo de uma chamada ao Gemini. O pensamento e cobrado como saida; None conta zero."""
+
+def precos_llm(s) -> tuple[float, float, float]:
+    """US$/MTok do provedor da juiza; campo do .env (nao None) sobrepoe a tabela."""
+    pe, pc, ps = _PRECOS_PADRAO[getattr(s, "juiza_provedor", "gemini")]
+
+    def _ou(campo, padrao):
+        valor = getattr(s, campo, None)
+        return padrao if valor is None else valor
+
+    return (_ou("juiza_preco_entrada_usd_mtok", pe), _ou("juiza_preco_cache_usd_mtok", pc),
+            _ou("juiza_preco_saida_usd_mtok", ps))
+
+
+def custo_llm(tokens_entrada: int | None, tokens_saida: int | None, *,
+              tokens_cache: int | None = None, tokens_pensamento: int | None = None,
+              s) -> float:
+    """Custo de uma chamada da LLM da juiza em US$.
+
+    Cache e cobrado a parte (sai da entrada). Pensamento so existe no Gemini, onde vem fora
+    da saida; a OpenAI ja inclui o raciocinio em output_tokens (nao passe reasoning_tokens
+    aqui). None conta zero.
+    """
+    entrada = tokens_entrada or 0
+    cache = min(tokens_cache or 0, entrada)
     saida = (tokens_saida or 0) + (tokens_pensamento or 0)
-    entrada_usd = (tokens_entrada or 0) * s.juiza_preco_entrada_usd_mtok / _MILHAO
-    saida_usd = saida * s.juiza_preco_saida_usd_mtok / _MILHAO
-    return entrada_usd + saida_usd
+    pe, pc, ps = precos_llm(s)
+    return ((entrada - cache) * pe + cache * pc + saida * ps) / _MILHAO
+
+
+def custo_resposta(resposta, s) -> float:
+    """Custo de uma resposta da LLM, lendo cache e pensamento quando o objeto os tiver."""
+    return custo_llm(resposta.tokens_entrada, resposta.tokens_saida,
+                     tokens_cache=getattr(resposta, "tokens_cache", None),
+                     tokens_pensamento=getattr(resposta, "tokens_pensamento", None), s=s)
 
 
 def custo_jev(tokens_entrada: int | None, s) -> float:

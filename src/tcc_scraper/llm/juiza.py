@@ -1,15 +1,20 @@
 """Juiza de noticias: julga pares (artigo, ticker) ja coletados, sem busca na web.
 
-Ordem por par pendente: regra barata (sem custo) -> Jev (opcional, `jev_enabled`) -> Gemini.
-O Jev decide ou so descarta, conforme `juiza_jev_decide` (ver `_aceita_jev`). Grava em
-`v1-raw_llm_juiza_runs` cada chamada paga (Gemini ou Jev), inclusive as que falharam (com
-`custo_usd` e `finalidade`), e em `v1-staging_noticias_julgamento` so o julgamento aceito.
-Cada par nao aceito pelo Gemini ganha uma tentativa em `v1-staging_juiza_tentativas`; ao
-esgotar `juiza_max_tentativas` deixa de ser pendente. Retomavel: par sem julgamento para a
-versao do prompt volta como pendente na proxima execucao.
+Ordem por par pendente: regra barata (sem custo) -> Jev (opcional, `jev_enabled`, no modo
+`jev_modo_efetivo`: triagem, decide ou entrega; ver `_aceita_jev`) -> LLM (`juiza_provedor`:
+openai, padrao, ou gemini), so no que sobrou. Grava em `v1-raw_llm_juiza_runs` cada chamada
+paga (LLM ou Jev), inclusive as que falharam (com `custo_usd` e `finalidade`), e em
+`v1-staging_noticias_julgamento` so o julgamento aceito. Cada par nao aceito pela LLM ganha
+uma tentativa em `v1-staging_juiza_tentativas`; ao esgotar `juiza_max_tentativas` deixa de
+ser pendente. Retomavel: par sem julgamento para a versao do prompt volta como pendente na
+proxima execucao.
 
-Tetos: itens (cada par que gasta LLM conta uma vez, mesmo que passe pelo Jev e depois pelo
-Gemini; a regra e de graca) e US$ (ver `juiza_custo.teto_usd`; o custo do Jev entra no mesmo
+Paradas antecipadas (`ResultadoJuiza.parada`): `jev_sem_chave` (Jev ligado sem chave: a LLM
+nao e chamada), `erro_jev` (falha do Jev: o lote fica pendente e a LLM nao e chamada),
+`sem_credito` (conta da LLM sem saldo), `erro_api`, `orcamento_usd`, `teto_itens` e `cancelado`.
+
+Tetos: itens (cada par que gasta LLM conta uma vez, mesmo que passe pelo Jev e depois pela
+LLM; a regra e de graca) e US$ (ver `juiza_custo.teto_usd`; o custo do Jev entra no mesmo
 teto).
 """
 from __future__ import annotations
@@ -20,7 +25,7 @@ import logging
 import re
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import ValidationError
@@ -36,12 +41,18 @@ from tcc_scraper.db.models_fontes import (
 from tcc_scraper.db.session import session_scope
 from tcc_scraper.db.upsert import bulk_upsert
 from tcc_scraper.entrega.filtros import Julgamento, aprovado_para_entrega
-from tcc_scraper.llm.jev_client import JEV_PERGUNTAS_VERSAO, prompt_jev
+from tcc_scraper.llm.jev_client import (
+    JevFalhaLote,
+    decisao_entrega,
+    prompt_jev,
+    rotulo_modelo_jev,
+)
 from tcc_scraper.llm.job import garantir_prompt
-from tcc_scraper.llm.juiza_custo import custo_gemini, custo_jev, teto_usd
+from tcc_scraper.llm.juiza_custo import custo_jev, custo_resposta, teto_usd
 from tcc_scraper.llm.juiza_prompt import VERSAO, renderizar_prompt_juiza
 from tcc_scraper.llm.juiza_regras import nomes_por_ticker, regra_barata
 from tcc_scraper.llm.juiza_schema import JulgamentoItem
+from tcc_scraper.llm.openai_client import OpenAIClient, SemCreditoLLM
 
 logger = logging.getLogger(__name__)
 
@@ -56,21 +67,26 @@ class ResultadoJuiza:
     pendentes: int
     regra: int
     jev: int
-    gemini: int
+    llm: int
     erros: int
     runs: int
     tokens_entrada: int
     tokens_saida: int
     interrompido: int = 0
     custo_usd: float = 0.0
-    # Pares pedidos ao Gemini que voltaram sem julgamento valido (inclui os omitidos).
+    # Pares pedidos a LLM que voltaram sem julgamento valido (inclui os omitidos).
     invalidos: int = 0
-    # Motivo de parada antecipada: orcamento_usd, teto_itens, erro_api ou cancelado.
+    # Motivo de parada antecipada (ver docstring do modulo).
     parada: str | None = None
+    # Provedor da LLM usado na execucao e tokens lidos do cache do provedor.
+    provedor: str = ""
+    tokens_cache: int = 0
+    # Avisos de configuracao (ver avisos_config).
+    avisos: list[str] = field(default_factory=list)
 
 
 @dataclass
-class _LoteGemini:
+class _LoteLlm:
     status: str
     erro: str | None
     aceitos: int
@@ -78,6 +94,18 @@ class _LoteGemini:
     tokens_entrada: int | None
     tokens_saida: int | None
     custo_usd: float
+    # Conta sem credito (SemCreditoLLM ou HTTP 402): para a execucao; nao e tentativa do par.
+    sem_credito: bool = False
+    tokens_cache: int | None = None
+
+
+@dataclass
+class _LoteJev:
+    status: str  # ok, parcial ou erro_api
+    permanente: bool  # erro_api que repetir nao resolve (401, 402, 403)
+    linhas: list[dict]  # staging aceitas
+    sobra: list[dict]  # pares que seguem para a LLM
+    custo: float
 
 
 def _juntar(consulta, prompt_versao: int):
@@ -107,19 +135,21 @@ def pendentes(
     apos: tuple | None = None,
     anos: Sequence[int] | None = None,
     max_tentativas: int | None = None,
+    trecho: int = _TRECHO,
 ) -> list[dict]:
     """Pares (artigo, ticker) com vinculo e sem julgamento para esta versao.
 
     `apos` e o cursor keyset (published_at, id, ticker) do ultimo par da pagina anterior.
     `anos` filtra pelo ano de publicacao em UTC. `max_tentativas` deixa de fora os pares
-    que ja esgotaram as tentativas.
+    que ja esgotaram as tentativas. `trecho` e o numero de caracteres do corpo na coluna
+    `trecho`.
     """
-    trecho = func.substr(ArticleBody.body_text, 1, _TRECHO)
+    corpo = func.substr(ArticleBody.body_text, 1, trecho)
     tentativas = func.coalesce(StagingJuizaTentativa.tentativas, 0)
     consulta = _juntar(select(
         Article.id, ArticleTicker.ticker, Article.title, Article.source_domain,
         Article.origem, Article.lang, Article.published_at,
-        tentativas.label("tentativas"), trecho.label("trecho"),
+        tentativas.label("tentativas"), corpo.label("trecho"),
     ), prompt_versao).where(StagingNoticiaJulgamento.article_id.is_(None))
     if anos:
         janelas = [and_(
@@ -170,6 +200,28 @@ def contar_pendentes(max_tentativas: int) -> dict[str, int]:
             "julgados": int(linha.julgados)}
 
 
+def avisos_config(settings: Any) -> list[str]:
+    """Problemas de configuracao da juiza, em ordem fixa. Lista vazia = tudo certo.
+
+    `jev_desligado` so informa. `jev_sem_chave` bloqueia a LLM (ver julgar_pendentes).
+    `<provedor>_sem_chave` deixa a LLM indisponivel. `modelo_incompativel` (modelo de outro
+    provedor) impede a execucao.
+    """
+    avisos: list[str] = []
+    if not settings.jev_enabled:
+        avisos.append("jev_desligado")
+    elif not settings.jev_api_key:
+        avisos.append("jev_sem_chave")
+    if not settings.juiza_chave_llm:
+        avisos.append(f"{settings.juiza_provedor}_sem_chave")
+    provedor, modelo = settings.juiza_provedor, settings.juiza_modelo_efetivo
+    incompativel = ((provedor == "openai" and modelo.startswith("gemini"))
+                    or (provedor == "gemini" and modelo.startswith("gpt")))
+    if incompativel:
+        avisos.append("modelo_incompativel")
+    return avisos
+
+
 def julgar_pendentes(
     *,
     limite_itens: int | None = None,
@@ -187,11 +239,21 @@ def julgar_pendentes(
     `limite_itens` (None = sem teto). A regra barata nao conta para o teto.
     Teto de US$: `teto_usd(modo, orcamento_usd)`, conferido antes de cada lote pago.
     Jev: o `jev` injetado, ou um JevClient real se `jev_enabled` e `jev_api_key`. So roda com
-    `jev_enabled`. Sem cliente pago (nem Jev nem Gemini), so a primeira pagina de regra roda.
+    `jev_enabled`. LLM: `cliente` injetado ou o do `juiza_provedor`, se houver chave.
+    Sem cliente pago (nem Jev nem LLM), so a primeira pagina de regra roda.
+    Levanta ValueError se `juiza_modelo` for de outro provedor (ver avisos_config).
     """
     if modo not in ("diario", "backlog"):
         raise ValueError(f"modo desconhecido: {modo!r}")
     settings = get_settings()
+    avisos = avisos_config(settings)
+    for aviso in avisos:
+        logger.warning("juiza: configuracao: %s", aviso)
+    if "modelo_incompativel" in avisos:
+        raise ValueError(
+            f"JUIZA_MODELO={settings.juiza_modelo!r} com JUIZA_PROVEDOR="
+            f"{settings.juiza_provedor}: remova JUIZA_MODELO do .env"
+        )
     tamanho = lote or settings.juiza_lote
     backlog = modo == "backlog"
     finalidade = "backlog" if backlog else "producao"
@@ -202,28 +264,35 @@ def julgar_pendentes(
         teto_itens = settings.juiza_max_itens_dia if limite_itens is None else limite_itens
     universo = set(universo_coleta())
     nomes = nomes_por_ticker(NOMES_EMPRESA, APELIDOS)
-    res = ResultadoJuiza(pendentes=0, regra=0, jev=0, gemini=0, erros=0, runs=0,
-                         tokens_entrada=0, tokens_saida=0)
+    res = ResultadoJuiza(pendentes=0, regra=0, jev=0, llm=0, erros=0, runs=0,
+                         tokens_entrada=0, tokens_saida=0, provedor=settings.juiza_provedor,
+                         avisos=avisos)
     jev_proprio = None
     if jev is None and settings.jev_enabled and settings.jev_api_key:
         from tcc_scraper.llm.jev_client import JevClient  # lazy: so existe com o Jev ligado
         jev = jev_proprio = JevClient(settings.jev_api_key, settings.jev_modelo,
                                       settings.jev_timeout_s,
-                                      concorrencia=settings.jev_concorrencia)
+                                      concorrencia=settings.jev_concorrencia,
+                                      trecho_max=settings.jev_trecho)
     jev_ativo = settings.jev_enabled and jev is not None
-    gemini_ok = cliente is not None or bool(settings.gemini_api_key)
-    pago_ok = jev_ativo or gemini_ok
+    bloqueia_llm = "jev_sem_chave" in avisos
+    llm_ok = not bloqueia_llm and (cliente is not None or bool(settings.juiza_chave_llm))
+    pago_ok = jev_ativo or llm_ok
+    # O Jev recebe o trecho configurado; sem Jev, o trecho curto de sempre.
+    trecho_pedido = max(_TRECHO, settings.jev_trecho) if jev_ativo else _TRECHO
     teto: float | None = None  # calculado na primeira vez que um lote pago for necessario
     ultimo_custo = 0.0
-    # Pares que gastaram LLM. Com Jev, o par conta no lote do Jev e nao de novo no Gemini.
+    # Pares que gastaram LLM. Com Jev, o par conta no lote do Jev e nao de novo na LLM.
     pagos = 0
     erros_api_seguidos = 0
+    erros_jev_seguidos = 0
+    cliente_proprio = None
     cursor: tuple | None = None
 
     try:
         while True:
             itens = pendentes(VERSAO, settings.juiza_pagina, ordem=ordem, apos=cursor, anos=anos,
-                              max_tentativas=settings.juiza_max_tentativas)
+                              max_tentativas=settings.juiza_max_tentativas, trecho=trecho_pedido)
             res.pendentes += len(itens)
 
             # 1) Regra barata: resolve o obvio sem gastar token da LLM.
@@ -242,8 +311,11 @@ def julgar_pendentes(
                     _gravar_staging(s, regras)
             res.regra += len(regras)
 
-            # 2) Jev e Gemini. O teto de itens corta a pagina antes de qualquer chamada paga.
+            # 2) Jev e LLM. O teto de itens corta a pagina antes de qualquer chamada paga.
             restantes_llm = restantes
+            if restantes and bloqueia_llm:
+                res.parada = "jev_sem_chave"
+                break
             if restantes and pago_ok:
                 if teto_itens is not None:
                     restante_itens = teto_itens - pagos
@@ -254,7 +326,7 @@ def julgar_pendentes(
                 if teto is None:
                     teto = teto_usd(modo, orcamento_usd, settings)
 
-                # 2a) Jev: o que ele nao aceita segue para o Gemini.
+                # 2a) Jev: o que ele nao decide segue para a LLM.
                 if jev_ativo:
                     pendentes_jev, restantes_llm = restantes_llm, []
                     for lote_itens in _fatias(pendentes_jev, settings.jev_lote):
@@ -265,24 +337,32 @@ def julgar_pendentes(
                             res.parada = "orcamento_usd"
                             break
                         pagos += len(lote_itens)
-                        aceitos, sobra, custo = _julgar_lote_jev(
-                            lote_itens, jev, decide=settings.juiza_jev_decide, settings=settings,
+                        lote_jev = _julgar_lote_jev(
+                            lote_itens, jev, modo=settings.jev_modo_efetivo, settings=settings,
                             universo=universo, finalidade=finalidade,
                         )
-                        ultimo_custo = custo
-                        res.custo_usd += custo
+                        ultimo_custo = lote_jev.custo
+                        res.custo_usd += lote_jev.custo
                         res.runs += 1
-                        res.jev += len(aceitos)
-                        restantes_llm.extend(sobra)
+                        res.jev += len(lote_jev.linhas)
+                        if lote_jev.status == "erro_api":
+                            # Lote inteiro falhou: fica pendente, sem tentativa e sem LLM.
+                            res.erros += 1
+                            erros_jev_seguidos += 1
+                            if lote_jev.permanente or erros_jev_seguidos >= 2:
+                                res.parada = "erro_jev"
+                                break
+                        else:
+                            erros_jev_seguidos = 0
+                        restantes_llm.extend(lote_jev.sobra)
                     if res.parada:
                         break
 
-                # 2b) Gemini.
-                if restantes_llm and gemini_ok:
+                # 2b) LLM.
+                if restantes_llm and llm_ok:
                     if cliente is None:
-                        from tcc_scraper.llm.gemini_client import GeminiClient  # lazy: extra `llm`
-                        cliente = GeminiClient(settings.gemini_api_key, settings.juiza_modelo,
-                                               settings.llm_timeout_s, settings.llm_max_attempts)
+                        cliente = _criar_cliente_llm(settings)
+                        cliente_proprio = cliente
                     lotes = _fatias(restantes_llm, tamanho)
                     if observador is not None:
                         observador.plano(len(lotes))
@@ -295,17 +375,24 @@ def julgar_pendentes(
                             break
                         if not jev_ativo:
                             pagos += len(lote_itens)
-                        lote_res = _julgar_lote_gemini(lote_itens, cliente,
-                                                       modelo=settings.juiza_modelo,
-                                                       universo=universo, finalidade=finalidade,
-                                                       settings=settings)
+                        lote_res = _julgar_lote_llm(lote_itens, cliente,
+                                                    modelo=settings.juiza_modelo_efetivo,
+                                                    universo=universo, finalidade=finalidade,
+                                                    settings=settings)
                         ultimo_custo = lote_res.custo_usd
                         res.custo_usd += lote_res.custo_usd
                         res.runs += 1
-                        res.gemini += lote_res.aceitos
+                        res.llm += lote_res.aceitos
                         res.invalidos += lote_res.invalidos
                         res.tokens_entrada += lote_res.tokens_entrada or 0
                         res.tokens_saida += lote_res.tokens_saida or 0
+                        res.tokens_cache += lote_res.tokens_cache or 0
+                        if lote_res.sem_credito:
+                            res.erros += 1
+                            res.parada = "sem_credito"
+                            logger.warning("juiza: %s sem credito; execucao parada: %s",
+                                           settings.juiza_provedor, lote_res.erro)
+                            break
                         erros_api_seguidos = (erros_api_seguidos + 1
                                               if lote_res.status == "erro_api" else 0)
                         if lote_res.status != "ok":
@@ -323,9 +410,9 @@ def julgar_pendentes(
                 if not res.parada and teto_itens is not None and pagos >= teto_itens:
                     res.parada = "teto_itens"
 
-            if restantes_llm and not gemini_ok:
-                logger.warning("juiza: GEMINI_API_KEY ausente; %d itens seguem pendentes",
-                               len(restantes_llm))
+            if restantes_llm and not llm_ok:
+                logger.warning("juiza: %s sem chave: %d itens ficam pendentes",
+                               settings.juiza_provedor, len(restantes_llm))
             if res.parada:
                 break
             if not pago_ok or len(itens) < settings.juiza_pagina:
@@ -335,6 +422,8 @@ def julgar_pendentes(
     finally:
         if jev_proprio is not None:
             jev_proprio.close()
+        if cliente_proprio is not None and hasattr(cliente_proprio, "close"):
+            cliente_proprio.close()
     return res
 
 
@@ -351,6 +440,20 @@ def _deve_parar(observador: Any) -> bool:
     return observador is not None and bool(observador.deve_parar())
 
 
+def _criar_cliente_llm(settings: Any) -> Any:
+    """Cliente da LLM do `juiza_provedor`. O Gemini so e importado quando e usado (extra llm)."""
+    if settings.juiza_provedor == "openai":
+        return OpenAIClient(
+            settings.openai_api_key, settings.juiza_modelo_efetivo, settings.openai_timeout_s,
+            settings.openai_max_attempts, reasoning_effort=settings.openai_reasoning_effort,
+            max_output_tokens=settings.openai_max_output_tokens,
+            base_url=settings.openai_base_url,
+        )
+    from tcc_scraper.llm.gemini_client import GeminiClient  # lazy: so existe com o extra llm
+    return GeminiClient(settings.gemini_api_key, settings.juiza_modelo_efetivo,
+                        settings.llm_timeout_s, settings.llm_max_attempts)
+
+
 def _payload(item: dict) -> dict:
     """Item como o template da juiza espera: id, ticker, empresa, titulo, fonte, trecho."""
     return {
@@ -359,7 +462,7 @@ def _payload(item: dict) -> dict:
         "empresa": NOMES_EMPRESA.get(item["ticker"], item["ticker"]),
         "titulo": item.get("title") or "",
         "fonte": item.get("source_domain") or "",
-        "trecho": item.get("trecho") or "",
+        "trecho": (item.get("trecho") or "")[:_TRECHO],
     }
 
 
@@ -390,7 +493,7 @@ def _gravar_staging(session, linhas: list[dict]) -> None:
 
 
 def _gravar_run(s, **campos) -> int:
-    """Grava uma run da juiza (Gemini ou Jev), append-only, e devolve o id."""
+    """Grava uma run da juiza (LLM ou Jev), append-only, e devolve o id."""
     run = RawLlmJuizaRun(**campos)
     s.add(run)
     s.flush()
@@ -444,35 +547,47 @@ def _validar_itens(texto: str, chaves: set[tuple[str, str]]
     return aceitos, erros
 
 
-def _aceita_jev(julgamento: JulgamentoItem, origem: str, *, decide: bool, settings: Any) -> bool:
-    """Criterio de aceite do julgamento do Jev.
+def _aceita_jev(bruto: dict, julgamento: JulgamentoItem, origem: str, *, modo: str,
+                settings: Any) -> float | None:
+    """Confianca com que o julgamento do Jev entra na staging, ou None se ele vai para a LLM.
 
-    Decidindo: confianca >= `juiza_confianca_minima`. Triagem: so descarte (o que
-    `aprovado_para_entrega` reprova com o filtro da juiza) com confianca >=
-    `juiza_confianca_triagem`. O resto vai ao Gemini.
+    entrega: decide sozinho quando P(entra) ou P(nao entra) passa de `juiza_jev_limiar_entrega`
+    e concorda com a regra de entrega; a confianca gravada e essa probabilidade.
+    decide: aceita se confianca >= `juiza_confianca_minima`.
+    triagem: so descarte (o que `aprovado_para_entrega` reprova) com confianca >=
+    `juiza_confianca_triagem`.
     """
-    if decide:
-        return julgamento.confianca >= settings.juiza_confianca_minima
+    if modo == "entrega":
+        decisao = decisao_entrega(bruto, settings.juiza_jev_limiar_entrega)
+        if decisao is None:
+            return None
+        return float(bruto["p_entra"] if decisao else bruto["p_nao_entra"])
+    if modo == "decide":
+        if julgamento.confianca < settings.juiza_confianca_minima:
+            return None
+        return julgamento.confianca
     if julgamento.confianca < settings.juiza_confianca_triagem:
-        return False
+        return None
     dados = julgamento.model_dump(mode="json")
     par = Julgamento(
         papel=dados["papel"], tipo_conteudo=dados["tipo_conteudo"], evento=dados["evento"],
         qualidade=dados["qualidade"], tickers_adicionais=tuple(dados["tickers_adicionais"]),
     )
-    return not aprovado_para_entrega(par, origem, exigir_juiza=True)
+    if aprovado_para_entrega(par, origem, exigir_juiza=True):
+        return None
+    return julgamento.confianca
 
 
-def _julgar_lote_jev(lote_itens: list[dict], jev: Any, *, decide: bool, settings: Any,
-                     universo: set[str], finalidade: str
-                     ) -> tuple[list[dict], list[dict], float]:
-    """Um lote no Jev. Devolve (linhas de staging aceitas, sobra para o Gemini, custo em US$).
+def _julgar_lote_jev(lote_itens: list[dict], jev: Any, *, modo: str, settings: Any,
+                     universo: set[str], finalidade: str) -> _LoteJev:
+    """Um lote no Jev. Grava a run e devolve o aceito (staging), a sobra para a LLM e o custo.
 
-    A run e gravada com o prompt de `prompt_jev()`, quando a chamada voltou (ok ou parcial) ou
-    falhou (erro_api). Falha de um item vai para a sobra, sem tentativa. Excecao do cliente
-    (lote inteiro falho) manda o lote todo ao Gemini, tambem sem tentativa.
+    A run e gravada com o rotulo de `rotulo_modelo_jev()`, quando a chamada voltou (ok ou
+    parcial) ou falhou (erro_api). Item que o Jev nao resolve vai para a sobra, sem tentativa.
+    Excecao do cliente (lote inteiro falho) deixa o lote pendente: sobra vazia, sem LLM e sem
+    tentativa. `permanente` vem de JevFalhaLote.
     """
-    modelo = f"{settings.jev_modelo}/q{JEV_PERGUNTAS_VERSAO}"
+    modelo = rotulo_modelo_jev(settings.jev_modelo, settings.jev_trecho)
     pedidos = {(str(i["id"]), i["ticker"]): i for i in lote_itens}
     with session_scope() as s:
         prompt_id = garantir_prompt(s, prompt_jev())
@@ -480,8 +595,9 @@ def _julgar_lote_jev(lote_itens: list[dict], jev: Any, *, decide: bool, settings
     inicio = time.monotonic()
     try:
         resposta = jev.classificar_lote(lote_itens)
-    except Exception as exc:  # noqa: BLE001 -- Jev falho nao derruba a execucao: vai ao Gemini
-        logger.warning("juiza: Jev falhou, lote segue para o Gemini: %s", exc)
+    except Exception as exc:  # noqa: BLE001 -- Jev falho nao derruba a execucao: o lote fica pendente
+        permanente = exc.permanente if isinstance(exc, JevFalhaLote) else False
+        logger.warning("juiza: Jev falhou, lote fica pendente: %s", exc)
         with session_scope() as s:
             _gravar_run(
                 s, prompt_id=prompt_id, modelo=modelo, n_itens=len(lote_itens),
@@ -491,11 +607,11 @@ def _julgar_lote_jev(lote_itens: list[dict], jev: Any, *, decide: bool, settings
                 resposta_bruta=None, iniciado_em=iniciado,
                 finalizado_em=dt.datetime.now(dt.UTC),
             )
-        return [], list(lote_itens), 0.0
+        return _LoteJev(status="erro_api", permanente=permanente, linhas=[], sobra=[], custo=0.0)
 
     finalizado = dt.datetime.now(dt.UTC)
     custo = custo_jev(resposta.tokens_entrada, settings)
-    aceitos: list[tuple[dict, JulgamentoItem]] = []
+    aceitos: list[tuple[dict, dict]] = []
     vistos: set[tuple[str, str]] = set()
     for bruto in resposta.itens:
         if not isinstance(bruto, dict):
@@ -508,10 +624,11 @@ def _julgar_lote_jev(lote_itens: list[dict], jev: Any, *, decide: bool, settings
         if chave not in pedidos or chave in vistos:
             continue
         origem = pedidos[chave].get("origem") or ""
-        if not _aceita_jev(julgamento, origem, decide=decide, settings=settings):
+        conf = _aceita_jev(bruto, julgamento, origem, modo=modo, settings=settings)
+        if conf is None:
             continue
         vistos.add(chave)
-        aceitos.append((pedidos[chave], julgamento))
+        aceitos.append((pedidos[chave], {**julgamento.model_dump(mode="json"), "confianca": conf}))
     sobra = [i for i in lote_itens if (str(i["id"]), i["ticker"]) not in vistos]
     erro = "; ".join(f"{e['id']}/{e['ticker']}: {e['erro']}"
                      for e in resposta.erros)[:4000] or None
@@ -525,23 +642,26 @@ def _julgar_lote_jev(lote_itens: list[dict], jev: Any, *, decide: bool, settings
             iniciado_em=iniciado, finalizado_em=finalizado,
         )
         linhas = [
-            _linha_staging(item, julgamento.model_dump(mode="json"), modelo=modelo,
-                           run_id=run_id, universo=universo, agora=finalizado)
-            for item, julgamento in aceitos
+            _linha_staging(item, dados, modelo=modelo, run_id=run_id, universo=universo,
+                           agora=finalizado)
+            for item, dados in aceitos
         ]
         _gravar_staging(s, linhas)
-    return linhas, sobra, custo
+    return _LoteJev(status="parcial" if resposta.erros else "ok", permanente=False,
+                    linhas=linhas, sobra=sobra, custo=custo)
 
 
-def _julgar_lote_gemini(lote_itens: list[dict], cliente: Any, *, modelo: str,
-                        universo: set[str], finalidade: str, settings: Any) -> _LoteGemini:
-    """Uma chamada ao Gemini para o lote. Run, julgamentos e tentativas vao na mesma transacao.
+def _julgar_lote_llm(lote_itens: list[dict], cliente: Any, *, modelo: str,
+                     universo: set[str], finalidade: str, settings: Any) -> _LoteLlm:
+    """Uma chamada a LLM para o lote. Run, julgamentos e tentativas vao na mesma transacao.
 
     Status: ok (todos julgados), parcial (alguns faltam ou sao invalidos), erro_validacao
     (nenhum aceito), erro_json, erro_api. Em erro_api nao ha tentativa: a falha foi da API,
-    nao do par.
+    nao do par. `sem_credito` (SemCreditoLLM ou HTTP 402) tambem nao gera tentativa e para a
+    execucao.
     """
-    prompt = renderizar_prompt_juiza([_payload(i) for i in lote_itens])
+    prompt = renderizar_prompt_juiza([_payload(i) for i in lote_itens],
+                                     provedor=settings.juiza_provedor)
     with session_scope() as s:
         prompt_id = garantir_prompt(s, prompt)
 
@@ -549,11 +669,14 @@ def _julgar_lote_gemini(lote_itens: list[dict], cliente: Any, *, modelo: str,
     iniciado = dt.datetime.now(dt.UTC)
     inicio = time.monotonic()
     resposta, status, erro = None, "ok", None
+    sem_credito = False
     julgados: list[JulgamentoItem] = []
     try:
         resposta = cliente.classificar(prompt.texto, prompt.schema)
     except Exception as exc:  # noqa: BLE001 -- falha da API vira run erro_api; o lote segue pendente
         status, erro = "erro_api", f"{type(exc).__name__}: {exc}"[:4000]
+        sem_credito = (isinstance(exc, SemCreditoLLM) or getattr(exc, "code", None) == 402
+                       or getattr(exc, "status_code", None) == 402)
     faltam = len(pedidos) if resposta is not None else 0
     if resposta is not None:
         try:
@@ -573,8 +696,7 @@ def _julgar_lote_gemini(lote_itens: list[dict], cliente: Any, *, modelo: str,
     finalizado = dt.datetime.now(dt.UTC)
     custo = 0.0
     if resposta is not None:
-        custo = custo_gemini(resposta.tokens_entrada, resposta.tokens_saida,
-                             getattr(resposta, "tokens_pensamento", None), settings)
+        custo = custo_resposta(resposta, settings)
 
     linhas: list[dict] = []
     with session_scope() as s:
@@ -605,9 +727,11 @@ def _julgar_lote_gemini(lote_itens: list[dict], cliente: Any, *, modelo: str,
             aceitos_chaves = {(j.id, j.ticker) for j in julgados}
             nao_aceitos = [i for chave, i in pedidos.items() if chave not in aceitos_chaves]
             _registrar_tentativas(s, nao_aceitos, status=status, erro=erro)
-    return _LoteGemini(
+    return _LoteLlm(
         status=status, erro=erro, aceitos=len(linhas), invalidos=faltam,
         tokens_entrada=resposta.tokens_entrada if resposta else None,
         tokens_saida=resposta.tokens_saida if resposta else None,
         custo_usd=custo,
+        sem_credito=sem_credito,
+        tokens_cache=getattr(resposta, "tokens_cache", None) if resposta is not None else None,
     )

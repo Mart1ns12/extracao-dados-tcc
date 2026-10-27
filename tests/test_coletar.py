@@ -73,7 +73,7 @@ def _resultado_juiza():
         pendentes=10,
         regra=4,
         jev=2,
-        gemini=3,
+        llm=3,
         erros=1,
         runs=2,
         tokens_entrada=100,
@@ -352,12 +352,14 @@ class _ObsLog(_Obs):
 class _Concordancia:
     """Duble do ResultadoConcordancia: so o que a etapa e o log leem."""
 
-    decisao = "jev_decide"
+    decisao = "entrega"
     amostra = 200
     custo_usd = 0.0123
+    metricas = {"limiar_recomendado": 0.85}
 
     def resumo(self) -> dict:
-        return {"pedidos": 200, "amostra": 200, "decisao": "jev_decide"}
+        return {"pedidos": 200, "amostra": 200, "decisao": "entrega",
+                "limiar_recomendado": 0.85}
 
 
 def _instalar_funcao(monkeypatch, registro: list, retorno) -> None:
@@ -454,9 +456,11 @@ def test_concordancia_chama_medir_com_n_e_semente_e_loga_o_resumo(monkeypatch, s
     assert registro == [("func", "medir_concordancia", {"n": 200, "semente": 7})]
     assert resultado.status == "concluida"
     assert resultado.itens == 200
-    assert resultado.detalhes["decisao"] == "jev_decide"
+    assert resultado.detalhes["decisao"] == "entrega"
+    assert resultado.detalhes["limiar_recomendado"] == 0.85
     assert ("info", "juiza_concordancia: pedidos = 200") in obs.logs
-    assert ("info", "juiza_concordancia: decisao = jev_decide") in obs.logs
+    assert ("info", "juiza_concordancia: decisao = entrega") in obs.logs
+    assert ("info", "juiza_concordancia: limiar_recomendado = 0.85") in obs.logs
 
 
 def test_concordancia_sem_semente_usa_42(monkeypatch, settings) -> None:

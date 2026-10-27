@@ -1,12 +1,20 @@
 """Schema e prompt da juiza (sem rede)."""
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pytest
 from pydantic import ValidationError
 
 from tcc_scraper.config import universo_coleta
-from tcc_scraper.llm.juiza_prompt import VERSAO, renderizar_prompt_juiza
+from tcc_scraper.llm.juiza_prompt import NOME_OPENAI, VERSAO, renderizar_prompt_juiza
 from tcc_scraper.llm.juiza_schema import JulgamentoItem, schema_juiza
+
+# Hashes capturados ANTES da inclusao do provedor openai: provam que o prompt e o schema
+# Gemini nao mudaram. Mudar qualquer um deles exige subir VERSAO.
+SHA_PROMPT_GEMINI = "de667ecb84351fbfa4d608e8ae5cee3ddf9cd35c4c4c26a58c05201595f460a5"
+SHA_SCHEMA_GEMINI = "6ab1cf6a9401865506270828bb6b04b6bfc0f4468d87e183e003410671144c25"
 
 ITENS_A = [
     {
@@ -82,3 +90,52 @@ def test_papel_invalido_falha_na_validacao():
             qualidade=0.5,
             confianca=0.5,
         )
+
+
+def _nos(node):
+    """Todo no do schema (dicts e listas), em qualquer profundidade."""
+    yield node
+    if isinstance(node, dict):
+        filhos = node.values()
+    elif isinstance(node, list):
+        filhos = node
+    else:
+        filhos = []
+    for filho in filhos:
+        yield from _nos(filho)
+
+
+def test_sha256_gemini_nao_mudou():
+    assert renderizar_prompt_juiza(ITENS_A).sha256 == SHA_PROMPT_GEMINI
+    assert renderizar_prompt_juiza(ITENS_A, provedor="gemini").sha256 == SHA_PROMPT_GEMINI
+
+
+def test_schema_gemini_intacto():
+    schema = schema_juiza()
+    assert schema == schema_juiza("gemini")
+    hash_schema = hashlib.sha256(json.dumps(schema, sort_keys=True).encode("utf-8"))
+    assert hash_schema.hexdigest() == SHA_SCHEMA_GEMINI
+
+
+def test_schema_openai_estrito():
+    schema = schema_juiza("openai")
+    objetos = [n for n in _nos(schema) if isinstance(n, dict) and "properties" in n]
+    assert len(objetos) >= 2  # raiz (LoteJulgamento) e JulgamentoItem em $defs
+    for objeto in objetos:
+        assert objeto["additionalProperties"] is False
+        assert set(objeto["required"]) == set(objeto["properties"])
+    for no in _nos(schema):
+        if isinstance(no, dict):
+            assert "default" not in no
+            assert "title" not in no
+
+
+def test_prompt_openai_nome_versao_e_schema_proprio():
+    gemini = renderizar_prompt_juiza(ITENS_A)
+    openai = renderizar_prompt_juiza(ITENS_A, provedor="openai")
+    assert openai.nome == NOME_OPENAI == "juiza_openai"
+    assert openai.versao == VERSAO
+    assert openai.sha256 != gemini.sha256
+    assert openai.template == gemini.template
+    assert openai.schema == schema_juiza("openai")
+    assert openai.schema != gemini.schema

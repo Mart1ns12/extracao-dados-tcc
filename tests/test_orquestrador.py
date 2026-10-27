@@ -226,10 +226,26 @@ def test_warning_do_tcc_scraper_vai_para_o_log_do_painel_com_a_etapa(monkeypatch
     assert avisos[0]["etapa"] == "precos"
 
 
-def test_analise_sem_chave_gemini_e_pulada_sem_chamar_a_llm() -> None:
-    p = Progresso(RepositorioMemoria(), "E1", "analise", _ctx())
+def test_analise_desativada_e_pulada_sem_chamar_a_llm(monkeypatch) -> None:
+    import tcc_scraper.llm.job as job
 
-    r = E.etapa_analise(_ctx(), p)
+    monkeypatch.setattr(job, "run_daily_analysis", lambda *_: pytest.fail("chamou a LLM"))
+    ctx = _ctx()
+    ctx.settings.analise_enabled = False
+    p = Progresso(RepositorioMemoria(), "E1", "analise", ctx)
+
+    r = E.etapa_analise(ctx, p)
+
+    assert r.status == "pulada"
+    assert "ANALISE_ENABLED=false" in r.erro
+
+
+def test_analise_sem_chave_gemini_e_pulada_sem_chamar_a_llm() -> None:
+    ctx = _ctx()
+    ctx.settings.analise_enabled = True
+    p = Progresso(RepositorioMemoria(), "E1", "analise", ctx)
+
+    r = E.etapa_analise(ctx, p)
 
     assert r.status == "pulada"
     assert r.erro == "GEMINI_API_KEY ausente"
@@ -554,7 +570,7 @@ def _resultado_juiza(**campos):
         "pendentes": 10,
         "regra": 4,
         "jev": 2,
-        "gemini": 3,
+        "llm": 3,
         "erros": 1,
         "runs": 2,
         "tokens_entrada": 100,
@@ -565,7 +581,7 @@ def _resultado_juiza(**campos):
     return ResultadoJuiza(**base)
 
 
-def test_etapa_juiza_concluida_soma_regra_jev_e_gemini(monkeypatch) -> None:
+def test_etapa_juiza_concluida_soma_regra_jev_e_llm(monkeypatch) -> None:
     chamadas: list = []
 
     def falso(**kwargs):
@@ -594,7 +610,7 @@ def test_etapa_juiza_concluida_soma_regra_jev_e_gemini(monkeypatch) -> None:
 def test_etapa_juiza_concluida_mesmo_so_com_a_regra_barata(monkeypatch) -> None:
     monkeypatch.setattr(
         "tcc_scraper.llm.juiza.julgar_pendentes",
-        lambda **kw: _resultado_juiza(jev=0, gemini=0, regra=6),
+        lambda **kw: _resultado_juiza(jev=0, llm=0, regra=6),
     )
 
     r = E.etapa_juiza(_ctx(), _Observador())
@@ -614,6 +630,50 @@ def test_etapa_juiza_interrompida_e_falhou(monkeypatch) -> None:
     assert r.status == "falhou"
     assert r.erro == "interrompida: orçamento ou cancelamento"
     assert r.itens == 9
+
+
+def test_etapa_juiza_sem_credito_falha_com_a_parada_no_erro(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tcc_scraper.llm.juiza.julgar_pendentes",
+        lambda **kw: _resultado_juiza(parada="sem_credito", llm=0, jev=0, regra=0),
+    )
+
+    r = E.etapa_juiza(_ctx(), _Observador())
+
+    assert r.status == "falhou"
+    assert "sem_credito" in r.erro
+    assert r.detalhes["parada"] == "sem_credito"
+
+
+def test_etapa_juiza_jev_sem_chave_falha_e_leva_os_avisos(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tcc_scraper.llm.juiza.julgar_pendentes",
+        lambda **kw: _resultado_juiza(
+            parada="jev_sem_chave", avisos=["jev_sem_chave", "openai_sem_chave"],
+            llm=0, jev=0, regra=0),
+    )
+
+    r = E.etapa_juiza(_ctx(), _Observador())
+
+    assert r.status == "falhou"
+    assert "jev_sem_chave" in r.erro
+    assert "avisos: jev_sem_chave, openai_sem_chave" in r.erro
+    assert r.detalhes["avisos"] == ["jev_sem_chave", "openai_sem_chave"]
+
+
+def test_etapa_juiza_detalhes_trazem_llm_provedor_e_cache(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tcc_scraper.llm.juiza.julgar_pendentes",
+        lambda **kw: _resultado_juiza(provedor="openai", tokens_cache=50),
+    )
+
+    r = E.etapa_juiza(_ctx(), _Observador())
+
+    assert r.status == "concluida"
+    assert r.detalhes["llm"] == 3
+    assert r.detalhes["provedor"] == "openai"
+    assert r.detalhes["tokens_cache"] == 50
+    assert "gemini" not in r.detalhes
 
 
 def test_etapa_juiza_excecao_sobe_para_o_daily(monkeypatch) -> None:

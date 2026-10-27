@@ -15,6 +15,9 @@ from tcc_scraper.llm.juiza_schema import Evento, Papel, TipoConteudo, schema_jui
 from tcc_scraper.llm.prompt import PromptRenderizado
 
 NOME = "juiza"
+# Schema estrito da OpenAI difere do Gemini: outro nome, pois garantir_prompt recusa texto
+# diferente na mesma (nome, versao).
+NOME_OPENAI = "juiza_openai"
 VERSAO = 1
 
 
@@ -38,10 +41,14 @@ def universo_juiza() -> str:
     return "\n".join(linhas)
 
 
-def renderizar_prompt_juiza(itens: list[dict]) -> PromptRenderizado:
-    """itens: dicts com id, ticker, empresa, titulo, fonte e trecho (serializados como estao)."""
+def renderizar_prompt_juiza(itens: list[dict], provedor: str = "gemini") -> PromptRenderizado:
+    """itens: dicts com id, ticker, empresa, titulo, fonte e trecho (serializados como estao).
+
+    provedor: 'gemini' (padrao, inalterado) ou 'openai' (schema estrito, nome juiza_openai).
+    """
     template = _carregar_template()
-    schema = schema_juiza()
+    schema = schema_juiza(provedor)
+    nome = NOME_OPENAI if provedor == "openai" else NOME
     texto = Template(template).substitute(
         universo=universo_juiza(),
         itens=json.dumps(itens, ensure_ascii=False, indent=2),
@@ -50,7 +57,7 @@ def renderizar_prompt_juiza(itens: list[dict]) -> PromptRenderizado:
         eventos=", ".join(e.value for e in Evento),
     )
     return PromptRenderizado(
-        nome=NOME,
+        nome=nome,
         versao=VERSAO,
         texto=texto,
         template=template,

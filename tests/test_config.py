@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
+from pydantic import ValidationError
 
 from tcc_scraper.config import (
     APELIDOS,
@@ -132,3 +133,64 @@ def test_contas_cvm_tem_bpa_e_os_quatro_codigos_de_emprestimo():
     assert CONTAS_CVM["BPA"] == {"1.01.01": "caixa", "1.01.02": "aplicacoes_financeiras"}
     emprestimos = {"2.01.04.01", "2.01.04.02", "2.02.01.01", "2.02.01.02"}
     assert emprestimos <= set(CONTAS_CVM["BPP"])
+
+
+# Juiza: modo do Jev, modelo e chave por provedor. Limpa o ambiente para nao herdar
+# variaveis da maquina; _env_file=None impede a leitura do .env.
+VARS_JUIZA = (
+    "JUIZA_JEV_MODO",
+    "JUIZA_JEV_DECIDE",
+    "JUIZA_MODELO",
+    "JUIZA_PROVEDOR",
+    "JUIZA_JEV_LIMIAR_ENTREGA",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+)
+
+
+@pytest.fixture
+def ambiente_juiza_limpo(monkeypatch):
+    for nome in VARS_JUIZA:
+        monkeypatch.delenv(nome, raising=False)
+
+
+def test_jev_modo_padrao_e_entrega(ambiente_juiza_limpo):
+    assert Settings(_env_file=None).jev_modo_efetivo == "entrega"
+
+
+def test_jev_decide_sem_modo_vira_decide(ambiente_juiza_limpo):
+    assert Settings(_env_file=None, juiza_jev_decide=True).jev_modo_efetivo == "decide"
+
+
+def test_jev_decide_nao_sobrescreve_modo_explicito(ambiente_juiza_limpo):
+    s = Settings(_env_file=None, juiza_jev_decide=True, juiza_jev_modo="triagem")
+    assert s.jev_modo_efetivo == "triagem"
+
+
+def test_jev_decide_pelo_ambiente_vira_decide(ambiente_juiza_limpo, monkeypatch):
+    monkeypatch.setenv("JUIZA_JEV_DECIDE", "true")
+    assert Settings(_env_file=None).jev_modo_efetivo == "decide"
+
+
+def test_modelo_efetivo_segue_o_provedor(ambiente_juiza_limpo):
+    openai = Settings(_env_file=None, juiza_provedor="openai")
+    gemini = Settings(_env_file=None, juiza_provedor="gemini")
+    assert openai.juiza_modelo_efetivo == "gpt-5.6-luna"
+    assert gemini.juiza_modelo_efetivo == "gemini-3.1-flash-lite"
+
+
+def test_modelo_explicito_prevalece_sobre_o_padrao(ambiente_juiza_limpo):
+    assert Settings(_env_file=None, juiza_modelo="x").juiza_modelo_efetivo == "x"
+
+
+def test_chave_llm_segue_o_provedor(ambiente_juiza_limpo):
+    kwargs = {"openai_api_key": "sk-1", "gemini_api_key": "g-1"}
+    openai = Settings(_env_file=None, juiza_provedor="openai", **kwargs)
+    gemini = Settings(_env_file=None, juiza_provedor="gemini", **kwargs)
+    assert openai.juiza_chave_llm == "sk-1"
+    assert gemini.juiza_chave_llm == "g-1"
+
+
+def test_limiar_entrega_fora_da_faixa_e_rejeitado(ambiente_juiza_limpo):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, juiza_jev_limiar_entrega=0.5)

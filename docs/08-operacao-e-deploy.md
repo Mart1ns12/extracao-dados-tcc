@@ -118,7 +118,7 @@ python -m tcc_scraper.cli collect-indices --anos 2026
 
 | Comando | Opções | O que faz |
 |---|---|---|
-| `judge-news` | `--limite N` (teto de itens da rodada); `--backlog` (julga o passado, em ordem crescente, com teto em US$); `--orcamento-usd X` (teto extra em US$ da rodada, só com `--backlog`); `--anos ANO` (repetível, só com `--backlog`); `--status` (mostra pendentes, gasto e verbas, sem julgar); `--concordancia N` (mede a concordância Jev × Gemini em N pares, sem gravar julgamento); `--semente S` (semente da amostra de `--concordancia`, padrão 42) | Juíza de notícias: regra barata, Jev (se `JEV_ENABLED=true`) e Gemini sobre as pendentes. Sem `--backlog`, roda o modo diário, com teto mensal em US$. Grava `v1-raw_llm_juiza_runs`, `v1-staging_noticias_julgamento` e `v1-staging_juiza_tentativas` |
+| `judge-news` | `--limite N` (teto de itens da rodada); `--backlog` (julga o passado, em ordem crescente, com teto em US$); `--orcamento-usd X` (teto extra em US$ da rodada, só com `--backlog`); `--anos ANO` (repetível, só com `--backlog`); `--status` (mostra pendentes, gasto e verbas, Jev, provedor, modelo, chaves e avisos, sem julgar); `--concordancia N` (mede a concordância do Jev com a referência em N pares; só o Jev é chamado, sem gravar julgamento); `--semente S` (semente da amostra de `--concordancia`, padrão 42); `--referencia MODELO` (modelo de referência de `--concordancia`, padrão `gemini-3.1-flash-lite`) | Juíza de notícias: regra barata, Jev (se `JEV_ENABLED=true`) e LLM de fallback (`JUIZA_PROVEDOR`: OpenAI ou Gemini) sobre as pendentes. Sem `--backlog`, roda o modo diário, com teto mensal em US$. Grava `v1-raw_llm_juiza_runs`, `v1-staging_noticias_julgamento` e `v1-staging_juiza_tentativas` |
 | `build-entrega` | `--csv` (grava também cada tabela em CSV); `--tabela NOME` (repetível, nomes como em `MODELOS`: `noticias`, `precos`, `cadastro`, `mudancas_ticker`, `balancos`, `acoes_emitidas`, `proventos`, `indices`, `composicao_ibov`) | Monta as 9 tabelas da entrega no banco. Os CSVs vão para `ENTREGA_CSV_DIR`. Com `--tabela`, monta só as indicadas |
 
 ```bash
@@ -156,27 +156,36 @@ ali. Os caminhos de `EXPORT_DIR`, `ENTREGA_CSV_DIR` e `HF_CACHE_DIR` são padrõ
 
 | Variável | Padrão | No `.env.example` | Uso |
 |---|---|---|---|
+| `ANALISE_ENABLED` | `false` | sim | Liga a etapa `analise` do daily (Gemini). Desligada desde 2026-10-26 |
 | `GEMINI_API_KEY` | vazio | sim | Chave do Gemini. Sem ela, `analyze-llm` falha com mensagem clara |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | sim | Modelo da análise diária. Só Gemini 3 ou superior aceita busca e JSON schema juntos |
 | `LLM_TIMEOUT_S` | `180` | sim | Timeout de cada chamada |
 | `LLM_MAX_ATTEMPTS` | `3` | sim | Tentativas por chamada |
 | `LLM_TZ` | `America/Sao_Paulo` | sim | Fuso da data de referência da análise diária |
-| `JUIZA_MODELO` | `gemini-3.1-flash-lite` | sim | Modelo da juíza de notícias |
+| `JUIZA_PROVEDOR` | `openai` | sim | LLM de fallback da juíza: `openai` (`gpt-5.6-luna`) ou `gemini` |
+| `OPENAI_API_KEY` | vazio | sim | Chave da OpenAI, usada pela juíza com `JUIZA_PROVEDOR=openai`. Sem ela, aviso `openai_sem_chave` |
+| `JUIZA_MODELO` | vazio | sim | Override do modelo da juíza. Vazio = padrão do provedor (`gpt-5.6-luna` ou `gemini-3.1-flash-lite`). Com `openai`, um `gemini-...` gera `modelo_incompativel`: remova a variável |
 | `JUIZA_MAX_ITENS_DIA` | `2000` | sim | Teto de pares pagos na etapa diária. Junto com o teto em US$, protege o custo |
-| `JUIZA_ORCAMENTO_MENSAL_USD` | `3.0` | sim | Teto em US$ da juíza diária, por mês |
-| `JUIZA_BACKLOG_VERBA_USD` | `15.0` | sim | Verba única, em US$, do backlog (cumulativa entre execuções) |
-| `JUIZA_LOTE` | `50` | sim | Itens por lote enviado à juíza |
+| `JUIZA_ORCAMENTO_MENSAL_USD` | `3.0` | sim | Teto em US$ da juíza diária, por mês (Jev e LLM de fallback somados) |
+| `JUIZA_BACKLOG_VERBA_USD` | `15.0` | sim | Verba única, em US$, do backlog (cumulativa entre execuções; Jev e LLM somados) |
+| `JUIZA_LOTE` | `50` | sim | Itens por lote enviado à LLM de fallback |
 | `JUIZA_PAGINA` | `5000` | sim | Pares lidos do banco por página |
 | `JUIZA_MAX_TENTATIVAS` | `3` | sim | Tentativas por par antes de sair da fila |
-| `JUIZA_CONFIANCA_MINIMA` | `0.5` | sim | Confiança mínima do Jev para aceitar, com `JUIZA_JEV_DECIDE=true`. Não filtra o Gemini |
-| `JUIZA_JEV_DECIDE` | `false` | sim | `true`: o Jev decide. `false`: o Jev só aceita descartes. Ligar só depois de `judge-news --concordancia` (seção 5.1) |
-| `JUIZA_CONFIANCA_TRIAGEM` | `0.9` | sim | Confiança mínima do Jev para aceitar um descarte, com `JUIZA_JEV_DECIDE=false` |
-| `JUIZA_PRECO_ENTRADA_USD_MTOK`, `JUIZA_PRECO_SAIDA_USD_MTOK` | `0.25`, `1.50` | sim | Preço do Gemini da juíza, em US$ por milhão de tokens |
-| `JEV_ENABLED` | `false` | sim | Liga o Jev. Sem `JEV_API_KEY`, não roda |
+| `JUIZA_JEV_MODO` | `entrega` | sim | `entrega`: o Jev decide por entrega segura (ver [04](04-juiza-e-llm.md), seção 2.4.1). `triagem`: o Jev só aceita descartes. `decide`: o Jev decide com `JUIZA_CONFIANCA_MINIMA`. Ajustar só depois de `judge-news --concordancia` (seção 5.1) |
+| `JUIZA_JEV_LIMIAR_ENTREGA` | `0.9` | sim | Probabilidade mínima para o Jev decidir no modo `entrega` (maior que 0,5 e até 1). Usar o `limiar_recomendado` da concordância |
+| `JUIZA_JEV_DECIDE` | `false` | sim | **Obsoleta.** Só vale se `JUIZA_JEV_MODO` não foi definido (`true` equivale a `decide`). Use `JUIZA_JEV_MODO` |
+| `JUIZA_CONFIANCA_MINIMA` | `0.5` | sim | Confiança mínima do Jev para aceitar, com `JUIZA_JEV_MODO=decide`. Não filtra a LLM |
+| `JUIZA_CONFIANCA_TRIAGEM` | `0.9` | sim | Confiança mínima do Jev para aceitar um descarte, com `JUIZA_JEV_MODO=triagem` |
+| `JUIZA_PRECO_ENTRADA_USD_MTOK`, `JUIZA_PRECO_SAIDA_USD_MTOK`, `JUIZA_PRECO_CACHE_USD_MTOK` | vazios (tabela do provedor: OpenAI `0.20`, `1.20`, `0.02`; Gemini `0.25`, `1.50`, `0.25`) | sim | Preço da LLM de fallback da juíza, em US$ por milhão de tokens |
+| `JEV_ENABLED` | `false` | sim | Liga o Jev. Com `true` e sem `JEV_API_KEY`, a LLM fica bloqueada (parada `jev_sem_chave`) |
 | `JEV_API_KEY` | vazio | sim | Chave do Jev |
 | `JEV_MODELO` | `jev-1.13.0` | sim | Modelo do Jev, fixado. Nunca `latest` |
 | `JEV_PRECO_ENTRADA_USD_MTOK` | `0.042` | sim | Preço do Jev, em US$ por milhão de tokens de entrada. Saída grátis |
 | `JEV_LOTE`, `JEV_CONCORRENCIA`, `JEV_TIMEOUT_S` | `50`, `8`, `30.0` | sim | Pares por lote, requisições em paralelo e timeout de cada uma |
+| `JEV_TRECHO` | `1500` | sim | Caracteres do corpo que o Jev recebe (faixa de 300 a 8.000). A LLM de fallback continua com 300 |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | sim | Base da API da OpenAI |
+| `OPENAI_TIMEOUT_S`, `OPENAI_MAX_ATTEMPTS` | `120`, `3` | sim | Timeout de cada chamada e tentativas em falhas transitórias. Não há retry em `insufficient_quota` |
+| `OPENAI_REASONING_EFFORT`, `OPENAI_MAX_OUTPUT_TOKENS` | `none`, `16000` | sim | Esforço de raciocínio do `gpt-5.6-luna` (`none` é o menor valor aceito) e teto de tokens de saída por chamada |
 
 ### 3.5 Entrega, executor e daily
 
@@ -220,7 +229,7 @@ O scraper roda no Railway como **worker sempre ligado**: o serviço executa `pyt
      não baixa cerca de 900 MB a cada deploy.
   4. `CMD ["python", "-m", "tcc_scraper.cli", "executor"]`.
 - **Variáveis**: no painel do Railway, nunca no repositório. Pelo menos: `IP_BANCO`, `USER_BANCO`, `SENHA_BANCO`,
-  `PORTA_BANCO`, `NOME_BANCO`, `PAINEL_API_URL`, `EXECUTOR_TOKEN`, `GEMINI_API_KEY` e `JUIZA_*`, conforme o uso.
+  `PORTA_BANCO`, `NOME_BANCO`, `PAINEL_API_URL`, `EXECUTOR_TOKEN`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `JEV_ENABLED`, `JEV_API_KEY`, `JUIZA_*` e `OPENAI_*`, conforme o uso.
 - **Banco remoto para o Railway.** O worker grava no MySQL do servidor pela internet. Crie um usuário próprio para o Railway, sem DDL:
 
   ```sql
@@ -270,11 +279,25 @@ Passo a passo para levar a juíza ao estado novo: julga todos os pares, com teto
 1. **Aplicar o lote de 2026-10-23 à mão** no MySQL do `.env`, da máquina local: `sql/lotes/2026-10-23_lote.mysql.sql`. Ele junta, na ordem, os três ALTERs de `sql/alteracoes/2026-10-23_*`: a coluna `raw_articles.published_time_source`, as colunas `custo_usd` e `finalidade` em `v1-raw_llm_juiza_runs` com a tabela `v1-staging_juiza_tentativas`, e a tabela `v1-composicao_ibov`. Rode uma vez só: DDL do MySQL não tem rollback. O fim do arquivo traz a conferência, que deve devolver 5 linhas.
 2. **Subir o código novo.** Só depois do passo 1. Se a juíza roda no Railway, as variáveis `JEV_*` e `JUIZA_*` vão no painel do Railway, e o executor não aplica ALTER.
 3. **Conferir pelo painel.** Na tela **Qualidade**, o card **Status da juíza** mostra `pendentes`, `esgotados`, o gasto do mês e o do backlog contra as verbas. Se uma seção aparecer em `erros` (por exemplo, coluna ainda inexistente), o lote não foi aplicado completo.
-4. **Medir a concordância pelo painel.** Na tela **Qualidade**, o formulário "Medir concordância" (N e semente), com a confirmação "gasta API real (Jev + Gemini)". Exige `JEV_ENABLED=true`, `JEV_API_KEY` e `GEMINI_API_KEY` no executor; sem elas, a execução falha com a mensagem `concordancia exige o Jev` ou `concordancia exige o Gemini`. Anote a decisão, a concordância e o kappa de `papel` e de `tipo_conteudo`, e o custo do resumo. A medição não grava julgamento e não tem teto.
-5. **Decidir o modo do Jev (dono).** Pela regra da seção 2.7: se o mínimo entre a concordância de `papel` e a de `tipo_conteudo` for pelo menos 0,85, a decisão é `jev_decide`, e o dono pode definir `JUIZA_JEV_DECIDE=true`. Senão, `JUIZA_JEV_DECIDE=false` (triagem). O painel só mostra a decisão; não altera a config.
-6. **Julgar o backlog pelo painel.** Na tela **Faltantes**, a verificação "Pares sem julgamento" (`juiza_pendentes`): marque os anos e confirme. O painel envia o comando `coletar` com o item `{"coletor": "juiza", "anos": [...]}`, e a juíza roda em modo backlog, com a verba de US$ 15, que é cumulativa (o que a carga histórica já gastou conta). Para conferir o custo, comece por um ano só e olhe o card **Status da juíza** antes de seguir.
+4. **Medir a concordância pelo painel.** Na tela **Qualidade**, o formulário "Medir concordância" (N e semente), com a confirmação de gasto com API real. Exige `JEV_ENABLED=true` e `JEV_API_KEY` no executor; sem elas, a execução falha com a mensagem `concordancia exige o Jev`. Não precisa de chave da LLM, porque a LLM não é chamada. Anote a decisão, o `limiar_recomendado`, a concordância e o kappa de `papel` e de `tipo_conteudo`, a precisão por direção e o custo do resumo. A medição não grava julgamento e não tem teto. O resultado do CLI, `python -m tcc_scraper.cli judge-news --concordancia 500`, é o mesmo e pode ser usado no lugar do painel.
+5. **Decidir o modo e o limiar (dono).** O resultado traz `decisao` e `limiar_recomendado` (seção 2.7 de [04](04-juiza-e-llm.md)). Se `decisao = entrega`, o dono define `JUIZA_JEV_LIMIAR_ENTREGA` com o `limiar_recomendado` e mantém `JUIZA_JEV_MODO=entrega`. Se `decisao = triagem`, o dono define `JUIZA_JEV_MODO=triagem`. O painel só mostra a decisão; não altera a config.
+6. **Julgar o backlog pelo painel.** Na tela **Faltantes**, a verificação "Pares sem julgamento" (`juiza_pendentes`): marque os anos e confirme. O painel envia o comando `coletar` com o item `{"coletor": "juiza", "anos": [...]}`, e a juíza roda em modo backlog, com a verba de US$ 15, que é cumulativa (o que a carga histórica já gastou conta, e o Jev e a LLM de fallback somam nela). Para conferir o custo, comece por um ano só e olhe o card **Status da juíza** antes de seguir.
 7. **Conferir.** O card **Status da juíza** mostra `pendentes`, `esgotados`, `gasto_backlog_usd` contra `verba_backlog_usd` e o gasto do mês. Repita o passo 6 até `pendentes` ficar perto de zero. Pares `esgotados` já gastaram as tentativas e saem da fila.
 8. **Ligar o filtro da entrega.** Com `pendentes` perto de zero, defina `ENTREGA_FILTRO_JUIZA=true` (variável do executor, não é ação do painel) e monte a entrega pelo painel: na tela de disparo, a etapa `entrega` monta as 9 tabelas. O CSV continua sendo gerado localmente (`build-entrega --csv`), porque o disco do Railway é efêmero. Ligar o filtro antes de julgar o backlog derruba cerca de 92% da `v1-noticias`, porque o par sem julgamento fica de fora. Por isso o padrão em código só passa a `true` depois deste passo (a troca de padrão é a última fase do plano de 2026-10-23).
+
+### 5.2 Juíza: Jev por entrega segura e fallback OpenAI (2026-10-26)
+
+Checklist para a implantação da nova juíza. Vale na máquina do executor (ou nas variáveis do serviço no Railway). A decisão está no ADR "Juíza: Jev decide por entrega segura; fallback OpenAI gpt-5.6-luna (effort none)", e o fluxo, em [04](04-juiza-e-llm.md), seções 2.3, 2.4 e 2.9.
+
+1. **Gerar uma chave nova do Jev** e inutilizar a antiga. A chave atual vazou em uma transcrição.
+2. **Obter a chave da OpenAI** (`OPENAI_API_KEY`), com crédito. Sem crédito, a juíza para com `sem_credito`.
+3. **Definir no executor:** `JEV_ENABLED=true`, `JEV_API_KEY`, `OPENAI_API_KEY`, `JUIZA_PROVEDOR=openai` e `JUIZA_JEV_MODO=entrega`. Confirmar `ANALISE_ENABLED=false` (padrão desde 2026-10-26, até a análise migrar para a OpenAI).
+4. **Remover `JUIZA_MODELO=gemini-...`**, se a variável existir. Com `JUIZA_PROVEDOR=openai`, ela gera `modelo_incompativel`.
+5. **Subir o código novo** com essas variáveis.
+6. **Rodar `judge-news --concordancia 500`** antes de retomar o backlog. Custo de cerca de US$ 0,02, só do Jev, sem teto. Anote `decisao`, `limiar_recomendado`, a concordância e a precisão por direção, e `perda_tickers_adicionais`.
+7. **Conferir `JUIZA_JEV_LIMIAR_ENTREGA`** com o `limiar_recomendado` (dono). Medido em 2026-10-26: 0,9, que é o padrão, então não precisa mudar. Se `decisao = triagem`, use `JUIZA_JEV_MODO=triagem`.
+8. **Conferir com `judge-news --status`.** Jev ligado, chave do Jev presente, modo `entrega`, limiar, trecho 1500, provedor `openai`, modelo `gpt-5.6-luna`, chave da OpenAI presente e nenhum aviso.
+9. **Retomar o backlog** pelo passo 6 da seção 5.1.
 
 ## 6. Problemas conhecidos e soluções
 
@@ -295,6 +318,10 @@ Passo a passo para levar a juíza ao estado novo: julga todos os pares, com teto
 | `CRFB3` sem código CVM e sem CNPJ | Companhia fechou capital e saiu da B3 | Esperado. Fica no universo só para preço e notícia. `validate-cadastro` trata como aviso |
 | `historico --anos 2026 2025` não funciona | Opções repetíveis no Typer | Use `--anos 2026 --anos 2025` |
 | `analyze-llm` falha sem chave | `GEMINI_API_KEY` vazia | Preencha a chave. O job exige a chave e falha com mensagem clara |
+| Juíza para com `jev_sem_chave` | `JEV_ENABLED=true` sem `JEV_API_KEY`. A LLM fica bloqueada | Defina `JEV_API_KEY`, ou `JEV_ENABLED=false` (o aviso `jev_desligado` aparece no `--status`) |
+| Juíza para com `erro_jev` | O lote do Jev falhou 2 vezes seguidas, ou todos os itens voltaram com 401, 402 ou 403 | Confira a chave e o saldo do Jev. Os pares ficam pendentes e não vão à LLM |
+| Juíza para com `sem_credito` | OpenAI com 429 `insufficient_quota`, ou Gemini com 402 | Recarregue o crédito e rode de novo. Não há retry |
+| `judge-news --status` mostra `modelo_incompativel` | `JUIZA_MODELO=gemini-...` com `JUIZA_PROVEDOR=openai` | Remova `JUIZA_MODELO` do `.env` ou do painel do Railway |
 | `sql/completo_ate_*` ou `sql/0008_*` não existem mais | Arquivos gerados pelo Alembic, removidos na descontinuação | Use `sql/schema.mysql.sql` para banco vazio, e `sql/alteracoes/` para mudanças |
 | Testes com banco apagam ou sujam dados | Eles gravam no MySQL real do `.env` | Só rode com `TCC_TESTES_COM_BANCO=1` quando aceitar essa gravação. Limpeza restrita aos prefixos de teste |
 

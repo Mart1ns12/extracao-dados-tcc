@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 PAPEIS_ENTREGUES = frozenset({"protagonista", "citada_com_fato"})
+TIPO_ENTREGUE = "reportagem"
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,10 @@ class Julgamento:
     evento: str
     qualidade: float
     tickers_adicionais: tuple[str, ...]
+
+
+def entra_por_rotulos(papel: str, tipo_conteudo: str) -> bool:
+    return tipo_conteudo == TIPO_ENTREGUE and papel in PAPEIS_ENTREGUES
 
 
 def aprovado_para_entrega(julgamento: Julgamento | None, origem: str, exigir_juiza: bool) -> bool:
@@ -33,4 +38,4 @@ def aprovado_para_entrega(julgamento: Julgamento | None, origem: str, exigir_jui
         return True
     if julgamento is None:
         return False
-    return julgamento.tipo_conteudo == "reportagem" and julgamento.papel in PAPEIS_ENTREGUES
+    return entra_por_rotulos(julgamento.papel, julgamento.tipo_conteudo)

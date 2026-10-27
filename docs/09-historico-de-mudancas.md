@@ -542,3 +542,47 @@ Contagem de papéis depois de cada data da linha do tempo:
 **Verificação.** Suíte inteira: 700 passed, 39 skipped, 1 xfailed. Ruff: sem erros em `src` e `tests`. Nenhum teste com banco foi habilitado.
 
 **Não verificado.** A execução ponta a ponta pelo painel (o painel é outro repositório, editado em paralelo) e a medição real da concordância, que gasta API.
+
+## 18. Juíza refeita, medições e análise desligada (2026-10-26)
+
+**O problema.** Em 2026-10-24, a carga histórica gastou US$ 2,24 em 13.144 pares julgados só pelo Gemini `gemini-3.1-flash-lite`, e parou com 402 (crédito esgotado). O Jev nunca tinha rodado: `JEV_ENABLED=true` sem `JEV_API_KEY` era ignorado em silêncio. A análise diária também depende do Gemini e ficou sem crédito. Faltavam medições de custo por par, do limiar do Jev e da LLM de fallback.
+
+**Decisão.**
+
+- **Juíza em três passos.** Regra barata, depois o Jev em `JUIZA_JEV_MODO=entrega` (ele decide "entra" ou "não entra" quando tem segurança), depois a LLM de fallback `gpt-5.6-luna` na OpenAI, com `reasoning.effort = none`, schema estrito e `store = false`. Fluxo em [04](04-juiza-e-llm.md), seção 2. Decisão no ADR de 2026-10-26.
+- **Paradas explícitas** `jev_sem_chave`, `erro_jev` e `sem_credito`, no lugar da falha silenciosa.
+- **Análise diária desligada** por `ANALISE_ENABLED=false`, padrão do código. A etapa `analise` sai como `pulada`, e o `analyze-llm` manual continua. A migração para a OpenAI está pendente.
+- **Medições de 2026-10-26**, que substituem as estimativas e o limiar provisório:
+  - Spike com 50 pares já julgados pelo Gemini, sem gravar nada: o Jev respondeu 50 de 50 em 3,7 s, com cerca de 1.155 tokens por par (US$ 0,000049). Com só papel e tipo, caiu para 725 tokens (−37%), com rótulos iguais em 47 de 50 e decisão de entrega diferente em 1 de 50. O dono decidiu manter as 4 perguntas.
+  - Luna (`effort none`): 50 de 50 itens válidos, cerca de US$ 0,00009 por par sem cache, e cerca de US$ 0,00007 numa repetição com cache.
+  - `judge-news --concordancia 500` (US$ 0,0245): limiar recomendado 0,9. Cobertura de 68,8%, concordância de 95,9%, precisão de 96,7% (entra) e 95,0% (não entra), kappa de 0,918 em 344 decididos. O modo `decide` segue reprovado. Em 28% dos pares decididos, o Gemini tinha tickers adicionais que se perdem.
+  - Projeção: Jev em todos os pares e Luna nos cerca de 31% restantes dá cerca de US$ 0,00008 por par. O backlog de 13.144 pares sairia por cerca de US$ 0,97, contra US$ 2,24 pagos ao Gemini.
+- **Documentação.** `docs/04` (seções 2 a 4), `docs/08` (seção 5.2), `docs/ADR.md` (frase de medição na decisão da juíza e ADR "Análise diária desligada até migrar para a OpenAI") e `CLAUDE.md` (seções 6 e 9).
+
+**Arquivos alterados** (código, ainda sem commit):
+
+- `src/tcc_scraper/config.py`: `ANALISE_ENABLED` (padrão `false`) e as variáveis da juíza, do Jev e da OpenAI.
+- `.env.example`: variáveis novas da juíza, do Jev e da OpenAI.
+- `src/tcc_scraper/entrega/filtros.py`: `entra_por_rotulos`.
+- `src/tcc_scraper/llm/jev_client.py`: modos `entrega`, `triagem` e `decide`, com probabilidades.
+- `src/tcc_scraper/llm/openai_client.py` (novo): cliente da Responses API.
+- `src/tcc_scraper/llm/schema.py`: `schema_para_openai`.
+- `src/tcc_scraper/llm/juiza_schema.py`, `llm/juiza_prompt.py` (prompt `juiza_openai`), `llm/juiza_custo.py` (`custo_llm` e `custo_resposta`; `custo_gemini` removido), `llm/juiza.py` e `llm/juiza_concordancia.py`.
+- `src/tcc_scraper/orquestrador/etapas.py` (`PARADAS_FALHA` e análise desligável) e `orquestrador/coletores.py`.
+- `src/tcc_scraper/cli.py`: `judge-news --referencia`, e `--status` ampliado.
+- Testes: `test_config`, `test_jev_client`, `test_openai_client` (novo), `test_juiza_prompt`, `test_juiza_custo`, `test_juiza`, `test_juiza_concordancia`, `test_orquestrador`, `test_coletar`, `test_cli_coletores` e `test_cli_juiza` (novo).
+
+**Verificação.** Suíte inteira: 797 passed, 39 skipped (testes com banco, opt-in), 1 xfailed. Ruff limpo.
+
+**Não verificado.**
+
+- O custo real do backlog em produção. Os números são de amostra e de projeção.
+- A implantação no executor: chave nova do Jev e chave da OpenAI com crédito.
+- A análise diária continua sem migração. Enquanto isso, as `staging_llm_*` não são atualizadas.
+
+**Limitações para o TCC.**
+
+- Concordância não é acurácia. Dois modelos que erram do mesmo jeito concordam.
+- Perda de `tickers_adicionais` em 28% dos pares decididos pelo Jev.
+- Assimetria de contexto: a referência viu 300 caracteres e o Jev vê 1.500. Na amostra, o trecho médio tinha 88 caracteres, então o Jev julgou quase só pela manchete.
+- A chave atual do Jev vazou em uma transcrição e precisa ser substituída antes da implantação.

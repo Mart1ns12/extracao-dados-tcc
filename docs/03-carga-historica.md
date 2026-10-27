@@ -32,20 +32,21 @@ Cada passo é uma unidade de trabalho com um coletor e um ano. Os passos globais
 | Ordem | Passo (coletor) | Ano | Argumentos | Retoma por checkpoint |
 |---|---|---|---|---|
 | 1 | `yahoo` | Mais recente | Preços de todos os tickers | Não (`resume=False`): refaz tudo |
-| 2 | `bcb` | Mais recente | Selic e PTAX | Sim |
-| 3 | `indices_bcb` | Mais recente | CDI e IPCA de todos os anos pedidos | Sim |
-| 4 | `cvm_cadastro` | Mais recente | Cadastro da CVM | Sim |
-| 5 | `b3_cadastro` | Mais recente | Cadastro da B3 | Sim |
-| 6 | `b3_proventos` | Mais recente | Proventos da B3 | Não (`resume=False`): refaz tudo |
-| 7 | `cvm_itr_dfp` | Mais recente | ITR e DFP de todos os anos pedidos | Sim |
-| 8 | `google_news` | Cada segmento | Do início do segmento até o fim (exclusivo) | Sim |
-| 9 | `cvm_ipe` | Cada segmento | Só o ano do segmento | Sim |
-| 10 | `enriquecimento` | Cada segmento | Corpo dos artigos | Não (`resume=False`); só entram os pendentes |
-| 11 | `finbert` | Cada segmento | Sentimento dos artigos pendentes | Não se aplica (função) |
-| 12 | `juiza` | Cada segmento | Até `JUIZA_MAX_ITENS_DIA` pares por segmento | Não se aplica (função) |
-| 13 | `build_entrega` | Cada segmento | Monta as 9 tabelas da entrega | Não se aplica (função) |
+| 2 | `b3_indices` | Mais recente | Índices IDIV, SMLL e IFIX de todos os anos pedidos | Sim |
+| 3 | `bcb` | Mais recente | Selic e PTAX | Sim |
+| 4 | `indices_bcb` | Mais recente | CDI e IPCA de todos os anos pedidos | Sim |
+| 5 | `cvm_cadastro` | Mais recente | Cadastro da CVM | Sim |
+| 6 | `b3_cadastro` | Mais recente | Cadastro da B3 | Sim |
+| 7 | `b3_proventos` | Mais recente | Proventos da B3 | Não (`resume=False`): refaz tudo |
+| 8 | `cvm_itr_dfp` | Mais recente | ITR e DFP de todos os anos pedidos | Sim |
+| 9 | `google_news` | Cada segmento | Do início do segmento até o fim (exclusivo) | Sim |
+| 10 | `cvm_ipe` | Cada segmento | Só o ano do segmento | Sim |
+| 11 | `enriquecimento` | Cada segmento | Corpo dos artigos | Não (`resume=False`); só entram os pendentes |
+| 12 | `finbert` | Cada segmento | Sentimento dos artigos pendentes | Não se aplica (função) |
+| 13 | `juiza` | Cada segmento | Modo `backlog`: do par mais antigo ao mais recente, sem teto de itens; limitada pela verba `JUIZA_BACKLOG_VERBA_USD` (US$ 15), cumulativa | Não se aplica (função) |
+| 14 | `build_entrega` | Cada segmento | Monta as 9 tabelas da entrega | Não se aplica (função) |
 
-A carga não segue a ordem do daily: primeiro vêm os passos globais, depois os passos ano a ano. Os coletores são os mesmos do daily (ver [02](02-pipeline-diaria.md), seção 3).
+A carga não segue a ordem do daily: primeiro vêm os passos globais, depois os passos ano a ano. Os coletores são os mesmos do daily (ver [02](02-pipeline-diaria.md), seção 3), exceto a carteira do IBOV (`b3_carteira_ibov`), que a carga não roda: ela existe só no daily e no `coletar`. A análise diária (`analise`) também não entra na carga.
 
 A unidade de progresso é o par (coletor, ano). `v1-painel_historico_progresso` guarda uma linha por par.
 
@@ -107,7 +108,7 @@ Status da carga: `em_andamento`, `pausando`, `pausada`, `cancelando`, `cancelada
 |---|---|---|
 | Google News | 6 a 9 horas por ano de notícias | Spec de entrega, seção 9.2. A ADR registra 6 a 9 horas para as 9.010 janelas da v1 |
 | CVM, B3, BCB e Yahoo | Minutos para cinco anos | Spec de entrega, seção 9.2 |
-| Juíza e análise (Gemini) | Juíza do backlog: verba de US$ 15, cumulativa. Juíza diária e análise: dentro do teto de US$ 5/mês | [04](04-juiza-e-llm.md), seção 2.5. A juíza diária tem teto próprio de US$ 3/mês |
+| Juíza (Jev e OpenAI) e análise (Gemini) | Juíza do backlog: verba de US$ 15, cumulativa, somando Jev e LLM de fallback. Análise diária: teto de US$ 5/mês no Gemini | [04](04-juiza-e-llm.md), seção 2.5. A juíza diária tem teto próprio de US$ 3/mês |
 | Carga completa | Não medida neste código | Não há medição de uma carga multi-ano |
 
 **Atenção ao custo da juíza.** Em cada segmento, a juíza roda em modo backlog: sem teto de itens, limitada pela verba de US$ 15 (`JUIZA_BACKLOG_VERBA_USD`), que é cumulativa entre execuções. A checagem é feita antes de cada lote, e o estouro máximo é de um lote. Antes de uma carga grande, confira `judge-news --status` (verba e gasto do backlog) e a estimativa em [04](04-juiza-e-llm.md).

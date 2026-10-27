@@ -34,8 +34,8 @@ pregões — sem isso, os 20 primeiros dias do dataset sairiam sem `retorno_20d`
 **O dataset é materializado em `features_dataset_v1`** pelo `build-dataset`, além de
 exportado em Parquet/CSV. Upsert por `(data, ticker)`: remontar sobrescreve, não duplica.
 
-**Restrição dominante do projeto: custo zero, exceto a LLM do Google (teto US$ 5/mês) e o Jev.**
-A análise diária por LLM (Gemini) e a juíza de notícias são as dependências pagas. A juíza usa o mesmo Gemini, com teto próprio de US$ 3/mês e verba única de US$ 15 para o backlog, dentro do total de US$ 5/mês. O Jev (TypeSafe AI) é a segunda exceção paga, aprovada em 2026-10-23, a US$ 0,042 por milhão de tokens de entrada; o custo dele entra nas somas da juíza.
+**Restrição dominante do projeto: custo zero, exceto o Gemini da análise diária (teto US$ 5/mês), a OpenAI como LLM de fallback da juíza e o Jev.**
+As dependências pagas são a análise diária por LLM (Gemini), a juíza de notícias e o Jev (TypeSafe AI), aprovado em 2026-10-23, a US$ 0,042 por milhão de tokens de entrada. A juíza usa o Jev e, para o que ele não decide, uma LLM de fallback: OpenAI `gpt-5.6-luna` por padrão (`JUIZA_PROVEDOR=openai`, decisão de 2026-10-26), ou Gemini. Os tetos não mudaram: a análise diária tem US$ 5/mês no Gemini; a juíza tem teto próprio de US$ 3/mês e verba única de US$ 15 para o backlog, que valem para o Jev e a LLM de fallback somados. O custo do Jev e da LLM entra nas somas da juíza.
 Qualquer outra proposta que exija API paga, cartão de crédito ou plano pago deve ser rejeitada.
 
 ---
@@ -210,7 +210,7 @@ python -m tcc_scraper.cli collect-cvm          # ITR e DFP (CVM)
 python -m tcc_scraper.cli collect-cadastro     # cadastro das companhias (CVM e B3)
 python -m tcc_scraper.cli collect-proventos    # proventos (B3)
 python -m tcc_scraper.cli collect-indices      # CDI e IPCA (BCB)
-python -m tcc_scraper.cli judge-news [--limite N] [--backlog [--anos A] [--orcamento-usd X]] [--status] [--concordancia N [--semente S]]   # juiza de noticias
+python -m tcc_scraper.cli judge-news [--limite N] [--backlog [--anos A] [--orcamento-usd X]] [--status] [--concordancia N [--semente S] [--referencia MODELO]]   # juiza de noticias
 python -m tcc_scraper.cli build-entrega [--csv] [--tabela X]    # 9 tabelas da entrega
 python -m tcc_scraper.cli executor             # worker do painel (Railway): comandos, daily das 08:00 BRT, carga historica
 python -m tcc_scraper.cli daily [--etapa ID]   # daily de 9 etapas, sem painel (bloqueante)
@@ -286,7 +286,7 @@ JSON schema **na mesma chamada** (só Gemini 3+ aceita os dois juntos). Modelo e
 (substituídas por dia). O `features_dataset_v1` **fica intacto**.
 
 **Exceção aprovada à regra de custo:** é a dependência paga principal do projeto, com teto de
-US$ 5/mês (~30 chamadas), compartilhado com a juíza, que tem teto próprio de US$ 3/mês e verba de US$ 15 para o backlog (ver [docs/04-juiza-e-llm.md](docs/04-juiza-e-llm.md), seção 3.6). Roda como etapa `analise` do daily, agendada pelo executor às 08:00 de Brasília (ver [docs/07-executor-e-painel.md](docs/07-executor-e-painel.md)).
+US$ 5/mês (~30 chamadas). A juíza não usa mais o Gemini por padrão: ela usa o Jev e a OpenAI `gpt-5.6-luna` como fallback, com tetos próprios de US$ 3/mês e verba de US$ 15 para o backlog (ver [docs/04-juiza-e-llm.md](docs/04-juiza-e-llm.md), seção 3.6). O Gemini só julga na juíza se `JUIZA_PROVEDOR=gemini`. Está **desligada** por `ANALISE_ENABLED=false` desde 2026-10-26, até migrar para a OpenAI. Quando ligada, roda como etapa `analise` do daily, agendada pelo executor às 08:00 de Brasília (ver [docs/07-executor-e-painel.md](docs/07-executor-e-painel.md)).
 
 **Citações:** o prompt exige `fonte` e `url` dentro de cada item do JSON. As anotações
 `url_citation` da API vão para `citacoes_json` só como auditoria, nunca como fonte de dados.

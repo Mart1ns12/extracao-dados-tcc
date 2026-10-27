@@ -209,3 +209,33 @@ def _limpar(node: Any) -> Any:
     if isinstance(node.get("properties"), dict):
         node["required"] = list(node["properties"])
     return {k: _limpar(v) for k, v in node.items()}
+
+
+def schema_para_openai(modelo: type[BaseModel]) -> dict:
+    """model_json_schema() no formato estrito do Structured Outputs da OpenAI.
+
+    Todo objeto (raiz e $defs) fica com `additionalProperties: false` e todo campo em `required`.
+    Remove `title` e `default`; o restante (anyOf com null, $ref, enum...) segue como veio.
+    """
+    return _estrito(modelo.model_json_schema())
+
+
+def _estrito(node: Any) -> Any:
+    if isinstance(node, list):
+        return [_estrito(n) for n in node]
+    if not isinstance(node, dict):
+        return node
+    estrito = {}
+    for chave, valor in node.items():
+        if chave in ("title", "default"):
+            continue
+        # `properties` e `$defs` sao mapas nome -> schema: os nomes dos campos nao podem ser
+        # filtrados como se fossem palavras-chave do schema (um campo chamado `title` sumiria).
+        if chave in ("properties", "$defs") and isinstance(valor, dict):
+            estrito[chave] = {nome: _estrito(sub) for nome, sub in valor.items()}
+        else:
+            estrito[chave] = _estrito(valor)
+    if isinstance(estrito.get("properties"), dict):
+        estrito["required"] = list(estrito["properties"])
+        estrito["additionalProperties"] = False
+    return estrito

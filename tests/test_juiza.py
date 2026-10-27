@@ -1,4 +1,4 @@
-"""Orquestracao da juiza: regra -> Jev (opcional) -> Gemini, com persistencia e retomada.
+"""Orquestracao da juiza: regra -> Jev (opcional) -> LLM, com persistencia e retomada.
 
 Os testes puros trocam pendentes, sessao e bulk_upsert por versoes falsas: nada toca banco
 nem rede. O teste com banco (MySQL do .env, opt-in via TCC_TESTES_COM_BANCO=1) usa a
@@ -20,7 +20,8 @@ from tcc_scraper.config import get_settings
 from tcc_scraper.db.models import Article, ArticleBody, ArticleTicker, url_hash
 from tcc_scraper.db.models_fontes import RawLlmJuizaRun, StagingNoticiaJulgamento
 from tcc_scraper.llm import juiza, juiza_custo
-from tcc_scraper.llm.jev_client import RespostaJev
+from tcc_scraper.llm.jev_client import JevFalhaLote, RespostaJev, rotulo_modelo_jev
+from tcc_scraper.llm.openai_client import SemCreditoLLM
 
 # --------------------------------------------------------------------------------------
 # Fakes
@@ -39,24 +40,35 @@ def _julgamento(id_, ticker: str, **extra) -> dict:
     return {**base, **extra}
 
 
+def _jev_par(id_, ticker: str = "VALE3", *, p_entra: float, p_nao_entra: float,
+             **extra) -> dict:
+    """Julgamento do Jev com as probabilidades que o modo entrega usa."""
+    return {**_julgamento(id_, ticker, **extra), "p_entra": p_entra,
+            "p_nao_entra": p_nao_entra, "prob_fonte": "probabilidades"}
+
+
 class ClienteFalso:
-    """Imita GeminiClient.classificar. Responde com `respostas` (lista de julgamentos)."""
+    """Imita o cliente da LLM (classificar). Responde com `respostas` (lista de julgamentos)."""
 
     def __init__(self, respostas: list[dict] | None = None, *, erro: Exception | None = None,
-                 texto: str | None = None) -> None:
+                 texto: str | None = None, tokens_cache: int | None = None) -> None:
         self.respostas = respostas or []
         self.erro = erro
         self.texto = texto
+        self.tokens_cache = tokens_cache
         self.chamadas = 0
+        self.prompts: list[str] = []
 
     def classificar(self, prompt: str, schema: dict):
         self.chamadas += 1
+        self.prompts.append(prompt)
         if self.erro is not None:
             raise self.erro
         texto = self.texto if self.texto is not None else json.dumps(
             {"itens": self.respostas}, ensure_ascii=False)
         return SimpleNamespace(texto=texto, modelo="modelo-falso", latencia_ms=5,
-                               tokens_entrada=100, tokens_saida=20)
+                               tokens_entrada=100, tokens_saida=20,
+                               tokens_cache=self.tokens_cache)
 
 
 class JevFalso:
@@ -69,10 +81,12 @@ class JevFalso:
         self.erro = erro
         self.tokens_entrada = tokens_entrada
         self.chamadas = 0
+        self.recebidos: list[list[dict]] = []
         self.fechado = False
 
     def classificar_lote(self, itens: list[dict]) -> RespostaJev:
         self.chamadas += 1
+        self.recebidos.append(list(itens))
         if self.erro is not None:
             raise self.erro
         return RespostaJev(itens=list(self.itens), tokens_entrada=self.tokens_entrada,
@@ -159,11 +173,22 @@ def pendentes_falsos(monkeypatch):
 
 @pytest.fixture
 def settings(monkeypatch):
+    # Configuracao fixa: nao depende do .env de quem roda os testes.
     s = get_settings()
+    monkeypatch.setattr(s, "juiza_provedor", "gemini")
+    monkeypatch.setattr(s, "juiza_modelo", "")
     monkeypatch.setattr(s, "gemini_api_key", "chave-falsa")
+    monkeypatch.setattr(s, "openai_api_key", "")
     monkeypatch.setattr(s, "jev_enabled", False)
+    monkeypatch.setattr(s, "jev_api_key", "chave-falsa")
+    monkeypatch.setattr(s, "jev_modelo", "jev-1.13.0")
+    monkeypatch.setattr(s, "jev_trecho", 1500)
+    monkeypatch.setattr(s, "jev_lote", 50)
+    monkeypatch.setattr(s, "juiza_jev_modo", "entrega")
+    monkeypatch.setattr(s, "juiza_jev_limiar_entrega", 0.9)
     monkeypatch.setattr(s, "juiza_lote", 50)
     monkeypatch.setattr(s, "juiza_confianca_minima", 0.5)
+    monkeypatch.setattr(s, "juiza_confianca_triagem", 0.9)
     return s
 
 
@@ -202,7 +227,7 @@ def test_regra_resolve_ipe_youtube_e_panorama_sem_gastar_llm(
     assert res.pendentes == 4
     assert res.regra == 3
     assert cliente.chamadas == 1, "so o artigo normal deve chegar ao Gemini"
-    assert res.gemini == 1
+    assert res.llm == 1
     regra = [r for r in _staging(gravacoes) if r["modelo"] == "regra"]
     assert sorted(r["article_id"] for r in regra) == [1, 2, 3]
     assert all(r["run_id"] is None for r in regra)
@@ -223,7 +248,7 @@ def test_tickers_adicionais_fora_do_universo_sao_descartados(
     linhas = _staging(gravacoes)
     assert [(r["article_id"], r["ticker"]) for r in linhas] == [(4, "VALE3")]
     assert linhas[0]["tickers_adicionais"] == ["PETR4"]
-    assert linhas[0]["modelo"] == settings.juiza_modelo
+    assert linhas[0]["modelo"] == settings.juiza_modelo_efetivo
     assert linhas[0]["run_id"] is not None
 
 
@@ -239,7 +264,7 @@ def test_erro_da_api_grava_run_e_deixa_o_item_pendente(
     assert [r.status for r in runs] == ["erro_api"]
     assert "503" in runs[0].erro
     assert _staging(gravacoes) == []
-    assert res.erros == 1 and res.gemini == 0
+    assert res.erros == 1 and res.llm == 0
 
 
 def test_json_invalido_vira_erro_json(gravacoes, pendentes_falsos, settings) -> None:
@@ -287,6 +312,7 @@ def test_jev_triagem_aceita_so_descarte_com_confianca_alta(
     gravacoes, pendentes_falsos, settings, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "jev_enabled", True)
+    monkeypatch.setattr(settings, "juiza_jev_modo", "triagem")
     pendentes_falsos([_item(4), _item(5), _item(6)])
     jev = JevFalso([
         _julgamento(4, "VALE3", papel="mencao", confianca=0.95),  # descarte com confianca: aceito
@@ -297,20 +323,20 @@ def test_jev_triagem_aceita_so_descarte_com_confianca_alta(
 
     res = juiza.julgar_pendentes(cliente=cliente, jev=jev)
 
-    assert res.jev == 1 and res.gemini == 2
+    assert res.jev == 1 and res.llm == 2
     assert cliente.chamadas == 1
     linhas = {r["article_id"]: r for r in _staging(gravacoes)}
     assert set(linhas) == {4, 5, 6}
-    assert linhas[4]["modelo"] == f"{settings.jev_modelo}/q{juiza.JEV_PERGUNTAS_VERSAO}"
+    assert linhas[4]["modelo"] == rotulo_modelo_jev(settings.jev_modelo, settings.jev_trecho)
     assert linhas[4]["run_id"] is not None
-    assert linhas[5]["modelo"] == settings.juiza_modelo
+    assert linhas[5]["modelo"] == settings.juiza_modelo_efetivo
 
 
 def test_jev_decide_aceita_protagonista_com_confianca_minima(
     gravacoes, pendentes_falsos, settings, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "jev_enabled", True)
-    monkeypatch.setattr(settings, "juiza_jev_decide", True)
+    monkeypatch.setattr(settings, "juiza_jev_modo", "decide")
     pendentes_falsos([_item(4), _item(5)])
     jev = JevFalso([
         _julgamento(4, "VALE3", confianca=0.6),  # protagonista com 0.6: decide, sem Gemini
@@ -320,34 +346,71 @@ def test_jev_decide_aceita_protagonista_com_confianca_minima(
 
     res = juiza.julgar_pendentes(cliente=cliente, jev=jev)
 
-    assert res.jev == 1 and res.gemini == 1
+    assert res.jev == 1 and res.llm == 1
     assert cliente.chamadas == 1
     assert {r["article_id"]: r["modelo"] for r in _staging(gravacoes)}[4] == (
-        f"{settings.jev_modelo}/q{juiza.JEV_PERGUNTAS_VERSAO}")
+        rotulo_modelo_jev(settings.jev_modelo, settings.jev_trecho))
 
 
-def test_jev_com_excecao_manda_o_lote_inteiro_ao_gemini_sem_tentativa(
+def test_lote_do_jev_com_excecao_fica_pendente_e_nao_chama_a_llm(
     gravacoes, pendentes_falsos, settings, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "jev_enabled", True)
     pendentes_falsos([_item(4), _item(5)])
-    jev = JevFalso(erro=RuntimeError("Jev: todos os 2 itens falharam"))
+    jev = JevFalso(erro=RuntimeError("Jev: falha de rede"))
     cliente = ClienteFalso([_julgamento(4, "VALE3"), _julgamento(5, "VALE3")])
 
     res = juiza.julgar_pendentes(cliente=cliente, jev=jev)
 
-    assert res.jev == 0 and res.gemini == 2
-    assert cliente.chamadas == 1
+    assert res.jev == 0 and res.llm == 0 and res.erros == 1
+    assert res.parada is None
+    assert cliente.chamadas == 0
+    assert _staging(gravacoes) == []
     assert _tentativas(gravacoes) == []
     jev_runs = [r for r in _runs(gravacoes) if r.modelo.startswith(settings.jev_modelo)]
     assert [(r.status, r.custo_usd) for r in jev_runs] == [("erro_api", 0.0)]
-    assert "todos os 2" in jev_runs[0].erro
+    assert "falha de rede" in jev_runs[0].erro
 
 
-def test_item_em_erros_do_jev_segue_ao_gemini_sem_tentativa(
+def test_dois_lotes_do_jev_com_erro_seguido_param_em_erro_jev(
     gravacoes, pendentes_falsos, settings, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "jev_enabled", True)
+    monkeypatch.setattr(settings, "jev_lote", 1)
+    pendentes_falsos([_item(4), _item(5), _item(6)])
+    jev = JevFalso(erro=RuntimeError("503"))
+    cliente = ClienteFalso([_julgamento(i, "VALE3") for i in (4, 5, 6)])
+
+    res = juiza.julgar_pendentes(cliente=cliente, jev=jev)
+
+    assert jev.chamadas == 2
+    assert res.parada == "erro_jev"
+    assert res.erros == 2
+    assert cliente.chamadas == 0
+
+
+def test_erro_permanente_do_jev_para_no_primeiro_lote(
+    gravacoes, pendentes_falsos, settings, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "jev_enabled", True)
+    monkeypatch.setattr(settings, "jev_lote", 1)
+    pendentes_falsos([_item(4), _item(5)])
+    jev = JevFalso(erro=JevFalhaLote("Jev: todos os 1 itens falharam (HTTP 401)",
+                                     permanente=True, codigos={401}))
+    cliente = ClienteFalso([_julgamento(4, "VALE3"), _julgamento(5, "VALE3")])
+
+    res = juiza.julgar_pendentes(cliente=cliente, jev=jev)
+
+    assert jev.chamadas == 1
+    assert res.parada == "erro_jev"
+    assert cliente.chamadas == 0
+
+
+def test_item_em_erros_do_jev_segue_a_llm_sem_tentativa(
+    gravacoes, pendentes_falsos, settings, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "jev_enabled", True)
+    monkeypatch.setattr(settings, "juiza_jev_modo", "triagem")
     pendentes_falsos([_item(4), _item(5)])
     jev = JevFalso([_julgamento(4, "VALE3", papel="mencao", confianca=0.95)],
                    erros=[{"id": "5", "ticker": "VALE3", "erro": "HTTP 500"}])
@@ -355,7 +418,7 @@ def test_item_em_erros_do_jev_segue_ao_gemini_sem_tentativa(
 
     res = juiza.julgar_pendentes(cliente=cliente, jev=jev)
 
-    assert res.jev == 1 and res.gemini == 1
+    assert res.jev == 1 and res.llm == 1
     assert cliente.chamadas == 1
     assert _tentativas(gravacoes) == []
     jev_runs = [r for r in _runs(gravacoes) if r.modelo.startswith(settings.jev_modelo)]
@@ -363,10 +426,11 @@ def test_item_em_erros_do_jev_segue_ao_gemini_sem_tentativa(
     assert "HTTP 500" in jev_runs[0].resposta_bruta
 
 
-def test_custo_do_jev_soma_ao_do_gemini_e_fica_na_run(
+def test_custo_do_jev_soma_ao_da_llm_e_fica_na_run(
     gravacoes, pendentes_falsos, settings, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "jev_enabled", True)
+    monkeypatch.setattr(settings, "juiza_jev_modo", "triagem")
     pendentes_falsos([_item(4), _item(5)])
     jev = JevFalso([_julgamento(4, "VALE3", papel="mencao", confianca=0.95)],
                    tokens_entrada=2_000_000)
@@ -375,7 +439,7 @@ def test_custo_do_jev_soma_ao_do_gemini_e_fica_na_run(
     res = juiza.julgar_pendentes(cliente=cliente, jev=jev)
 
     custo_jev = juiza_custo.custo_jev(2_000_000, settings)
-    custo_gem = juiza_custo.custo_gemini(100, 20, None, settings)
+    custo_gem = juiza_custo.custo_llm(100, 20, s=settings)
     assert res.custo_usd == pytest.approx(custo_jev + custo_gem)
     jev_run = [r for r in _runs(gravacoes) if r.modelo.startswith(settings.jev_modelo)][0]
     assert jev_run.custo_usd == pytest.approx(custo_jev)
@@ -406,7 +470,7 @@ def test_teto_de_itens_conta_o_par_que_passa_pelo_jev_e_pelo_gemini_uma_vez(
 
     # 3 pares no total: 2 na 1a pagina e 1 na 2a. O par do Jev que vai ao Gemini nao conta 2x.
     assert jev.chamadas == 2
-    assert res.gemini == 3
+    assert res.llm == 3
     assert res.parada == "teto_itens"
     assert len(chamadas) == 2
 
@@ -419,7 +483,7 @@ def test_julgar_pendentes_fecha_o_jev_que_criou(
     criados: list[JevFalso] = []
 
     class JevCriado(JevFalso):
-        def __init__(self, api_key, modelo, timeout_s, concorrencia):
+        def __init__(self, api_key, modelo, timeout_s, concorrencia, trecho_max):
             super().__init__([])
             criados.append(self)
 
@@ -466,7 +530,7 @@ def test_sem_chave_gemini_so_a_regra_roda(gravacoes, pendentes_falsos, settings,
     res = juiza.julgar_pendentes()
 
     assert res.regra == 1
-    assert res.gemini == 0
+    assert res.llm == 0
     assert [r["article_id"] for r in _staging(gravacoes)] == [1]
 
 
@@ -483,7 +547,7 @@ def test_lotes_respeitam_o_tamanho_e_avisam_o_observador(
     assert cliente.chamadas == 3
     assert observador.planos == [3]
     assert [nome for nome, _ in observador.unidades] == ["lote|1", "lote|2", "lote|3"]
-    assert res.gemini == 5
+    assert res.llm == 5
     assert len(_runs(gravacoes)) == 3
 
 
@@ -502,7 +566,7 @@ def test_parcial_aceita_os_validos_e_tenta_o_invalido(
     assert sorted(r["article_id"] for r in _staging(gravacoes)) == [4, 5]
     assert [(t["article_id"], t["tentativas"], t["ultimo_status"])
             for t in _tentativas(gravacoes)] == [(6, 1, "parcial")]
-    assert res.gemini == 2 and res.invalidos == 1 and res.erros == 1
+    assert res.llm == 2 and res.invalidos == 1 and res.erros == 1
 
 
 def test_erro_da_api_nao_gera_tentativa(gravacoes, pendentes_falsos, settings) -> None:
@@ -543,7 +607,7 @@ def test_teto_de_itens_nao_conta_a_regra(gravacoes, pendentes_falsos, settings) 
     res = juiza.julgar_pendentes(cliente=cliente, limite_itens=2)
 
     assert res.regra == 1
-    assert res.gemini == 2
+    assert res.llm == 2
     assert res.parada == "teto_itens"
     assert sorted(r["article_id"] for r in _staging(gravacoes)
                   if r["modelo"] != "regra") == [4, 5]
@@ -552,7 +616,7 @@ def test_teto_de_itens_nao_conta_a_regra(gravacoes, pendentes_falsos, settings) 
 def test_teto_em_usd_para_antes_do_lote_que_estouraria(
     gravacoes, pendentes_falsos, settings, monkeypatch
 ) -> None:
-    custo = juiza_custo.custo_gemini(100, 20, None, settings)
+    custo = juiza_custo.custo_llm(100, 20, s=settings)
     monkeypatch.setattr(settings, "juiza_orcamento_mensal_usd", custo * 1.5)
     pendentes_falsos([_item(4), _item(5), _item(6)])
     cliente = ClienteFalso([_julgamento(i, "VALE3") for i in (4, 5, 6)])
@@ -612,7 +676,179 @@ def test_paginas_seguem_o_cursor_keyset(gravacoes, settings, monkeypatch) -> Non
     assert len(chamadas) == 2
     assert chamadas[0]["apos"] is None
     assert chamadas[1]["apos"] == (pub, 5, "VALE3")
-    assert res.gemini == 3 and cliente.chamadas == 2
+    assert res.llm == 3 and cliente.chamadas == 2
+
+
+def test_modo_entrega_grava_par_que_entra_sem_chamar_a_llm(
+    gravacoes, pendentes_falsos, settings, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "jev_enabled", True)
+    pendentes_falsos([_item(4)])
+    jev = JevFalso([_jev_par(4, p_entra=0.95, p_nao_entra=0.03)])
+    cliente = ClienteFalso()
+
+    res = juiza.julgar_pendentes(cliente=cliente, jev=jev)
+
+    assert cliente.chamadas == 0
+    assert res.jev == 1 and res.llm == 0
+    linha = _staging(gravacoes)[0]
+    assert linha["modelo"] == rotulo_modelo_jev(settings.jev_modelo, settings.jev_trecho)
+    assert linha["confianca"] == 0.95
+
+
+def test_modo_entrega_grava_par_que_nao_entra(
+    gravacoes, pendentes_falsos, settings, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "jev_enabled", True)
+    pendentes_falsos([_item(4)])
+    jev = JevFalso([_jev_par(4, papel="mencao", p_entra=0.03, p_nao_entra=0.95)])
+    cliente = ClienteFalso()
+
+    res = juiza.julgar_pendentes(cliente=cliente, jev=jev)
+
+    assert cliente.chamadas == 0
+    assert res.jev == 1 and res.llm == 0
+    assert _staging(gravacoes)[0]["confianca"] == 0.95
+
+
+def test_modo_entrega_par_indeciso_vai_a_llm(
+    gravacoes, pendentes_falsos, settings, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "jev_enabled", True)
+    pendentes_falsos([_item(4)])
+    jev = JevFalso([_jev_par(4, p_entra=0.6, p_nao_entra=0.4)])
+    cliente = ClienteFalso([_julgamento(4, "VALE3")])
+
+    res = juiza.julgar_pendentes(cliente=cliente, jev=jev)
+
+    assert cliente.chamadas == 1
+    assert res.jev == 0 and res.llm == 1
+    assert _staging(gravacoes)[0]["modelo"] == settings.juiza_modelo_efetivo
+
+
+def test_modo_entrega_mencao_com_p_entra_alta_vai_a_llm(
+    gravacoes, pendentes_falsos, settings, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "jev_enabled", True)
+    pendentes_falsos([_item(4)])
+    jev = JevFalso([_jev_par(4, papel="mencao", p_entra=0.95, p_nao_entra=0.04)])
+    cliente = ClienteFalso([_julgamento(4, "VALE3")])
+
+    res = juiza.julgar_pendentes(cliente=cliente, jev=jev)
+
+    assert cliente.chamadas == 1
+    assert res.jev == 0 and res.llm == 1
+
+
+def test_jev_ligado_sem_chave_bloqueia_a_llm_e_a_regra_roda(
+    gravacoes, pendentes_falsos, settings, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "jev_enabled", True)
+    monkeypatch.setattr(settings, "jev_api_key", "")
+    pendentes_falsos([_item(1, origem="cvm_ipe", dominio="cvm.gov.br"), _item(4)])
+    cliente = ClienteFalso([_julgamento(4, "VALE3")])
+
+    res = juiza.julgar_pendentes(cliente=cliente)
+
+    assert cliente.chamadas == 0
+    assert res.parada == "jev_sem_chave"
+    assert "jev_sem_chave" in res.avisos
+    assert [r["article_id"] for r in _staging(gravacoes)] == [1]
+
+
+def test_sem_credito_para_a_execucao_sem_tentativa(
+    gravacoes, pendentes_falsos, settings
+) -> None:
+    pendentes_falsos([_item(4), _item(5)])
+    cliente = ClienteFalso(erro=SemCreditoLLM("OpenAI sem credito"))
+
+    res = juiza.julgar_pendentes(cliente=cliente, lote=1)
+
+    assert cliente.chamadas == 1
+    assert res.parada == "sem_credito"
+    assert _tentativas(gravacoes) == []
+    assert [r.status for r in _runs(gravacoes)] == ["erro_api"]
+
+
+class _ErroComCodigo(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("402 Payment Required")
+        self.code = 402
+
+
+def test_codigo_402_tambem_para_a_execucao(gravacoes, pendentes_falsos, settings) -> None:
+    pendentes_falsos([_item(4), _item(5)])
+    cliente = ClienteFalso(erro=_ErroComCodigo())
+
+    res = juiza.julgar_pendentes(cliente=cliente, lote=1)
+
+    assert cliente.chamadas == 1
+    assert res.parada == "sem_credito"
+    assert _tentativas(gravacoes) == []
+
+
+def test_provedor_openai_com_modelo_gemini_recusa_a_execucao(settings, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "juiza_provedor", "openai")
+    monkeypatch.setattr(settings, "juiza_modelo", "gemini-x")
+    cliente = ClienteFalso()
+
+    with pytest.raises(ValueError, match="JUIZA_MODELO"):
+        juiza.julgar_pendentes(cliente=cliente)
+    assert cliente.chamadas == 0
+
+
+def test_jev_recebe_o_trecho_inteiro_e_a_llm_so_300_caracteres(
+    gravacoes, pendentes_falsos, settings, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "jev_enabled", True)
+    trecho = "A" * 300 + "ZQX" + "B" * 700
+    chamadas = pendentes_falsos([{**_item(4), "trecho": trecho}])
+    jev = JevFalso([])  # nada decidido: o par segue para a LLM
+    cliente = ClienteFalso([_julgamento(4, "VALE3")])
+
+    juiza.julgar_pendentes(cliente=cliente, jev=jev)
+
+    assert chamadas[0]["trecho"] == 1500
+    assert jev.recebidos[0][0]["trecho"] == trecho
+    assert "A" * 300 in cliente.prompts[0]
+    assert "ZQX" not in cliente.prompts[0]
+
+
+def test_custo_usa_o_cache_da_llm_e_res_acumula_tokens_cache(
+    gravacoes, pendentes_falsos, settings, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "juiza_provedor", "openai")
+    for campo in ("juiza_preco_entrada_usd_mtok", "juiza_preco_saida_usd_mtok",
+                  "juiza_preco_cache_usd_mtok"):
+        monkeypatch.setattr(settings, campo, None)
+    pendentes_falsos([_item(4)])
+    cliente = ClienteFalso([_julgamento(4, "VALE3")], tokens_cache=60)
+
+    res = juiza.julgar_pendentes(cliente=cliente)
+
+    esperado = juiza_custo.custo_llm(100, 20, tokens_cache=60, s=settings)
+    assert res.custo_usd == pytest.approx(esperado)
+    assert _runs(gravacoes)[0].custo_usd == pytest.approx(esperado)
+    assert res.tokens_cache == 60
+    assert esperado < juiza_custo.custo_llm(100, 20, s=settings)
+
+
+def test_avisos_config_combinacoes() -> None:
+    def cfg(**campos):
+        base = {"jev_enabled": False, "jev_api_key": "", "juiza_provedor": "openai",
+                "juiza_chave_llm": "chave", "juiza_modelo_efetivo": "gpt-5.6-luna"}
+        return SimpleNamespace(**{**base, **campos})
+
+    assert juiza.avisos_config(cfg()) == ["jev_desligado"]
+    assert juiza.avisos_config(cfg(jev_enabled=True)) == ["jev_sem_chave"]
+    assert juiza.avisos_config(cfg(jev_enabled=True, jev_api_key="j")) == []
+    assert juiza.avisos_config(cfg(juiza_chave_llm="")) == [
+        "jev_desligado", "openai_sem_chave"]
+    assert juiza.avisos_config(cfg(juiza_modelo_efetivo="gemini-3.1-flash-lite")) == [
+        "jev_desligado", "modelo_incompativel"]
+    assert juiza.avisos_config(cfg(juiza_provedor="gemini",
+                                   juiza_modelo_efetivo="gpt-5.6-luna")) == [
+        "jev_desligado", "modelo_incompativel"]
 
 
 # --------------------------------------------------------------------------------------
@@ -685,14 +921,14 @@ def test_banco_julga_so_o_que_falta_e_a_segunda_execucao_nao_reenvia(
         res1 = juiza.julgar_pendentes(cliente=cliente, lote=50)
 
         assert res1.regra == 3
-        assert res1.gemini == 2
+        assert res1.llm == 2
         assert cliente.chamadas == 1
 
         with Session(engine) as s:
             linhas = s.execute(select(StagingNoticiaJulgamento).where(
                 StagingNoticiaJulgamento.article_id.in_(ids))).scalars().all()
             modelos = sorted(r.modelo for r in linhas)
-        assert modelos == sorted(["regra"] * 3 + [get_settings().juiza_modelo] * 2)
+        assert modelos == sorted(["regra"] * 3 + [get_settings().juiza_modelo_efetivo] * 2)
 
         cliente2 = ClienteFalso([_julgamento(id_real[4], "VALE3"),
                                 _julgamento(id_real[5], "PETR4")])

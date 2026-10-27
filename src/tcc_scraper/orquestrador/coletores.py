@@ -112,7 +112,7 @@ _DEFS = (
                _P + "enrich.article_fetcher:corrigir_horas_publicacao",
                classe=False, resume=False, recebe_observador=False,
                aceita=frozenset({"aplicar", "limite"})),
-    ColetorDef("juiza_concordancia", "Concordância Jev × Gemini",
+    ColetorDef("juiza_concordancia", "Concordância Jev × referência",
                _P + "llm.juiza_concordancia:medir_concordancia",
                classe=False, resume=False, recebe_observador=False,
                aceita=frozenset({"n", "semente"})),

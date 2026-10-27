@@ -10,7 +10,7 @@ O executor é um worker que fica em loop. Não é um cron. Ele roda com:
 python -m tcc_scraper.cli executor
 ```
 
-Em produção, esse é o `CMD` da imagem (ver seção 12). A cada ciclo, ele:
+Esse é o `CMD` da imagem do Railway (ver seção 12). Hoje, porém, o executor roda na máquina local do dono, não no Railway. A cada ciclo, ele:
 
 - busca os comandos pendentes na API do painel, a cada `EXECUTOR_POLL_S` segundos (padrão 5);
 - aplica cada comando e confirma o resultado à API (ack);
@@ -108,6 +108,8 @@ Catálogo de coletores:
 | `coletor` (id da etapa) | Parâmetros aceitos | Janela de anos (`anos`) | Sem `refazer` |
 |---|---|---|---|
 | `yahoo` | `tickers` (só os de `tickers_padrao()`) | - | Refaz tudo (sem checkpoint) |
+| `b3_indices` | `anos` | do ano de `price_start` ao ano de `fim_coleta` | Checkpoint |
+| `b3_carteira_ibov` | - | - | Refaz tudo (sem checkpoint) |
 | `bcb` | - | - | Checkpoint |
 | `indices_bcb` | `anos` | do ano de `price_start` ao ano de `fim_coleta` | Checkpoint |
 | `cvm_cadastro` | - | - | Checkpoint |
@@ -118,7 +120,7 @@ Catálogo de coletores:
 | `cvm_ipe` | `anos` | do ano de `inicio_noticias` ao ano de `fim_coleta` | Checkpoint |
 | `enriquecimento` | - | - | Refaz tudo (sem checkpoint) |
 | `finbert` | - | - | Só pendentes. `refazer` não se aplica |
-| `juiza` | - | - | Só pendentes. Limitada por `JUIZA_MAX_ITENS_DIA`. `refazer` não se aplica |
+| `juiza` | `anos` | do ano de `inicio_noticias` ao ano de `fim_coleta` | Só pendentes. Limitada por `JUIZA_MAX_ITENS_DIA` e pelo teto mensal em US$. `refazer` não se aplica |
 | `build_entrega` | não é item: use `montar_entrega` | - | - |
 | `corrigir_horas` | `aplicar` (bool, obrigatório; `false` simula, sem gravar) e `limite` (int ≥ 1, opcional; `null` = sem limite) | - | Sem checkpoint. `refazer` não se aplica |
 | `juiza_concordancia` | `n` (int de 10 a 1000, obrigatório) e `semente` (int, opcional, padrão 42; `null` também vale 42) | - | Sem checkpoint. `refazer` não se aplica |
@@ -132,7 +134,7 @@ Os dois últimos são ações avulsas do painel (`corrigir_horas`, a mesma funç
 
 Regras:
 
-- **`refazer`.** `true` liga `resume = False` (equivale a `--no-resume`). Sem `refazer`, vale o padrão do catálogo, o mesmo da carga histórica. Em coletor sem checkpoint, `refazer` não se aplica e é recusado em `finbert` e `juiza`.
+- **`refazer`.** `true` liga `resume = False` (equivale a `--no-resume`). Sem `refazer`, vale o padrão do catálogo, o mesmo da carga histórica. Em coletor sem checkpoint (`finbert`, `juiza`, `corrigir_horas`, `juiza_concordancia`), `refazer` não se aplica e é recusado.
 - **Ordem.** Os itens rodam na ordem enviada. A montagem (`build_entrega`) vem sempre por último.
 - **Coletor repetido** nos itens é recusado: a chave da etapa é o id do coletor. Junte os parâmetros num item só.
 - **Orçamento.** A execução não tem prazo: `DAILY_ORCAMENTO_MIN` não se aplica, porque itens históricos podem levar horas.
@@ -287,6 +289,8 @@ python -m tcc_scraper.cli daily --etapa precos   # roda uma etapa sem painel
 - **Alterações de schema** são aplicadas à mão, da máquina local, a partir de `sql/alteracoes/`. O usuário do executor não tem permissão de DDL (ver seção 12).
 
 ## 12. Implantação no Railway
+
+Esta seção descreve o deploy no Railway. Hoje o executor roda na máquina local do dono, não no Railway.
 
 - **Serviço.** Um worker criado a partir deste repositório. O `railway.json` manda construir pelo `Dockerfile`. Não há healthcheck, porque o worker não serve HTTP. A política de reinício é `ON_FAILURE`, com até 10 tentativas.
 - **Imagem.** `python:3.12-slim`, com torch da roda CPU do PyTorch. Os modelos do FinBERT (pt e en) são baixados no build, em `/app/.hf_cache`, e por isso a subida do serviço não baixa modelo.

@@ -9,7 +9,7 @@ from enum import StrEnum
 
 from pydantic import Field
 
-from tcc_scraper.llm.schema import _Item, schema_para_gemini
+from tcc_scraper.llm.schema import _Item, schema_para_gemini, schema_para_openai
 
 
 class Papel(StrEnum):
@@ -63,6 +63,11 @@ class LoteJulgamento(_Item):
     itens: list[JulgamentoItem]
 
 
-def schema_juiza() -> dict:
-    """JSON schema do lote da juiza, ajustado ao subconjunto aceito pelo Gemini."""
+def schema_juiza(provedor: str = "gemini") -> dict:
+    """JSON schema do lote da juiza, ajustado ao subconjunto aceito pelo provedor.
+
+    gemini: subconjunto aceito pelo Gemini. openai: formato estrito do Structured Outputs.
+    """
+    if provedor == "openai":
+        return schema_para_openai(LoteJulgamento)
     return schema_para_gemini(LoteJulgamento)

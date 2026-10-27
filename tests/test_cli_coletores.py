@@ -209,7 +209,7 @@ def _juiza_falso(monkeypatch, chamadas: list) -> None:
             pendentes=5,
             regra=2,
             jev=1,
-            gemini=1,
+            llm=1,
             erros=0,
             runs=1,
             tokens_entrada=10,

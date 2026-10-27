@@ -16,6 +16,7 @@ import socket
 from datetime import date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from pydantic import Field
@@ -23,6 +24,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+# Modelo da juiza quando JUIZA_MODELO esta vazio, por provedor.
+MODELO_PADRAO_JUIZA: dict[str, str] = {
+    "openai": "gpt-5.6-luna",
+    "gemini": "gemini-3.1-flash-lite",
+}
 
 
 class Settings(BaseSettings):
@@ -80,6 +87,9 @@ class Settings(BaseSettings):
 
     # Analise diaria por LLM (comando analyze-llm). A chave NAO e validada aqui:
     # o scraper local roda sem ela; so o job exige e falha com mensagem clara.
+    # Etapa `analise` do daily: desligada ate a troca do Gemini (sem credito desde 2026-10-24)
+    # pela OpenAI. O comando analyze-llm continua rodando a mao.
+    analise_enabled: bool = False
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.8-flash"
     llm_timeout_s: int = 180
@@ -116,22 +126,28 @@ class Settings(BaseSettings):
     throttle_cvm: float = 1.0
     throttle_b3: float = 1.0
 
-    # Juiza de noticias (LLM).
-    juiza_modelo: str = "gemini-3.1-flash-lite"
+    # Juiza de noticias (LLM). Modelo vazio = padrao do provedor (MODELO_PADRAO_JUIZA).
+    juiza_provedor: Literal["openai", "gemini"] = "openai"
+    juiza_modelo: str = ""
     juiza_max_itens_dia: int = 2000
     juiza_lote: int = 50
     juiza_confianca_minima: float = 0.5
-    # Tentativas por par antes de desistir, pagina de pares por ciclo e precos do Gemini (US$/MTok).
+    # Tentativas por par antes de desistir, pagina de pares por ciclo e precos (US$/MTok).
+    # None = tabela do provedor (openai 0.20/0.02/1.20; gemini 0.25/0.25/1.50).
     juiza_max_tentativas: int = 3
     juiza_pagina: int = 5000
-    juiza_preco_entrada_usd_mtok: float = 0.25
-    juiza_preco_saida_usd_mtok: float = 1.50
+    juiza_preco_entrada_usd_mtok: float | None = None
+    juiza_preco_saida_usd_mtok: float | None = None
+    juiza_preco_cache_usd_mtok: float | None = None
     # Teto mensal (US$) da juiza de producao e verba (US$) do backlog. Somam as runs do banco.
     juiza_orcamento_mensal_usd: float = 3.0
     juiza_backlog_verba_usd: float = 15.0
-    # Modo "Jev decide" (manual): o Jev decide sozinho com confianca >= juiza_confianca_minima.
-    # Desligado (padrao) = triagem: o Jev so aceita descarte com confianca >= 0.9.
+    # OBSOLETO: so vale se JUIZA_JEV_MODO nao foi definido (true -> decide).
     juiza_jev_decide: bool = False
+    # Modo do Jev na juiza: triagem, decide ou entrega (padrao).
+    juiza_jev_modo: Literal["triagem", "decide", "entrega"] = "entrega"
+    # Confianca minima do Jev no modo entrega.
+    juiza_jev_limiar_entrega: float = Field(0.9, gt=0.5, le=1.0)
     juiza_confianca_triagem: float = 0.9
 
     # JEV. Desligado por padrao.
@@ -142,6 +158,16 @@ class Settings(BaseSettings):
     jev_lote: int = 50
     jev_concorrencia: int = 8
     jev_timeout_s: float = 30.0
+    # Caracteres do corpo do artigo enviados ao Jev.
+    jev_trecho: int = Field(1500, ge=300, le=8000)
+
+    # OpenAI: provedor de fallback da juiza (gpt-5.6-luna, effort none por padrao).
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_timeout_s: float = 120.0
+    openai_max_attempts: int = 3
+    openai_reasoning_effort: str = "none"
+    openai_max_output_tokens: int = 16000
 
     # Entrega: filtro pela juiza e pasta dos CSVs exportados.
     entrega_filtro_juiza: bool = False
@@ -172,6 +198,23 @@ class Settings(BaseSettings):
     def price_start(self) -> date:
         """Data inicial da coleta de precos: data_start menos o aquecimento."""
         return self.data_start - timedelta(days=self.price_warmup_days)
+
+    @property
+    def juiza_modelo_efetivo(self) -> str:
+        """Modelo da juiza: juiza_modelo, ou o padrao do provedor se vazio."""
+        return self.juiza_modelo or MODELO_PADRAO_JUIZA[self.juiza_provedor]
+
+    @property
+    def jev_modo_efetivo(self) -> str:
+        """Modo do Jev na juiza. juiza_jev_decide so vale se juiza_jev_modo nao foi definido."""
+        if "juiza_jev_modo" in self.model_fields_set:
+            return self.juiza_jev_modo
+        return "decide" if self.juiza_jev_decide else self.juiza_jev_modo
+
+    @property
+    def juiza_chave_llm(self) -> str:
+        """Chave da API do provedor escolhido em juiza_provedor."""
+        return self.openai_api_key if self.juiza_provedor == "openai" else self.gemini_api_key
 
     @property
     def effective_url(self) -> str:

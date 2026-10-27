@@ -531,30 +531,42 @@ def judge_news(
     ),
     concordancia: int | None = typer.Option(
         None, "--concordancia", min=1,
-        help="Mede a concordancia Jev x Gemini em N pares (nao grava julgamento nem staging)",
+        help="Mede a concordancia Jev x referencia em N pares (nao grava julgamento nem staging)",
+    ),
+    referencia: str | None = typer.Option(
+        None, "--referencia",
+        help="Modelo de referencia de --concordancia (padrao: REFERENCIA_PADRAO)",
     ),
     semente: int = typer.Option(
         42, "--semente", help="Semente da amostra de --concordancia (reprodutivel)"
     ),
 ) -> None:
-    """Juiza de noticias: regra, Jev e Gemini sobre as pendentes."""
+    """Juiza de noticias: regra, Jev e LLM sobre as pendentes."""
     _setup_logging()
     from tcc_scraper.llm.juiza import contar_pendentes, julgar_pendentes
 
     if concordancia is not None:
         if status or backlog:
             raise typer.BadParameter("--concordancia nao combina com --status nem --backlog")
-        from tcc_scraper.llm.juiza_concordancia import medir_concordancia
+        from tcc_scraper.llm.juiza_concordancia import REFERENCIA_PADRAO, medir_concordancia
 
-        r = medir_concordancia(concordancia, semente=semente)
-        _report("juiza de noticias: concordancia", r.resumo())
-        console.print(
-            f"decisao: {r.decisao} (nao altera a config; JUIZA_JEV_DECIDE segue como esta)"
+        r = medir_concordancia(
+            concordancia, semente=semente, referencia=referencia or REFERENCIA_PADRAO
         )
+        _report("juiza de noticias: concordancia", r.resumo())
+        if r.decisao == "entrega":
+            limiar = r.metricas["limiar_recomendado"]
+            recomendado = f"JUIZA_JEV_MODO=entrega e JUIZA_JEV_LIMIAR_ENTREGA={limiar}"
+        else:
+            recomendado = "JUIZA_JEV_MODO=triagem recomendado"
+        console.print(f"decisao: {r.decisao}: {recomendado} (nao altera a config)")
         return
+    if referencia is not None:
+        raise typer.BadParameter("--referencia so vale com --concordancia")
 
     if status:
         from tcc_scraper.config import get_settings
+        from tcc_scraper.llm.juiza import avisos_config
         from tcc_scraper.llm.juiza_custo import gasto_usd, inicio_mes_utc
 
         s = get_settings()
@@ -569,6 +581,15 @@ def judge_news(
                 ),
                 "verba_backlog_usd": s.juiza_backlog_verba_usd,
                 "orcamento_mensal_usd": s.juiza_orcamento_mensal_usd,
+                "jev": "ligado" if s.jev_enabled else "desligado",
+                "jev_chave": "presente" if s.jev_api_key else "AUSENTE",
+                "jev_modo": s.jev_modo_efetivo,
+                "jev_limiar_entrega": s.juiza_jev_limiar_entrega,
+                "jev_trecho": s.jev_trecho,
+                "llm_provedor": s.juiza_provedor,
+                "llm_modelo": s.juiza_modelo_efetivo,
+                "llm_chave": "presente" if s.juiza_chave_llm else "AUSENTE",
+                "avisos": ", ".join(avisos_config(s)) or "-",
             },
         )
         return
@@ -583,15 +604,18 @@ def judge_news(
             "pendentes": r.pendentes,
             "regra": r.regra,
             "jev": r.jev,
-            "gemini": r.gemini,
+            "llm": r.llm,
+            "provedor": r.provedor,
             "erros": r.erros,
             "invalidos": r.invalidos,
             "runs": r.runs,
             "tokens_entrada": r.tokens_entrada,
             "tokens_saida": r.tokens_saida,
+            "tokens_cache": r.tokens_cache,
             "custo_usd": round(r.custo_usd, 4),
             "parada": r.parada or "-",
             "interrompido": r.interrompido,
+            "avisos": ", ".join(r.avisos) or "-",
         },
     )
 

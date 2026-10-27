@@ -117,9 +117,11 @@ Fontes oficiais e juíza (migration 0005).
 | `v1-raw_b3_cadastro` | `collectors/b3_cadastro.py` (GetDetail por código CVM) | `cd_cvm` | 0005 | - |
 | `v1-raw_b3_proventos` | `collectors/b3_proventos.py` | `registro_hash` | 0005 | - |
 | `v1-raw_b3_suplemento` | `collectors/b3_proventos.py` (suplemento de proventos) | `registro_hash` | 0005 | - |
-| `v1-raw_llm_juiza_runs` | `llm/juiza.py`: cada chamada paga (Gemini ou Jev) e a run-resumo da concordância, inclusive as com falha | `id` | 0005; `custo_usd` e `finalidade` em 2026-10-23 | - |
-| `v1-staging_juiza_tentativas` | `llm/juiza.py`: tentativas por par que o Gemini não aceitou | `article_id`, `ticker`, `prompt_versao` | 2026-10-23 (`sql/alteracoes/2026-10-23_juiza_custo_tentativas.mysql.sql`) | - |
+| `v1-raw_llm_juiza_runs` | `llm/juiza.py`: cada chamada paga (Jev ou LLM de fallback, OpenAI ou Gemini) e a run-resumo da concordância, inclusive as com falha | `id` | 0005; `custo_usd` e `finalidade` em 2026-10-23 | - |
+| `v1-staging_juiza_tentativas` | `llm/juiza.py`: tentativas por par que a LLM de fallback não aceitou | `article_id`, `ticker`, `prompt_versao` | 2026-10-23 (`sql/alteracoes/2026-10-23_juiza_custo_tentativas.mysql.sql`) | - |
 | `v1-staging_noticias_julgamento` | `llm/juiza.py` (julgamento por artigo e ticker) | `article_id`, `ticker`, `prompt_versao` | 0005 | - |
+
+Na juíza, cada chamada paga (Jev ou LLM de fallback) gera uma run. O campo `modelo` das tabelas da juíza vale `regra` (regra barata), `jev-1.13.0/q1/t1500` (Jev; `t1500` é o `JEV_TRECHO` usado), `gpt-5.6-luna` (OpenAI) ou o nome do modelo do Gemini. Os prompts ficam em `raw_llm_prompts`: `juiza` (Gemini) e `juiza_openai` (OpenAI), ambos na versão 1. Ver [04](04-juiza-e-llm.md), seções 2.3 e 2.6.
 
 Entrega (migration 0006). Os nomes e as colunas seguem a spec em `spec-entrega-etapa-seguinte.md`. Quem escreve é
 `entrega/builder.py`, que faz upsert e, em `v1-noticias`, remove as reprovadas. `v1-composicao_ibov` (alteração de 2026-10-23, `sql/alteracoes/2026-10-23_composicao_ibov.mysql.sql`) é escrita pelo builder e pelo coletor `b3_carteira_ibov`, na etapa `precos` do daily.

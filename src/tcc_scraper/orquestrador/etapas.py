@@ -89,7 +89,12 @@ def resultado_corrigir_horas(st: dict) -> ResultadoEtapa:
 
 def resultado_concordancia(r: Any) -> ResultadoEtapa:
     """Traduz o `ResultadoConcordancia` de `medir_concordancia` (usado pelo `coletar`)."""
-    detalhes = {"decisao": r.decisao, "amostra": r.amostra, "custo_usd": r.custo_usd}
+    detalhes = {
+        "decisao": r.decisao,
+        "limiar_recomendado": r.metricas.get("limiar_recomendado"),
+        "amostra": r.amostra,
+        "custo_usd": r.custo_usd,
+    }
     return ResultadoEtapa("concluida", itens=r.amostra, detalhes=detalhes)
 
 
@@ -237,6 +242,9 @@ def etapa_enriquecimento(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
 
 
 def etapa_analise(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
+    if not ctx.settings.analise_enabled:
+        logger.info("ANALISE_ENABLED=false; análise diária pulada")
+        return ResultadoEtapa("pulada", erro="análise diária desativada (ANALISE_ENABLED=false)")
     if not ctx.settings.gemini_api_key:
         logger.warning("GEMINI_API_KEY ausente; análise diária pulada")
         return ResultadoEtapa("pulada", erro="GEMINI_API_KEY ausente")
@@ -290,33 +298,47 @@ def etapa_juiza(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
         limite_itens=ctx.settings.juiza_max_itens_dia, observador=p, modo="diario"
     )
     # Os detalhes da etapa nao chegam ao painel: a linha de log e o que fica visivel.
+    avisos = f", avisos={', '.join(r.avisos)}" if r.avisos else ""
     logger.info(
-        "juiza: %d lidos, %d julgados, US$ %.4f, parada=%s",
-        r.pendentes, r.regra + r.jev + r.gemini, r.custo_usd, r.parada or "nenhuma",
+        "juiza: %d lidos, %d julgados, US$ %.4f, parada=%s%s",
+        r.pendentes, r.regra + r.jev + r.llm, r.custo_usd, r.parada or "nenhuma", avisos,
     )
     return resultado_juiza(r)
 
 
+# Paradas em que a juiza nao julga por falta de configuracao ou de credito: a etapa falha,
+# em vez de parecer concluida com zero itens.
+PARADAS_FALHA = {"jev_sem_chave", "erro_jev", "sem_credito"}
+
+
 def resultado_juiza(r: Any) -> ResultadoEtapa:
-    itens = r.regra + r.jev + r.gemini
+    itens = r.regra + r.jev + r.llm
     detalhes = {
         "pendentes": r.pendentes,
         "regra": r.regra,
         "jev": r.jev,
-        "gemini": r.gemini,
+        "llm": r.llm,
+        "provedor": r.provedor,
         "erros": r.erros,
         "invalidos": r.invalidos,
         "runs": r.runs,
         "tokens_entrada": r.tokens_entrada,
         "tokens_saida": r.tokens_saida,
+        "tokens_cache": r.tokens_cache,
         "custo_usd": r.custo_usd,
         "parada": r.parada,
         "interrompido": r.interrompido,
+        "avisos": r.avisos,
     }
     if r.interrompido:
         return ResultadoEtapa(
             "falhou", itens=itens, erro="interrompida: orçamento ou cancelamento", detalhes=detalhes
         )
+    if r.parada in PARADAS_FALHA:
+        erro = f"juiza parou: {r.parada}"
+        if r.avisos:
+            erro += f"; avisos: {', '.join(r.avisos)}"
+        return ResultadoEtapa("falhou", itens=itens, erro=erro, detalhes=detalhes)
     return ResultadoEtapa("concluida", itens=itens, detalhes=detalhes)
 
 

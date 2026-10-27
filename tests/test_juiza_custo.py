@@ -14,6 +14,7 @@ import pytest
 from tcc_scraper.llm import juiza_custo
 
 PRECOS = SimpleNamespace(
+    juiza_provedor="gemini",
     juiza_preco_entrada_usd_mtok=0.25,
     juiza_preco_saida_usd_mtok=1.50,
     jev_preco_entrada_usd_mtok=0.042,
@@ -23,16 +24,17 @@ PRECOS = SimpleNamespace(
 )
 
 
-def test_custo_gemini_um_milhao_de_entrada_custa_o_preco_da_tabela() -> None:
-    assert juiza_custo.custo_gemini(1_000_000, 0, 0, PRECOS) == pytest.approx(0.25)
+def test_custo_llm_gemini_um_milhao_de_entrada_custa_o_preco_da_tabela() -> None:
+    assert juiza_custo.custo_llm(1_000_000, 0, s=PRECOS) == pytest.approx(0.25)
 
 
-def test_custo_gemini_pensamento_e_cobrado_como_saida() -> None:
-    assert juiza_custo.custo_gemini(0, 400_000, 600_000, PRECOS) == pytest.approx(1.5)
+def test_custo_llm_gemini_pensamento_e_cobrado_como_saida() -> None:
+    assert juiza_custo.custo_llm(0, 400_000, tokens_pensamento=600_000,
+                                 s=PRECOS) == pytest.approx(1.5)
 
 
-def test_custo_gemini_none_conta_zero() -> None:
-    assert juiza_custo.custo_gemini(None, None, None, PRECOS) == 0.0
+def test_custo_llm_gemini_none_conta_zero() -> None:
+    assert juiza_custo.custo_llm(None, None, s=PRECOS) == 0.0
 
 
 def test_custo_jev_so_cobra_a_entrada() -> None:
@@ -104,3 +106,47 @@ def test_gasto_usd_filtra_pela_finalidade(monkeypatch) -> None:
 
     assert juiza_custo.gasto_usd("producao") == 2.5
     assert "'producao'" in sql[0] and "custo_usd" in sql[0]
+
+
+OPENAI_SEM_OVERRIDE = SimpleNamespace(
+    juiza_provedor="openai",
+    juiza_preco_entrada_usd_mtok=None,
+    juiza_preco_cache_usd_mtok=None,
+    juiza_preco_saida_usd_mtok=None,
+)
+
+
+def test_openai_sem_override_usa_a_tabela_de_entrada_saida_e_cache() -> None:
+    assert juiza_custo.custo_llm(1_000_000, 0, s=OPENAI_SEM_OVERRIDE) == pytest.approx(0.20)
+    assert juiza_custo.custo_llm(0, 1_000_000, s=OPENAI_SEM_OVERRIDE) == pytest.approx(1.20)
+    assert juiza_custo.custo_llm(1_000_000, 0, tokens_cache=1_000_000,
+                                 s=OPENAI_SEM_OVERRIDE) == pytest.approx(0.02)
+
+
+def test_override_do_env_vence_a_tabela() -> None:
+    s = SimpleNamespace(**{**OPENAI_SEM_OVERRIDE.__dict__, "juiza_preco_saida_usd_mtok": 2.0})
+
+    assert juiza_custo.precos_llm(s) == (0.20, 0.02, 2.0)
+    assert juiza_custo.custo_llm(0, 1_000_000, s=s) == pytest.approx(2.0)
+
+
+def test_custo_resposta_ignora_raciocinio_da_openai() -> None:
+    resposta = SimpleNamespace(tokens_entrada=0, tokens_saida=0, tokens_raciocinio=500_000)
+
+    assert juiza_custo.custo_resposta(resposta, OPENAI_SEM_OVERRIDE) == 0.0
+
+
+def test_cache_maior_que_a_entrada_e_limitado() -> None:
+    # 1M de entrada com 3M de cache: so 1M e cobrado, a preco de cache.
+    custo = juiza_custo.custo_llm(1_000_000, 0, tokens_cache=3_000_000, s=OPENAI_SEM_OVERRIDE)
+
+    assert custo == pytest.approx(0.02)
+
+
+def test_gemini_soma_o_pensamento_como_saida() -> None:
+    s = SimpleNamespace(juiza_provedor="gemini", juiza_preco_entrada_usd_mtok=None,
+                        juiza_preco_cache_usd_mtok=None, juiza_preco_saida_usd_mtok=None)
+    resposta = SimpleNamespace(tokens_entrada=0, tokens_saida=400_000,
+                               tokens_pensamento=600_000)
+
+    assert juiza_custo.custo_resposta(resposta, s) == pytest.approx(1.5)
