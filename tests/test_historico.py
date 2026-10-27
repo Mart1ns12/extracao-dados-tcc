@@ -34,12 +34,23 @@ ORDEM_PREVIA = [
     "b3_proventos",
     "cvm_itr_dfp",
 ]
-ORDEM_ANO = [
-    "google_news",
+ORDEM_GOOGLE_ANO = ["google_news", "enriquecimento"]
+# Ids no painel (juiza_wp e a juiza do ano, que roda no coletor "juiza").
+ORDEM_PRINCIPAL_ANO = [
     "wordpress",
     "processar_wp",
     "cvm_ipe",
-    "enriquecimento",
+    "juiza_wp",
+    "finbert",
+    "juiza",
+    "build_entrega",
+]
+# Coletores que a principal chama, na ordem (juiza aparece duas vezes, como no catalogo).
+ORDEM_PRINCIPAL_COLETORES = [
+    "wordpress",
+    "processar_wp",
+    "cvm_ipe",
+    "juiza",
     "finbert",
     "juiza",
     "build_entrega",
@@ -89,13 +100,15 @@ class Falso:
         if nome in self.FUNCOES:
             coletor = self.FUNCOES[nome]
 
-            def funcao(observador=None, **_kwargs):
-                self.chamadas.append((coletor, {"resume": True, "apenas_erros": False}))
+            def funcao(observador=None, **kwargs):
+                self.chamadas.append(
+                    (coletor, {"resume": True, "apenas_erros": False, "args": kwargs})
+                )
                 return self._rodar(coletor, observador, resume=True)
 
             return funcao
         coletor = self.NOMES[nome]
-        return lambda **_kwargs: _ColetorFalso(self, coletor)
+        return lambda **kwargs: _ColetorFalso(self, coletor, kwargs)
 
     def _rodar(self, coletor: str, observador, *, resume: bool) -> dict:
         chaves = [f"{coletor}-{i}" for i in range(3)]
@@ -116,9 +129,10 @@ class Falso:
 
 
 class _ColetorFalso:
-    def __init__(self, falso: Falso, coletor: str) -> None:
+    def __init__(self, falso: Falso, coletor: str, args: dict | None = None) -> None:
         self._falso = falso
         self._coletor = coletor
+        self._args = args or {}
 
     def __enter__(self):
         return self
@@ -128,7 +142,10 @@ class _ColetorFalso:
 
     def run(self, *, observador, resume: bool = True, apenas_erros: bool = False) -> dict:
         self._falso.chamadas.append(
-            (self._coletor, {"resume": resume, "apenas_erros": apenas_erros})
+            (
+                self._coletor,
+                {"resume": resume, "apenas_erros": apenas_erros, "args": self._args},
+            )
         )
         return self._falso._rodar(self._coletor, observador, resume=resume)
 
@@ -190,10 +207,24 @@ def test_segmentos_filtra_por_anos_pedidos():
     assert [s.ano for s in segmentos(_settings(), [2025])] == [2025]
 
 
-def test_passo_da_juiza_leva_o_ano_e_roda_em_backlog():
+def test_passos_da_juiza_levam_o_ano_e_rodam_em_backlog():
     passos = H._passos(_settings(), [2026])
     juizas = [p for p in passos if p.coletor == "juiza"]
-    assert juizas == [H.Passo(2026, "juiza", {"anos": [2026], "modo": "backlog"})]
+    assert juizas == [
+        H.Passo(
+            2026,
+            "juiza",
+            {"anos": [2026], "origens": ["wordpress", "cvm_ipe"], "modo": "backlog"},
+            painel="juiza_wp",
+        ),
+        H.Passo(2026, "juiza", {"anos": [2026], "modo": "backlog"}, depende_google=True),
+    ]
+
+
+def test_finbert_recebe_o_ano_e_espera_o_google():
+    passos = H._passos(_settings(), [2026])
+    finbert = next(p for p in passos if p.coletor == "finbert")
+    assert finbert == H.Passo(2026, "finbert", {"anos": [2026]}, depende_google=True)
 
 
 def test_passos_wordpress_recuam_31_dias_e_processamento_fica_no_segmento():
@@ -208,12 +239,35 @@ def test_passos_wordpress_recuam_31_dias_e_processamento_fica_no_segmento():
     ]
 
 
-def test_passos_wordpress_vem_logo_depois_do_google_news():
-    nomes = [p.coletor for p in H._passos(_settings(), [2026])]
-    assert nomes[nomes.index("google_news") + 1 : nomes.index("google_news") + 3] == [
-        "wordpress",
-        "processar_wp",
+def test_duas_trilhas_separam_google_do_resto():
+    passos = H._passos(_settings(), [2026, 2025])
+    google = [(p.ano, p.coletor) for p in passos if p.trilha == H.TRILHA_GOOGLE]
+    assert google == [
+        (2026, "google_news"),
+        (2026, "enriquecimento"),
+        (2025, "google_news"),
+        (2025, "enriquecimento"),
     ]
+    principal_2026 = [
+        p.id_painel for p in passos if p.trilha == H.TRILHA_PRINCIPAL and p.ano == 2026
+    ]
+    assert principal_2026 == ORDEM_PREVIA + ORDEM_PRINCIPAL_ANO
+
+
+def test_so_finbert_juiza_e_entrega_dependem_do_google():
+    passos = H._passos(_settings(), [2026, 2025])
+    dependentes = {p.id_painel for p in passos if p.depende_google}
+    assert dependentes == {"finbert", "juiza", "build_entrega"}
+
+
+def test_juiza_wp_leva_origens_sem_google_e_o_ano():
+    passos = H._passos(_settings(), [2026])
+    juiza_wp = next(p for p in passos if p.id_painel == "juiza_wp")
+    assert juiza_wp.args == {
+        "anos": [2026],
+        "origens": ["wordpress", "cvm_ipe"],
+        "modo": "backlog",
+    }
 
 
 def test_wp_desligado_tira_wordpress_e_processamento_da_carga():
@@ -230,14 +284,42 @@ def test_wp_desligado_tira_wordpress_e_processamento_da_carga():
 
 
 # -- ordem e flags dos coletores ---------------------------------------------------------
-def test_ordem_da_carga_tem_previa_so_no_primeiro_ano(monkeypatch):
+def test_carga_completa_com_duas_trilhas_termina_concluida(monkeypatch):
     repo, hist, falso = _montar(monkeypatch)
     hist.disparar([2026, 2025])
     hist.join(10)
 
     nomes = [c for c, _ in falso.chamadas]
-    assert nomes == ORDEM_PREVIA + ORDEM_ANO + ORDEM_ANO
     assert nomes.count("yahoo") == 1
+    # Cada trilha roda em ordem; so a intercalacao entre elas nao e determinista.
+    assert [c for c in nomes if c not in ORDEM_GOOGLE_ANO] == (
+        ORDEM_PREVIA + ORDEM_PRINCIPAL_COLETORES * 2
+    )
+    assert [c for c in nomes if c in ORDEM_GOOGLE_ANO] == ORDEM_GOOGLE_ANO * 2
+    assert repo.historico_atual()["status"] == "concluida"
+
+
+def test_finbert_e_juiza_do_ano_so_rodam_depois_do_google_do_ano(monkeypatch):
+    repo, hist, falso = _montar(monkeypatch)
+    libera = threading.Event()
+
+    def trava(coletor, key):
+        if coletor == "google_news":
+            libera.wait(5)
+
+    falso.hook = trava
+    hist.disparar([2026])
+    # A principal chega ao portao do ano (juiza_wp ja rodou) enquanto o Google ainda coleta.
+    _esperar(lambda: "juiza" in [c for c, _ in falso.chamadas])
+    nomes = [c for c, _ in falso.chamadas]
+    assert "finbert" not in nomes
+    assert "enriquecimento" not in nomes
+
+    libera.set()
+    hist.join(10)
+
+    nomes = [c for c, _ in falso.chamadas]
+    assert nomes.index("finbert") > nomes.index("enriquecimento")
     assert repo.historico_atual()["status"] == "concluida"
 
 
@@ -278,6 +360,8 @@ def test_pausar_entre_unidades_e_retomar_continua_de_onde_parou(monkeypatch):
     hist.disparar([2026, 2025])
     _esperar(lambda: repo.historico_atual()["status"] == "pausada")
 
+    # `pausada` so e gravada quando as duas trilhas estao estacionadas.
+    assert hist._paradas == hist._vivas == 2
     gnews = _linha_progresso(repo, 2026, "google_news")
     assert gnews["unidades_feitas"] == 1
     assert gnews["status_segmento"] == "pausado"
@@ -427,3 +511,190 @@ def test_recuperar_retoma_em_andamento_e_fecha_cancelando(monkeypatch):
     atual = repo2.historico_atual()
     assert atual["status"] == "cancelada"
     assert atual["finalizada_em"] is not None
+
+
+# -- progresso: unidade em curso e ultimo erro -----------------------------------------
+def _progresso_direto(repo: RepositorioMemoria | None = None):
+    """Um ProgressoHistorico solto, sem orquestrador: testa so o observador."""
+    if repo is None:
+        repo = RepositorioMemoria()
+        repo.criar_historico(_registro("em_andamento"))
+        repo.criar_progresso_historico(
+            [
+                {
+                    "ano": 2026,
+                    "coletor": "google_news",
+                    "unidades_total": 0,
+                    "unidades_feitas": 0,
+                    "unidades_erro": 0,
+                    "itens": 0,
+                    "status_segmento": "pendente",
+                    "unidade_atual": None,
+                    "ultimo_erro_unidade": None,
+                    "ultimo_erro_mensagem": None,
+                    "atualizado_em": AGORA,
+                }
+            ]
+        )
+    progresso = H.ProgressoHistorico(
+        repo,
+        "hist-teste",
+        H.Passo(2026, "google_news"),
+        pausar=threading.Event(),
+        cancelar=threading.Event(),
+        ritmo=H._Ritmo(),
+        agora=lambda: AGORA,
+    )
+    return repo, progresso
+
+
+def test_inicio_unidade_grava_a_unidade_em_curso_na_hora():
+    repo, progresso = _progresso_direto()
+    progresso.inicio_unidade("PETR4|x")
+    assert _linha_progresso(repo, 2026, "google_news")["unidade_atual"] == "PETR4|x"
+
+
+def test_erro_de_unidade_grava_na_hora_e_flush_seguinte_nao_apaga():
+    repo, progresso = _progresso_direto()
+    progresso.unidade("k", ok=False, itens=0, saturada=False, erro="boom")
+    linha = _linha_progresso(repo, 2026, "google_news")
+    assert linha["ultimo_erro_unidade"] == "k"
+    assert linha["ultimo_erro_mensagem"] == "boom"
+
+    progresso.unidade("k2", ok=True, itens=1, saturada=False, erro=None)
+    progresso.flush()
+    linha = _linha_progresso(repo, 2026, "google_news")
+    assert linha["ultimo_erro_unidade"] == "k"
+    assert linha["ultimo_erro_mensagem"] == "boom"
+
+
+def test_objeto_novo_apos_reinicio_nao_apaga_o_ultimo_erro_gravado():
+    repo, progresso = _progresso_direto()
+    progresso.unidade("k", ok=False, itens=0, saturada=False, erro="boom")
+    _, reiniciado = _progresso_direto(repo)  # objeto novo, sem erro em memoria
+    reiniciado.flush()
+    assert _linha_progresso(repo, 2026, "google_news")["ultimo_erro_mensagem"] == "boom"
+
+
+def test_falha_do_passo_grava_o_erro_no_progresso_e_carga_falha(monkeypatch):
+    repo, hist, falso = _montar(monkeypatch)
+
+    def hook(coletor, key):
+        if coletor == "cvm_ipe":
+            raise RuntimeError("x")
+
+    falso.hook = hook
+    hist.disparar([2026])
+    hist.join(10)
+
+    assert repo.historico_atual()["status"] == "falhou"
+    linha = _linha_progresso(repo, 2026, "cvm_ipe")
+    assert linha["status_segmento"] == "falhou"
+    assert linha["ultimo_erro_mensagem"].startswith("RuntimeError: x")
+
+
+def test_passo_concluido_zera_a_unidade_em_curso(monkeypatch):
+    repo, hist, _ = _montar(monkeypatch)
+    hist.disparar([2026])
+    hist.join(10)
+    linha = _linha_progresso(repo, 2026, "google_news")
+    assert linha["status_segmento"] == "concluido"
+    assert linha["unidade_atual"] is None
+
+
+def test_disparo_cria_linhas_com_unidade_e_erro_vazios(monkeypatch):
+    repo, hist, _ = _montar(monkeypatch)
+    criadas: list[dict] = []
+    original = repo.criar_progresso_historico
+
+    def espiao(linhas):
+        criadas.extend(linhas)
+        original(linhas)
+
+    monkeypatch.setattr(repo, "criar_progresso_historico", espiao)
+    hist.disparar([2026])
+    hist.join(10)
+
+    assert criadas
+    for linha in criadas:
+        assert linha["unidade_atual"] is None
+        assert linha["ultimo_erro_unidade"] is None
+        assert linha["ultimo_erro_mensagem"] is None
+
+
+# -- duas trilhas: falha, retomada e concorrencia -------------------------------------------
+def test_falha_numa_trilha_aborta_a_outra_e_a_carga_falha(monkeypatch):
+    repo, hist, falso = _montar(monkeypatch)
+
+    def hook(coletor, key):
+        if coletor == "cvm_ipe":
+            raise RuntimeError("x")
+
+    falso.hook = hook
+    hist.disparar([2026, 2025])
+    hist.join(10)
+
+    atual = repo.historico_atual()
+    assert atual["status"] == "falhou"
+    assert "RuntimeError" in atual["erro"]
+    assert hist.ocupado is False
+
+
+def _criar_linhas_do_plano(repo, anos: list[int], concluidos: set[str]) -> None:
+    """Linhas de progresso de todos os passos, como o disparo as cria; `concluidos` ja rodaram."""
+    repo.criar_progresso_historico(
+        [
+            {
+                "ano": p.ano,
+                "coletor": p.id_painel,
+                "unidades_total": 0,
+                "unidades_feitas": 0,
+                "unidades_erro": 0,
+                "itens": 0,
+                "status_segmento": "concluido" if p.id_painel in concluidos else "pendente",
+                "unidade_atual": None,
+                "ultimo_erro_unidade": None,
+                "ultimo_erro_mensagem": None,
+                "atualizado_em": AGORA,
+            }
+            for p in H._passos(_settings(), anos)
+        ]
+    )
+
+
+def test_retomada_pelo_status_nao_refaz_os_passos_concluidos(monkeypatch):
+    repo, hist, falso = _montar(monkeypatch)
+    repo.criar_historico(_registro("em_andamento", anos=[2026]))
+    concluidos = set(ORDEM_PREVIA) | {"google_news"}
+    _criar_linhas_do_plano(repo, [2026], concluidos)
+
+    hist.recuperar_apos_reinicio()
+    hist.join(10)
+
+    chamados = {c for c, _ in falso.chamadas}
+    assert not chamados & concluidos
+    assert {"enriquecimento", "wordpress", "finbert", "build_entrega"} <= chamados
+    assert repo.historico_atual()["status"] == "concluida"
+
+
+def test_ritmo_aguenta_duas_trilhas_registrando_ao_mesmo_tempo():
+    ritmo = H._Ritmo()
+    erros: list[Exception] = []
+
+    def registra() -> None:
+        try:
+            for _ in range(1000):
+                ritmo.registrar(AGORA, 1)
+                ritmo.media(AGORA)
+        except Exception as exc:  # so chega aqui se a fila for corrompida
+            erros.append(exc)
+
+    threads = [threading.Thread(target=registra) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+
+    assert erros == []
+    # Todas as amostras caem no mesmo instante: 2000 itens em 1 minuto (piso de 1 min).
+    assert ritmo.media(AGORA) == 2000.0

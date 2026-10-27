@@ -674,3 +674,32 @@ Decisão e opções: [ADR](ADR.md), seção "Coleta de notícias dos 3 veículos
 - Panoramas de mercado com ticker no título continuam entrando. É a limitação já registrada na seção 2 do CLAUDE.md.
 - O classificador por código é heurística. Se as listas de regra mudarem, é preciso medir de novo e subir `REGRAS_VERSAO`.
 - A juíza fica com cerca de 26% dos pares do WordPress, a US$ 0,000077 por par (Jev mais Luna): cerca de US$ 0,11 por mês e US$ 5,5 no histórico.
+
+## 21. Unidade em curso e último erro no progresso da carga (2026-10-27)
+
+Motivo: com as duas trilhas paralelas da carga, a posição única de `v1-painel_historico` não mostra o que cada (ano, coletor) está fazendo. Além disso, uma unidade lenta parecia travada, e um erro de unidade ou de passo não aparecia no painel.
+
+O que foi feito, sem commit:
+
+- `v1-painel_historico_progresso` ganha `unidade_atual`, `ultimo_erro_unidade` e `ultimo_erro_mensagem`. O ALTER está em `sql/alteracoes/2026-10-27_historico_progresso_unidade_erro.mysql.sql` e não foi aplicado. O schema recebe a Etapa 0012 no fim. Como o dono aplica a DDL antes de publicar, o `ProgressoHistorico` novo depende dela.
+- `ProgressoHistorico.inicio_unidade(key)` grava a unidade antes de ela rodar. `Collector.run` chama esse gancho por `getattr`, para não mudar o Protocol do observador.
+- `unidade(ok=False)` grava o último erro na hora. O flush seguinte não apaga um erro anterior, mesmo num objeto novo depois de reinício.
+- Exceção do passo: `_executar` grava `falhou` com `Tipo: mensagem` em `ultimo_erro_mensagem`. Passo concluído zera `unidade_atual`. Passo pausado mantém a unidade.
+
+Pendente: o dono aplicar a DDL e o commit junto com as demais tarefas do plano de trilhas.
+
+## 22. Carga histórica em duas trilhas (2026-10-27)
+
+Motivo: o Google News é o passo mais lento (6 a 9 horas por ano). Em sequência, o WordPress, a IPE e a juíza esperavam o Google terminar cada ano, e a fila inteira ficava parada atrás dele.
+
+O que foi feito, sem commit:
+
+- A carga roda em duas trilhas simultâneas. A trilha Google tem `google_news` e `enriquecimento`. A principal tem o resto, incluindo `wordpress`, `processar_wp`, `cvm_ipe` e a juíza de WordPress e IPE (id no painel `juiza_wp`, com `origens` = `wordpress` e `cvm_ipe`).
+- Portão do ano: `finbert`, a juíza do ano e `build_entrega` só começam quando a trilha Google termina o último passo do ano (`enriquecimento`). O FinBERT e a juíza recebem `anos`, para pontuar e julgar só o ano que chegou.
+- `ProgressoHistorico` aceita `abortar` e grava o progresso com o id do painel. `_Ritmo` tem lock próprio, porque as duas trilhas registram nele.
+- Pausa: as duas trilhas estacionam numa `Condition` sobre o lock da carga. `pausada` só é gravada quando todas as trilhas ainda ativas estão paradas. Retomar acorda as duas.
+- Falha de passo em uma trilha aborta a outra e leva a carga a `falhou`.
+- Retomada depois de reinício: os passos com `concluido` em `v1-painel_historico_progresso` não se refazem. Os demais rodam de novo. `_indice_inicial` saiu.
+- Testes em `tests/test_historico.py`: ordem por trilha, portão, pausa nas duas trilhas, falha cruzada, retomada pelo status e `_Ritmo` concorrente.
+
+Pendente: a verificação com carga real (ver os riscos da seção 10 de [03](03-carga-historica.md)), a DDL de 2026-10-27 aplicada pelo dono e o commit junto com as demais tarefas do plano de trilhas.

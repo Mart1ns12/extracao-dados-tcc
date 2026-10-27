@@ -228,7 +228,7 @@ As tabelas são lidas pela API direto no MySQL. Só `v1-painel_comandos` é escr
 | `v1-painel_execucoes` | Executor | `id` (String 48) | `tipo` (`daily`, `etapa` ou `coletar`), `etapa_alvo`, `origem` (`cron` ou `manual`), `status`, `aguardando` (`null` ou `historico`), `iniciada_em`, `finalizada_em`, `prazo_em`, `erro`, `atualizada_em`. Índice em `iniciada_em` |
 | `v1-painel_etapas` | Executor | (`execucao_id`, `etapa_id`). FK para `v1-painel_execucoes.id` com `ON DELETE CASCADE` | `ordem`, `status`, `unidades_total`, `unidades_feitas`, `unidades_erro`, `unidades_saturadas`, `itens`, `iniciada_em`, `finalizada_em`, `ultimo_erro_unidade`, `ultimo_erro_mensagem`, `atualizada_em` |
 | `v1-painel_historico` | Executor | `id` (String 32, ex.: `hist-20261019-210512`) | `status`, `modo`, `anos` (JSON), `ano_atual`, `coletor_atual`, `unidade_atual`, `iniciada_em`, `finalizada_em`, `itens_por_min`, `erro`, `atualizada_em` |
-| `v1-painel_historico_progresso` | Executor | (`ano`, `coletor`) | `unidades_total`, `unidades_feitas`, `unidades_erro`, `itens`, `status_segmento`, `atualizado_em` |
+| `v1-painel_historico_progresso` | Executor | (`ano`, `coletor`) | `unidades_total`, `unidades_feitas`, `unidades_erro`, `itens`, `status_segmento`, `unidade_atual`, `ultimo_erro_unidade`, `ultimo_erro_mensagem`, `atualizado_em` |
 | `v1-painel_logs` | Executor | `id` (autoincremento) | `ts`, `nivel` (`info`, `aviso` ou `erro`), `origem` (`daily` ou `historico`), `etapa`, `mensagem`. Índice em `ts`. Sem chave estrangeira, para o log sobreviver à limpeza das execuções |
 
 Valores de status, em uso:

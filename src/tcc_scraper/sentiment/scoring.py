@@ -9,10 +9,10 @@ retomavel de graca.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from tcc_scraper.db.models import Article, ArticleBody, ArticleSentiment
 from tcc_scraper.db.session import session_scope
@@ -54,19 +54,29 @@ def linhas_sentimento(rows: list, resultados: list, quando: dt.datetime) -> list
     ]
 
 
-def pendentes_de_score(limit: int | None = None) -> list[tuple[int, str, str, str | None]]:
+def pendentes_de_score(
+    limit: int | None = None, anos: Sequence[int] | None = None
+) -> list[tuple[int, str, str, str | None]]:
     """Artigos sem sentimento: (id, titulo, lang, corpo).
 
     Prefere o corpo quando existe; senao usa a manchete. text_source registra
-    qual foi, para a analise de qualidade.
+    qual foi, para a analise de qualidade. `anos` filtra pelo ano de publicacao em UTC
+    (mesma janela da juiza).
     """
+    consulta = (
+        select(Article.id, Article.title, Article.lang, ArticleBody.body_text)
+        .outerjoin(ArticleBody, ArticleBody.article_id == Article.id)
+        .outerjoin(ArticleSentiment, ArticleSentiment.article_id == Article.id)
+        .where(ArticleSentiment.article_id.is_(None))
+    )
+    if anos:
+        janelas = [and_(
+            Article.published_at >= dt.datetime(ano, 1, 1, tzinfo=dt.UTC),
+            Article.published_at < dt.datetime(ano + 1, 1, 1, tzinfo=dt.UTC),
+        ) for ano in sorted(set(anos))]
+        consulta = consulta.where(or_(*janelas))
     with session_scope() as session:
-        rows = session.execute(
-            select(Article.id, Article.title, Article.lang, ArticleBody.body_text)
-            .outerjoin(ArticleBody, ArticleBody.article_id == Article.id)
-            .outerjoin(ArticleSentiment, ArticleSentiment.article_id == Article.id)
-            .where(ArticleSentiment.article_id.is_(None))
-        ).all()
+        rows = session.execute(consulta).all()
 
     if limit:
         rows = rows[:limit]
@@ -77,16 +87,20 @@ def score_pending(
     *,
     batch_size: int = 32,
     limit: int | None = None,
+    anos: Sequence[int] | None = None,
     router: SentimentRouter | None = None,
     observador: Any | None = None,
 ) -> dict[str, int]:
     """Pontua os artigos pendentes e grava cada bloco assim que e pontuado.
 
+    `anos` restringe ao ano de publicacao (ver pendentes_de_score): a carga historica
+    passa o ano, para nao pontuar so pela manchete artigos que o enriquecimento da outra
+    trilha ainda nao processou.
     `observador` (opcional, duck-typed) recebe `plano(n_blocos)` antes do laco,
     `unidade(nome, ok=, itens=, saturada=, erro=)` por bloco e `deve_parar()` antes
     de cada bloco; se devolver True, para e devolve o que ja foi gravado.
     """
-    rows = pendentes_de_score(limit)
+    rows = pendentes_de_score(limit, anos=anos)
     if not rows:
         return {"artigos": 0, "gravados": 0, "com_corpo": 0, "so_manchete": 0,
                 "interrompido": 0}

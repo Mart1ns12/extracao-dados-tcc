@@ -1,12 +1,15 @@
 """Carga historica: coleta ano a ano (do mais recente ao mais antigo), com pausa e cancelamento.
 
-Roda em thread propria, ao lado do executor. Pausa e cancelamento sao checados ENTRE
-unidades de trabalho (`deve_parar()` do observador): nunca interrompem uma requisicao no
-meio. Os coletores sao retomaveis por checkpoint (`raw_collection_runs`), entao retomar
-recomeca a unidade interrompida e segue do mesmo ponto.
+Roda em thread propria (a coordenadora), ao lado do executor. A coordenadora sobe duas
+trilhas em threads: a Google (google_news e corpo dos artigos) e a principal (o resto). A
+principal so pontua e julga as noticias de um ano depois que a Google concluiu esse ano.
+Pausa e cancelamento sao checados ENTRE unidades de trabalho (`deve_parar()` do observador):
+nunca interrompem uma requisicao no meio. Os coletores sao retomaveis por checkpoint
+(`raw_collection_runs`), entao retomar recomeca a unidade interrompida e segue do mesmo ponto.
 
-O estado da carga (status e posicao) vive em `v1-painel_historico`; as flags de controle
-vivem na memoria do processo. `recuperar_apos_reinicio` reconcilia os dois.
+O estado da carga (status e posicao) vive em `v1-painel_historico` e o progresso de cada
+passo em `v1-painel_historico_progresso`; as flags de controle vivem na memoria do processo.
+`recuperar_apos_reinicio` reconcilia os dois: os passos ja `concluido` nao se refazem.
 """
 
 from __future__ import annotations
@@ -37,6 +40,10 @@ MODOS = ("pendentes", "reprocessar_erros")
 STATUS_ATIVOS = ("em_andamento", "pausando", "pausada", "cancelando")
 # Janela da media movel de itens por minuto.
 JANELA_RITMO = timedelta(minutes=10)
+TRILHA_GOOGLE = "google"
+TRILHA_PRINCIPAL = "principal"
+# Origens que nao dependem da trilha Google: a juiza as julga enquanto o Google coleta o ano.
+ORIGENS_SEM_GOOGLE = ("wordpress", "cvm_ipe")
 
 class HistoricoEmAndamento(Exception):
     """Ja existe uma carga historica ativa (rodando, pausada ou sendo cancelada)."""
@@ -79,6 +86,16 @@ class Passo:
     ano: int
     coletor: str
     args: dict = field(default_factory=dict)
+    # Trilha em que roda (ver Historico._rodar). A Google so tem google_news e enriquecimento.
+    trilha: str = TRILHA_PRINCIPAL
+    # True: so comeca depois que a trilha Google concluir este ano (finbert, juiza, entrega).
+    depende_google: bool = False
+    # Id no painel (`coletor` de v1-painel_historico_progresso); None = o proprio coletor.
+    painel: str | None = None
+
+    @property
+    def id_painel(self) -> str:
+        return self.painel or self.coletor
 
     def executar(self, progresso: ProgressoHistorico, modo: str) -> Any:
         return CATALOGO[self.coletor].executar(
@@ -94,18 +111,22 @@ class _Ritmo:
 
     def __init__(self) -> None:
         self._amostras: deque[tuple[datetime, int]] = deque()
+        # As duas trilhas registram no mesmo ritmo: a media precisa de uma fila so.
+        self._lock = threading.Lock()
 
     def registrar(self, agora: datetime, itens: int) -> None:
-        self._amostras.append((agora, itens))
+        with self._lock:
+            self._amostras.append((agora, itens))
 
     def media(self, agora: datetime) -> float:
-        corte = agora - JANELA_RITMO
-        while self._amostras and self._amostras[0][0] < corte:
-            self._amostras.popleft()
-        if not self._amostras:
-            return 0.0
-        minutos = max((agora - self._amostras[0][0]).total_seconds() / 60, 1.0)
-        return sum(itens for _, itens in self._amostras) / minutos
+        with self._lock:
+            corte = agora - JANELA_RITMO
+            while self._amostras and self._amostras[0][0] < corte:
+                self._amostras.popleft()
+            if not self._amostras:
+                return 0.0
+            minutos = max((agora - self._amostras[0][0]).total_seconds() / 60, 1.0)
+            return sum(itens for _, itens in self._amostras) / minutos
 
 
 class ProgressoHistorico:
@@ -126,14 +147,16 @@ class ProgressoHistorico:
         pausar: threading.Event,
         cancelar: threading.Event,
         ritmo: _Ritmo,
+        abortar: threading.Event | None = None,
         agora: Callable[[], datetime] | None = None,
     ) -> None:
         self.repo = repo
         self.hist_id = hist_id
         self.ano = passo.ano
-        self.coletor = passo.coletor
+        self.coletor = passo.id_painel
         self._pausar = pausar
         self._cancelar = cancelar
+        self._abortar = abortar
         self._ritmo = ritmo
         self._agora = agora or (lambda: datetime.now(UTC))
         self.total = 0
@@ -141,6 +164,8 @@ class ProgressoHistorico:
         self.erro = 0
         self.itens = 0
         self.unidade_atual: str | None = None
+        self.ultimo_erro_unidade: str | None = None
+        self.ultimo_erro_mensagem: str | None = None
         self._pendentes = 0
         self._ultimo_flush = self._agora()
 
@@ -157,17 +182,29 @@ class ProgressoHistorico:
         self.itens += itens
         if not ok:
             self.erro += 1
+            self.ultimo_erro_unidade = key[:128]
+            self.ultimo_erro_mensagem = (erro or "")[:4000]
         self.unidade_atual = key[:128]
         agora = self._agora()
         self._ritmo.registrar(agora, itens)
         self._pendentes += 1
-        if self._pendentes >= FLUSH_UNIDADES or (
+        if not ok or self._pendentes >= FLUSH_UNIDADES or (
             agora - self._ultimo_flush >= timedelta(seconds=FLUSH_SEGUNDOS)
         ):
             self.flush()
 
+    def inicio_unidade(self, key: str) -> None:
+        """Chamado por Collector.run ANTES de cada unidade: o painel mostra a unidade em curso,
+        nao a ultima concluida (uma unidade lenta parecia travada)."""
+        self.unidade_atual = key[:128]
+        self.flush()
+
     def deve_parar(self) -> bool:
-        return self._pausar.is_set() or self._cancelar.is_set()
+        return (
+            self._pausar.is_set()
+            or self._cancelar.is_set()
+            or (self._abortar is not None and self._abortar.is_set())
+        )
 
     # -- uso do orquestrador ------------------------------------------------------
     def log(self, nivel: str, mensagem: str) -> None:
@@ -175,6 +212,13 @@ class ProgressoHistorico:
 
     def flush(self) -> None:
         agora = self._agora()
+        campos_erro = {}
+        # Objeto novo apos reinicio nao tem erro em memoria: nao apaga o ultimo erro gravado.
+        if self.ultimo_erro_mensagem is not None:
+            campos_erro = {
+                "ultimo_erro_unidade": self.ultimo_erro_unidade,
+                "ultimo_erro_mensagem": self.ultimo_erro_mensagem,
+            }
         self.repo.atualizar_progresso_historico(
             self.ano,
             self.coletor,
@@ -182,6 +226,8 @@ class ProgressoHistorico:
             unidades_feitas=self.feitas,
             unidades_erro=self.erro,
             itens=self.itens,
+            unidade_atual=self.unidade_atual,
+            **campos_erro,
             atualizado_em=agora,
         )
         self.repo.atualizar_historico(
@@ -200,9 +246,18 @@ class ProgressoHistorico:
 
 
 def _passos(settings: Settings, anos: list[int]) -> list[Passo]:
-    """Ordem da carga: globais do primeiro (mais recente) ano, depois ano a ano."""
+    """Ordem da carga: globais do primeiro (mais recente) ano, depois ano a ano, em duas trilhas.
+
+    A trilha Google so coleta noticias do Google News e o corpo dos artigos. A principal faz o
+    resto. Na principal, o FinBERT e a juiza de um ano (e a entrega) esperam o portao do Google
+    desse ano (`depende_google`); a juiza de WordPress e IPE nao espera, porque essas origens
+    nao dependem do corpo do Google. O FinBERT e a juiza recebem `anos`: pontuam e julgam so o
+    ano que chegou, e nao o backlog inteiro, que pontuaria pela manchete o que o enriquecimento
+    da outra trilha ainda nao processou.
+    """
     ordem = sorted(set(anos), reverse=True)
     primeiro = ordem[0]
+    juiza = args_fixos("juiza", settings)
     passos = [
         Passo(primeiro, "yahoo"),
         Passo(primeiro, "b3_indices", {"anos": ordem}),
@@ -214,7 +269,11 @@ def _passos(settings: Settings, anos: list[int]) -> list[Passo]:
         Passo(primeiro, "cvm_itr_dfp", {"anos": ordem}),
     ]
     for seg in segmentos(settings, ordem):
-        passos.append(Passo(seg.ano, "google_news", {"desde": seg.inicio, "ate": seg.fim}))
+        passos += [
+            Passo(seg.ano, "google_news", {"desde": seg.inicio, "ate": seg.fim},
+                  trilha=TRILHA_GOOGLE),
+            Passo(seg.ano, "enriquecimento", trilha=TRILHA_GOOGLE),
+        ]
         # seg.fim e exclusivo (ver segmentos): vale para o WordPress e para o processamento.
         # Os 31 d antes do segmento aquecem o boilerplate causal (30 d) do processar_wp.
         if settings.wp_enabled:
@@ -226,10 +285,12 @@ def _passos(settings: Settings, anos: list[int]) -> list[Passo]:
             ]
         passos += [
             Passo(seg.ano, "cvm_ipe", {"anos": [seg.ano]}),
-            Passo(seg.ano, "enriquecimento"),
-            Passo(seg.ano, "finbert"),
-            Passo(seg.ano, "juiza", {"anos": [seg.ano], **args_fixos("juiza", settings)}),
-            Passo(seg.ano, "build_entrega"),
+            Passo(seg.ano, "juiza",
+                  {"anos": [seg.ano], "origens": list(ORIGENS_SEM_GOOGLE), **juiza},
+                  painel="juiza_wp"),
+            Passo(seg.ano, "finbert", {"anos": [seg.ano]}, depende_google=True),
+            Passo(seg.ano, "juiza", {"anos": [seg.ano], **juiza}, depende_google=True),
+            Passo(seg.ano, "build_entrega", depende_google=True),
         ]
     return passos
 
@@ -251,12 +312,19 @@ class Historico:
         self._settings = settings or get_settings()
         self._tz = ZoneInfo(self._settings.daily_tz)
         self._agora = agora or (lambda: datetime.now(UTC))
-        # Um lock so para a sequencia "le status, decide, grava": nada de estado paralelo.
+        # Um lock para a sequencia "le status, decide, grava" e para o estado das trilhas.
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._pausar = threading.Event()
         self._cancelar = threading.Event()
-        self._retomar = threading.Event()
+        # Espera de pausa: Condition sobre o MESMO lock; `_geracao` sobe a cada retomar,
+        # cancelar ou abortar, entao nenhuma trilha perde (nem repete) o acordar.
+        self._cond = threading.Condition(self._lock)
+        self._geracao = 0
+        self._abortar = threading.Event()
+        self._vivas = 0  # trilhas ainda rodando
+        self._paradas = 0  # trilhas estacionadas em _aguardar
+        self._falha: str | None = None
 
     @property
     def ocupado(self) -> bool:
@@ -306,12 +374,15 @@ class Historico:
                 [
                     {
                         "ano": p.ano,
-                        "coletor": p.coletor,
+                        "coletor": p.id_painel,
                         "unidades_total": 0,
                         "unidades_feitas": 0,
                         "unidades_erro": 0,
                         "itens": 0,
                         "status_segmento": "pendente",
+                        "unidade_atual": None,
+                        "ultimo_erro_unidade": None,
+                        "ultimo_erro_mensagem": None,
                         "atualizado_em": agora,
                     }
                     for p in _passos(self._settings, anos_ord)
@@ -344,8 +415,8 @@ class Historico:
                     hist_id, status="em_andamento", atualizada_em=agora
                 )
                 if self.ocupado:
-                    # A thread esta esperando em _aguardar: acorda e segue do mesmo ponto.
-                    self._retomar.set()
+                    # As trilhas estao esperando em _aguardar: acorda e seguem do mesmo ponto.
+                    self._acordar()
                 else:
                     # Processo reiniciado: a nova thread continua pela posicao gravada.
                     self._iniciar_thread(hist_id, list(atual["anos"]), atual["modo"])
@@ -355,7 +426,7 @@ class Historico:
                 if status not in ("em_andamento", "pausando", "pausada"):
                     raise _transicao(acao, "em_andamento, pausando ou pausada", status)
                 self._cancelar.set()
-                self._retomar.set()
+                self._acordar()
                 if self.ocupado:
                     self._repo.atualizar_historico(
                         hist_id, status="cancelando", atualizada_em=agora
@@ -393,48 +464,125 @@ class Historico:
 
     # -- execucao ------------------------------------------------------------------
     def _iniciar_thread(self, hist_id: str, anos: list[int], modo: str) -> None:
-        # Flags novas por thread: uma carga cancelada nao contamina a seguinte.
+        """Chamar com self._lock em maos. Flags novas por thread: uma carga cancelada nao
+        contamina a seguinte."""
         self._pausar = threading.Event()
         self._cancelar = threading.Event()
-        self._retomar = threading.Event()
+        self._abortar = threading.Event()
+        self._vivas, self._paradas, self._falha = 0, 0, None
         self._thread = threading.Thread(
             target=self._rodar, args=(hist_id, anos, modo), name=f"historico-{hist_id}", daemon=True
         )
         self._thread.start()
 
+    def _acordar(self) -> None:
+        """Chamar com self._lock em maos: acorda todas as trilhas estacionadas em _aguardar."""
+        self._geracao += 1
+        self._cond.notify_all()
+
     def _rodar(self, hist_id: str, anos: list[int], modo: str) -> None:
-        passos = _passos(self._settings, anos)
-        ritmo = _Ritmo()
+        """Coordenador: roda as duas trilhas em threads e grava o status final."""
         try:
-            for passo in passos[self._indice_inicial(hist_id, passos) :]:
-                if not self._executar_passo(hist_id, passo, modo, ritmo):
-                    self._encerrar(hist_id, "cancelada")
-                    return
-            self._encerrar(hist_id, "concluida")
+            passos = _passos(self._settings, anos)
+            feitos = self._concluidos(passos)
+            ritmo = _Ritmo()
+            portoes = {p.ano: threading.Event() for p in passos}
+            trilhas = {
+                t: [p for p in passos if p.trilha == t]
+                for t in (TRILHA_GOOGLE, TRILHA_PRINCIPAL)
+            }
+            # Ano sem passo Google nao tem portao a liberar: a principal nao espera por ele.
+            anos_google = {p.ano for p in trilhas[TRILHA_GOOGLE]}
+            for ano, portao in portoes.items():
+                if ano not in anos_google:
+                    portao.set()
+            with self._lock:
+                self._vivas, self._paradas = len(trilhas), 0
+            threads = [
+                threading.Thread(
+                    target=self._rodar_trilha,
+                    args=(hist_id, nome, lista, modo, ritmo, feitos, portoes),
+                    name=f"historico-{hist_id}-{nome}",
+                    daemon=True,
+                )
+                for nome, lista in trilhas.items()
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
         except Exception as exc:
             # Excecao fora de unidade (ex.: banco fora): a carga para aqui e o erro vai ao painel.
             logger.exception("carga histórica %s falhou", hist_id)
-            erro = f"{type(exc).__name__}: {exc}"[:4000]
+            with self._lock:
+                self._falha = self._falha or f"{type(exc).__name__}: {exc}"[:4000]
+        if self._falha is not None:
             agora = self._agora()
             self._repo.atualizar_historico(
-                hist_id, status="falhou", erro=erro, finalizada_em=agora, atualizada_em=agora
+                hist_id, status="falhou", erro=self._falha, finalizada_em=agora, atualizada_em=agora
             )
-            self._repo.log("historico", "erro", None, f"carga {hist_id} falhou: {erro}", hist_id)
+            mensagem = f"carga {hist_id} falhou: {self._falha}"
+            self._repo.log("historico", "erro", None, mensagem, hist_id)
+        elif self._cancelar.is_set():
+            self._encerrar(hist_id, "cancelada")
+        else:
+            self._encerrar(hist_id, "concluida")
 
-    def _indice_inicial(self, hist_id: str, passos: list[Passo]) -> int:
-        """Posicao gravada (ano_atual, coletor_atual): a retomada nao refaz os passos antes dela."""
-        atual = self._repo.historico_atual()
-        if atual is None or atual["id"] != hist_id or atual["ano_atual"] is None:
-            return 0
-        for indice, passo in enumerate(passos):
-            if (passo.ano, passo.coletor) == (atual["ano_atual"], atual["coletor_atual"]):
-                return indice
-        return 0
+    def _concluidos(self, passos: list[Passo]) -> set[tuple[int, str]]:
+        """(ano, id no painel) ja `concluido` nesta carga: a retomada nao os refaz.
+
+        O disparo grava todas as linhas como `pendente`; o que esta `concluido` foi concluido
+        por esta carga, antes de um reinicio do processo.
+        """
+        feitos: set[tuple[int, str]] = set()
+        for ano in sorted({p.ano for p in passos}):
+            for linha in self._repo.progresso_historico(ano):
+                if linha["status_segmento"] == "concluido":
+                    feitos.add((ano, linha["coletor"]))
+        return feitos
+
+    def _rodar_trilha(self, hist_id, trilha, passos, modo, ritmo, feitos, portoes) -> None:
+        """Passos de uma trilha, em ordem. A Google libera o ano (portao) ao terminar o ultimo
+        passo dele; a principal espera o portao antes dos passos `depende_google`."""
+        ultimo_do_ano = {p.ano: p for p in passos}
+        try:
+            for passo in passos:
+                if passo.depende_google and not self._esperar_portao(hist_id, portoes[passo.ano]):
+                    return
+                if (passo.ano, passo.id_painel) not in feitos and not self._executar_passo(
+                    hist_id, passo, modo, ritmo
+                ):
+                    return
+                if trilha == TRILHA_GOOGLE and ultimo_do_ano[passo.ano] is passo:
+                    portoes[passo.ano].set()
+        except Exception as exc:
+            logger.exception("carga histórica %s: trilha %s falhou", hist_id, trilha)
+            with self._lock:
+                if self._falha is None:
+                    self._falha = f"{type(exc).__name__}: {exc}"[:4000]
+                self._abortar.set()
+                self._acordar()
+        finally:
+            with self._lock:
+                self._vivas -= 1
+                if not (self._cancelar.is_set() or self._abortar.is_set()):
+                    self._marcar_pausada_se_todas(hist_id)
+
+    def _esperar_portao(self, hist_id: str, portao: threading.Event) -> bool:
+        """Espera a trilha Google liberar o ano. Pausa no meio: estaciona como as demais.
+        Devolve False se a carga foi cancelada ou abortada."""
+        while not portao.wait(timeout=0.5):
+            if self._abortar.is_set() or self._cancelar.is_set():
+                return False
+            if self._pausar.is_set() and not self._aguardar(hist_id):
+                return False
+        return True
 
     def _executar_passo(self, hist_id: str, passo: Passo, modo: str, ritmo: _Ritmo) -> bool:
         """Roda um passo ate o fim. Pausa no meio: espera retomar e roda o passo de novo.
 
-        Devolve False se a carga foi cancelada (quem chama encerra), True se o passo concluiu.
+        Devolve False se a carga foi cancelada ou abortada (quem chama encerra), True se o passo
+        concluiu.
         """
         progresso = ProgressoHistorico(
             self._repo,
@@ -443,15 +591,18 @@ class Historico:
             pausar=self._pausar,
             cancelar=self._cancelar,
             ritmo=ritmo,
+            abortar=self._abortar,
             agora=self._agora,
         )
         while True:
+            if self._abortar.is_set():
+                return False
             if (self._pausar.is_set() or self._cancelar.is_set()) and not self._aguardar(hist_id):
                 return False
             self._repo.atualizar_historico(
                 hist_id,
                 ano_atual=passo.ano,
-                coletor_atual=passo.coletor,
+                coletor_atual=passo.id_painel,
                 unidade_atual=None,
                 atualizada_em=self._agora(),
             )
@@ -461,37 +612,51 @@ class Historico:
     def _executar(self, passo: Passo, progresso: ProgressoHistorico, modo: str) -> bool:
         """Roda o passo uma vez. Devolve True se o passo foi interrompido por pausa/cancelamento."""
         self._repo.atualizar_progresso_historico(
-            passo.ano, passo.coletor, status_segmento="em_andamento", atualizado_em=self._agora()
+            passo.ano, passo.id_painel, status_segmento="em_andamento", atualizado_em=self._agora()
         )
         try:
             resultado = passo.executar(progresso, modo)
-        except Exception:
+        except Exception as exc:
             self._repo.atualizar_progresso_historico(
-                passo.ano, passo.coletor, status_segmento="falhou", atualizado_em=self._agora()
+                passo.ano,
+                passo.id_painel,
+                status_segmento="falhou",
+                ultimo_erro_mensagem=f"{type(exc).__name__}: {exc}"[:4000],
+                atualizado_em=self._agora(),
             )
             raise
         progresso.finalizar()
         interrompido = isinstance(resultado, dict) and bool(resultado.get("interrompido"))
+        # Concluido nao tem unidade em curso: o painel nao deve mostrar a ultima como "rodando".
+        extra = {} if interrompido else {"unidade_atual": None}
         self._repo.atualizar_progresso_historico(
             passo.ano,
-            passo.coletor,
+            passo.id_painel,
             status_segmento="pausado" if interrompido else "concluido",
             atualizado_em=self._agora(),
+            **extra,
         )
         return interrompido
 
     def _aguardar(self, hist_id: str) -> bool:
-        """Grava `pausada` e espera retomar (ou cancelar). Devolve False se foi cancelada."""
+        """Estaciona a trilha ate retomar, cancelar ou abortar. `pausada` so e gravada quando
+        todas as trilhas vivas estao estacionadas. Devolve False se cancelada ou abortada."""
         with self._lock:
-            if self._cancelar.is_set():
+            if self._cancelar.is_set() or self._abortar.is_set():
                 return False
-            # Limpar ANTES de gravar `pausada`: um retomar so pode chegar depois disso,
-            # entao o wakeup nunca se perde.
-            self._retomar.clear()
+            geracao = self._geracao
+            self._paradas += 1
+            self._marcar_pausada_se_todas(hist_id)
+            while self._geracao == geracao:
+                self._cond.wait()
+            self._paradas -= 1
+            return not (self._cancelar.is_set() or self._abortar.is_set())
+
+    def _marcar_pausada_se_todas(self, hist_id: str) -> None:
+        """Chamar com self._lock. Grava `pausada` quando todas as trilhas vivas estao paradas."""
+        if self._pausar.is_set() and self._vivas > 0 and self._paradas >= self._vivas:
             self._repo.atualizar_historico(hist_id, status="pausada", atualizada_em=self._agora())
-        self._repo.log("historico", "info", None, f"carga {hist_id} pausada", hist_id)
-        self._retomar.wait()
-        return not self._cancelar.is_set()
+            self._repo.log("historico", "info", None, f"carga {hist_id} pausada", hist_id)
 
     def _encerrar(self, hist_id: str, status: str) -> None:
         agora = self._agora()

@@ -41,8 +41,8 @@ from tcc_scraper.db.models_fontes import (
 )
 from tcc_scraper.db.session import session_scope
 from tcc_scraper.db.upsert import bulk_upsert
-from tcc_scraper.entrega.filtros import Julgamento, aprovado_para_entrega
 from tcc_scraper.enrich import casador
+from tcc_scraper.entrega.filtros import Julgamento, aprovado_para_entrega
 from tcc_scraper.llm.jev_client import (
     JevFalhaLote,
     decisao_entrega,
@@ -142,13 +142,15 @@ def pendentes(
     ordem: str = "desc",
     apos: tuple | None = None,
     anos: Sequence[int] | None = None,
+    origens: Sequence[str] | None = None,
     max_tentativas: int | None = None,
     trecho: int = _TRECHO,
 ) -> list[dict]:
     """Pares (artigo, ticker) com vinculo e sem julgamento para esta versao.
 
     `apos` e o cursor keyset (published_at, id, ticker) do ultimo par da pagina anterior.
-    `anos` filtra pelo ano de publicacao em UTC. `max_tentativas` deixa de fora os pares
+    `anos` filtra pelo ano de publicacao em UTC. `origens` filtra `Article.origem`.
+    `max_tentativas` deixa de fora os pares
     que ja esgotaram as tentativas. `trecho` e o numero de caracteres do corpo na coluna
     `trecho`. Para origem wordpress, a coluna traz as janelas do corpo completo em volta das
     mencoes do ticker (casador.trecho_mencoes); sem mencao valida, fica o inicio do corpo.
@@ -166,6 +168,8 @@ def pendentes(
             Article.published_at < dt.datetime(ano + 1, 1, 1, tzinfo=dt.UTC),
         ) for ano in sorted(set(anos))]
         consulta = consulta.where(or_(*janelas))
+    if origens:
+        consulta = consulta.where(Article.origem.in_(sorted(set(origens))))
     if max_tentativas is not None:
         consulta = consulta.where(tentativas < max_tentativas)
 
@@ -258,6 +262,7 @@ def julgar_pendentes(
     lote: int | None = None,
     modo: str = "diario",
     anos: Sequence[int] | None = None,
+    origens: Sequence[str] | None = None,
     orcamento_usd: float | None = None,
 ) -> ResultadoJuiza:
     """Julga os pares pendentes, pagina a pagina. `modo` e "diario" (producao) ou "backlog".
@@ -268,6 +273,8 @@ def julgar_pendentes(
     Jev: o `jev` injetado, ou um JevClient real se `jev_enabled` e `jev_api_key`. So roda com
     `jev_enabled`. LLM: `cliente` injetado ou o do `juiza_provedor`, se houver chave.
     Sem cliente pago (nem Jev nem LLM), so a primeira pagina de regra roda.
+    `anos` e `origens` filtram os pares (ver pendentes); a carga historica usa `origens` para
+    julgar WordPress e IPE antes do Google.
     Levanta ValueError se `juiza_modelo` for de outro provedor (ver avisos_config).
     """
     if modo not in ("diario", "backlog"):
@@ -319,7 +326,8 @@ def julgar_pendentes(
     try:
         while True:
             itens = pendentes(VERSAO, settings.juiza_pagina, ordem=ordem, apos=cursor, anos=anos,
-                              max_tentativas=settings.juiza_max_tentativas, trecho=trecho_pedido)
+                              origens=origens, max_tentativas=settings.juiza_max_tentativas,
+                              trecho=trecho_pedido)
             res.pendentes += len(itens)
 
             # 1) Regra barata: resolve o obvio sem gastar token da LLM.

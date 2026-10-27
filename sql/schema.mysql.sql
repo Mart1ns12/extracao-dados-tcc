@@ -730,3 +730,10 @@ CREATE TABLE `v1-staging_wp_processamento` (
     CONSTRAINT fk_staging_wp_processamento_article_id FOREIGN KEY(article_id) REFERENCES raw_articles (id)
 );
 
+-- Etapa 0012: unidade em curso e ultimo erro por (ano, coletor) da carga historica (ver sql/alteracoes/2026-10-27_historico_progresso_unidade_erro)
+
+ALTER TABLE `v1-painel_historico_progresso`
+    ADD COLUMN unidade_atual VARCHAR(128) NULL AFTER status_segmento,
+    ADD COLUMN ultimo_erro_unidade VARCHAR(128) NULL AFTER unidade_atual,
+    ADD COLUMN ultimo_erro_mensagem TEXT NULL AFTER ultimo_erro_unidade;
+

@@ -133,6 +133,14 @@ Coleta WordPress (alteração de 2026-10-27, `sql/alteracoes/2026-10-27_wordpres
 
 `v1-raw_wp_posts` é append-only (`update_columns=None`), por isso não entra na exceção da seção 3.3. As duas tabelas de staging são regravadas por upsert.
 
+Carga histórica: unidade em curso e último erro por (ano, coletor) (alteração de 2026-10-27, `sql/alteracoes/2026-10-27_historico_progresso_unidade_erro.mysql.sql`, aplicada em 2026-10-27):
+
+| Tabela | Escreve | Chave (PK) | Migration | Linhas |
+|---|---|---|---|---|
+| `v1-painel_historico_progresso` (colunas novas `unidade_atual`, `ultimo_erro_unidade`, `ultimo_erro_mensagem`) | `orquestrador/historico.py` (`ProgressoHistorico`): a unidade em processamento e o último erro de cada passo | `ano`, `coletor` | 2026-10-27 (aplicada em 2026-10-27) | - |
+
+As duas trilhas paralelas da carga (Google e principal) precisam de uma posição por (ano, coletor): a posição única de `v1-painel_historico` não basta.
+
 Entrega (migration 0006). Os nomes e as colunas seguem a spec em `spec-entrega-etapa-seguinte.md`. Quem escreve é
 `entrega/builder.py`, que faz upsert e, em `v1-noticias`, remove as reprovadas. `v1-composicao_ibov` (alteração de 2026-10-23, `sql/alteracoes/2026-10-23_composicao_ibov.mysql.sql`) é escrita pelo builder e pelo coletor `b3_carteira_ibov`, na etapa `precos` do daily.
 

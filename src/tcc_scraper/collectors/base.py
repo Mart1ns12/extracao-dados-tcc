@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Protocol
 from urllib.parse import urlsplit
 
@@ -77,11 +78,43 @@ class DomainThrottle:
             time.sleep(slot - agora)
 
 
+class AbortarColeta(RuntimeError):
+    """Falha que torna inutil seguir para as proximas unidades (ex.: fonte bloqueando).
+
+    `run` grava a unidade como erro e PROPAGA: o passo termina em falha em vez de gastar
+    horas marcando erro unidade por unidade.
+    """
+
+
+def retry_after_segundos(cabecalhos, agora: datetime | None = None) -> float | None:
+    """Segundos do Retry-After (numero ou data HTTP). None se ausente ou invalido."""
+    valor = cabecalhos.get("retry-after") if cabecalhos is not None else None
+    if not valor:
+        return None
+    valor = valor.strip()
+    try:
+        return max(0.0, float(valor))
+    except ValueError:
+        pass
+    try:
+        quando = parsedate_to_datetime(valor)
+    except (TypeError, ValueError):
+        return None
+    if quando is None:
+        return None
+    if quando.tzinfo is None:
+        quando = quando.replace(tzinfo=UTC)
+    return max(0.0, (quando - (agora or datetime.now(UTC))).total_seconds())
+
+
 class ObservadorColeta(Protocol):
     """Recebe o progresso de `Collector.run` ao vivo (painel) e decide se deve parar.
 
     `deve_parar` e consultado ANTES de cada unidade: a pausa/cancelamento acontece
     entre unidades, nunca no meio de uma requisicao.
+
+    `inicio_unidade(key)` e opcional (fora do Protocol): se o observador tiver o metodo,
+    `run` o chama antes de cada unidade, para o painel mostrar a unidade em curso.
     """
 
     def plano(self, total: int) -> None: ...
@@ -122,14 +155,14 @@ class Collector(ABC):
 
     name: str = "base"
     default_delay: float = 1.0
-    max_attempts: int = 4
 
     def __init__(self, throttle: DomainThrottle | None = None) -> None:
         self.settings = get_settings()
+        self.max_attempts = max(1, self.settings.http_max_tentativas)
         self.throttle = throttle or DomainThrottle(self.default_delay)
         self._client = httpx.Client(
             headers={"User-Agent": self.settings.user_agent},
-            timeout=httpx.Timeout(30.0),
+            timeout=httpx.Timeout(self.settings.http_timeout_s),
             follow_redirects=True,
         )
 
@@ -156,13 +189,22 @@ class Collector(ABC):
                 last_exc = exc
                 if attempt == self.max_attempts:
                     break
-                backoff = 2.0**attempt
+                espera = self._espera_retry(exc, attempt)
                 logger.warning(
                     "%s: tentativa %d/%d falhou (%s); aguardando %.0fs",
-                    self.name, attempt, self.max_attempts, exc, backoff,
+                    self.name, attempt, self.max_attempts, exc, espera,
                 )
-                time.sleep(backoff)
+                time.sleep(espera)
         raise RuntimeError(f"{self.name}: falha ao buscar {url}") from last_exc
+
+    def _espera_retry(self, exc: Exception, attempt: int) -> float:
+        """Retry-After do servidor quando houver; senao 2**tentativa. Sempre limitado pelo teto."""
+        teto = self.settings.http_espera_max_s
+        if isinstance(exc, httpx.HTTPStatusError):
+            pedida = retry_after_segundos(exc.response.headers)
+            if pedida is not None:
+                return min(pedida, teto)
+        return min(2.0**attempt, teto)
 
     # -- checkpoint ---------------------------------------------------------------
     def completed_keys(self) -> set[str]:
@@ -254,6 +296,7 @@ class Collector(ABC):
         )
         if observador is not None:
             observador.plano(len(units))
+        inicio = getattr(observador, "inicio_unidade", None)
 
         for indice, unit in enumerate(units):
             if observador is not None and observador.deve_parar():
@@ -263,8 +306,18 @@ class Collector(ABC):
                     self.name, len(units) - indice,
                 )
                 break
+            if inicio is not None:
+                inicio(unit.key)
             try:
                 result = self.process(unit)
+            except AbortarColeta as exc:
+                logger.error("%s: unidade %s abortou a coleta: %s", self.name, unit.key, exc)
+                erro = str(exc)[:500]
+                self._record(unit, None, erro)
+                stats["erro"] += 1
+                if observador is not None:
+                    observador.unidade(unit.key, ok=False, itens=0, saturada=False, erro=erro)
+                raise
             except Exception as exc:
                 logger.error("%s: unidade %s falhou: %s", self.name, unit.key, exc)
                 erro = str(exc)[:500]

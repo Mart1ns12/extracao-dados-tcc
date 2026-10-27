@@ -157,6 +157,12 @@ class PainelHistoricoProgresso(Base):
     itens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     # concluido | em_andamento | pausado | pendente | falhou
     status_segmento: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Unidade em processamento (ou a ultima, se o passo parou). Com as duas trilhas da carga,
+    # cada (ano, coletor) tem a sua: a posicao unica de v1-painel_historico nao basta.
+    unidade_atual: Mapped[str | None] = mapped_column(String(128))
+    # Ultimo erro do passo: de uma unidade (Collector.run) ou do passo inteiro (excecao).
+    ultimo_erro_unidade: Mapped[str | None] = mapped_column(String(128))
+    ultimo_erro_mensagem: Mapped[str | None] = mapped_column(Text)
     atualizado_em: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
 
 

@@ -74,6 +74,17 @@ class Settings(BaseSettings):
     throttle_wordpress: float = 1.0
     wp_enabled: bool = True
 
+    # Rede dos coletores (Collector.fetch): timeout por requisicao, tentativas em falha
+    # transitoria (rede, 429, 5xx) e teto de CADA espera entre tentativas. O Retry-After do
+    # servidor e o backoff 2**n nunca dormem mais que isso: pausa e cancelamento so sao
+    # atendidos entre unidades.
+    http_timeout_s: float = 30.0
+    http_max_tentativas: int = 4
+    http_espera_max_s: float = 120.0
+    # Google News: unidades SEGUIDAS com falha (resposta sem RSS, rede) que abortam a coleta.
+    # E sinal de bloqueio: seguir so marcaria erro em milhares de unidades. 0 desliga.
+    google_news_max_falhas_seguidas: int = 10
+
     # Workers do enriquecimento. O ganho vem de uma assimetria: todo artigo passa
     # pelo news.google.com (que o throttle por dominio serializa), mas o download
     # do corpo se espalha por varios veiculos e corre em paralelo. Acima de ~8 o

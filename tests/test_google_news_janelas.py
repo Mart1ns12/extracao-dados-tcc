@@ -76,7 +76,7 @@ def _item_google(dominio: str, marca: str) -> NewsItem:
 
 
 def _processar_janela(monkeypatch, wp_enabled: bool, itens: list[NewsItem]):
-    """Roda process() com o fetch e o persist trocados por listas em memoria (sem rede e sem banco)."""
+    """Roda process() com fetch e persist trocados por listas em memoria (sem rede, sem banco)."""
     hoje = dt.date.today()
     gravadas: list[NewsItem] = []
     locale = GOOGLE_NEWS_LOCALES[0]
@@ -121,7 +121,7 @@ def test_wp_disabled_mantem_dominios_wordpress(monkeypatch) -> None:
     _, gravadas = _processar_janela(monkeypatch, wp_enabled=False, itens=itens)
 
     assert len(gravadas) == len(itens)
-    assert DOMINIOS_WP <= {i.source_domain for i in gravadas}
+    assert {i.source_domain for i in gravadas} >= DOMINIOS_WP
 
 
 def test_hit_cap_e_calculado_sobre_a_resposta_crua(monkeypatch) -> None:

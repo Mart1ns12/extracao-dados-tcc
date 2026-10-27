@@ -227,7 +227,7 @@ def test_artigos_exclui_republicacao_que_nao_e_representante(monkeypatch) -> Non
     capturadas = []
     monkeypatch.setattr(B, "_consulta", lambda stmt: capturadas.append(stmt) or [])
 
-    B._Fontes(dt.date(2026, 1, 1)).artigos
+    _ = B._Fontes(dt.date(2026, 1, 1)).artigos
 
     sql = str(capturadas[0].compile())
     assert "staging_historias" in sql

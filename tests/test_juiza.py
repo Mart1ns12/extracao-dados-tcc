@@ -655,6 +655,19 @@ def test_backlog_pagina_em_ordem_crescente_e_grava_finalidade_backlog(
     assert [r.finalidade for r in _runs(gravacoes)] == ["backlog"]
 
 
+def test_origens_sao_repassadas_a_pendentes_e_sem_argumento_ficam_none(
+    gravacoes, pendentes_falsos, settings
+) -> None:
+    chamadas = pendentes_falsos([_item(4)])
+    juiza.julgar_pendentes(cliente=ClienteFalso([_julgamento(4, "VALE3")]), modo="backlog",
+                           anos=[2025], origens=["wordpress", "cvm_ipe"])
+    assert chamadas[0]["origens"] == ["wordpress", "cvm_ipe"]
+
+    chamadas_sem = pendentes_falsos([_item(4)])
+    juiza.julgar_pendentes(cliente=ClienteFalso([_julgamento(4, "VALE3")]))
+    assert chamadas_sem[0]["origens"] is None
+
+
 def test_paginas_seguem_o_cursor_keyset(gravacoes, settings, monkeypatch) -> None:
     monkeypatch.setattr(settings, "juiza_pagina", 2)
     pub = dt.datetime(2026, 10, 1, tzinfo=dt.UTC)
@@ -906,6 +919,22 @@ def test_pendentes_wordpress_busca_os_corpos_em_uma_query_so(consulta_pendentes)
     juiza.pendentes(7, trecho=1500)
 
     assert sessao.execucoes == 2  # consulta principal + um lote para os dois wordpress
+
+
+def test_pendentes_filtra_origens_no_sql(monkeypatch) -> None:
+    sessao = SimpleNamespace(consultas=[])
+
+    def execute(c):
+        sessao.consultas.append(c)
+        return SimpleNamespace(mappings=lambda: SimpleNamespace(all=lambda: []),
+                               all=lambda: [])
+
+    sessao.execute = execute
+    monkeypatch.setattr(juiza, "session_scope", lambda: contextlib.nullcontext(sessao))
+
+    juiza.pendentes(1, origens=["wordpress"])
+
+    assert "raw_articles.origem IN" in str(sessao.consultas[0])
 
 
 def test_regras_do_casador_sao_calculadas_uma_vez() -> None:

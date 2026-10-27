@@ -25,32 +25,43 @@ Uma carga por vez. Enquanto existir uma carga com status `em_andamento`, `pausan
 
 Exemplo com `--anos 2025 --anos 2026` e `DATA_START=2025-09-01` (valor de `.env.example`), a faixa começa em 2025-08-01. O segmento de 2026 vai de 1º de janeiro de 2026 até hoje (inclusive). O de 2025 vai de 1º de agosto de 2025 até 31 de dezembro de 2025.
 
-## 3. Passos e ordem
+## 3. Passos, trilhas e ordem
 
-Cada passo é uma unidade de trabalho com um coletor e um ano. Os passos globais rodam uma vez, no primeiro ano da lista (o mais recente pedido). Os passos por segmento rodam ano a ano.
+Cada passo é uma unidade de trabalho com um coletor e um ano. Os passos globais rodam uma vez, no primeiro ano da lista (o mais recente pedido). Os passos por segmento rodam ano a ano, em **duas trilhas que correm ao mesmo tempo**:
 
-| Ordem | Passo (coletor) | Ano | Argumentos | Retoma por checkpoint |
+- **Trilha Google:** `google_news` e `enriquecimento` de cada segmento.
+- **Trilha principal:** os passos globais e, por segmento, `wordpress`, `processar_wp`, `cvm_ipe`, a juíza de WordPress e IPE, `finbert`, a juíza do ano e `build_entrega`.
+
+A trilha Google começa junto com os passos globais. Os passos marcados como "espera o Google" só começam quando a trilha Google termina o último passo do ano (`enriquecimento`). Esse é o **portão do ano**.
+
+| Trilha | Passo (coletor) | Ano | Argumentos | Retoma por checkpoint |
 |---|---|---|---|---|
-| 1 | `yahoo` | Mais recente | Preços de todos os tickers | Não (`resume=False`): refaz tudo |
-| 2 | `b3_indices` | Mais recente | Índices IDIV, SMLL e IFIX de todos os anos pedidos | Sim |
-| 3 | `bcb` | Mais recente | Selic e PTAX | Sim |
-| 4 | `indices_bcb` | Mais recente | CDI e IPCA de todos os anos pedidos | Sim |
-| 5 | `cvm_cadastro` | Mais recente | Cadastro da CVM | Sim |
-| 6 | `b3_cadastro` | Mais recente | Cadastro da B3 | Sim |
-| 7 | `b3_proventos` | Mais recente | Proventos da B3 | Não (`resume=False`): refaz tudo |
-| 8 | `cvm_itr_dfp` | Mais recente | ITR e DFP de todos os anos pedidos | Sim |
-| 9 | `google_news` | Cada segmento | Do início do segmento até o fim (exclusivo). Com `WP_ENABLED=true`, sem os 3 domínios WordPress | Sim |
-| 10 | `wordpress` | Cada segmento | Só com `WP_ENABLED=true`. Posts de InfoMoney, Money Times e Exame: `desde` é o início do segmento menos 31 dias (aquecimento do boilerplate) e `ate` é o fim do segmento | Sim (por site e mês) |
-| 11 | `processar_wp` | Cada segmento | Só com `WP_ENABLED=true`. Processa do início ao fim do segmento, sem rede | Não se aplica (função) |
-| 12 | `cvm_ipe` | Cada segmento | Só o ano do segmento | Sim |
-| 13 | `enriquecimento` | Cada segmento | Corpo dos artigos | Não (`resume=False`); só entram os pendentes |
-| 14 | `finbert` | Cada segmento | Sentimento dos artigos pendentes | Não se aplica (função) |
-| 15 | `juiza` | Cada segmento | Modo `backlog`: do par mais antigo ao mais recente, sem teto de itens; limitada pela verba `JUIZA_BACKLOG_VERBA_USD` (US$ 15), cumulativa | Não se aplica (função) |
-| 16 | `build_entrega` | Cada segmento | Monta as 9 tabelas da entrega | Não se aplica (função) |
+| Principal | `yahoo` | Mais recente | Preços de todos os tickers | Não (`resume=False`): refaz tudo |
+| Principal | `b3_indices` | Mais recente | Índices IDIV, SMLL e IFIX de todos os anos pedidos | Sim |
+| Principal | `bcb` | Mais recente | Selic e PTAX | Sim |
+| Principal | `indices_bcb` | Mais recente | CDI e IPCA de todos os anos pedidos | Sim |
+| Principal | `cvm_cadastro` | Mais recente | Cadastro da CVM | Sim |
+| Principal | `b3_cadastro` | Mais recente | Cadastro da B3 | Sim |
+| Principal | `b3_proventos` | Mais recente | Proventos da B3 | Não (`resume=False`): refaz tudo |
+| Principal | `cvm_itr_dfp` | Mais recente | ITR e DFP de todos os anos pedidos | Sim |
+| Google | `google_news` | Cada segmento | Do início do segmento até o fim (exclusivo). Com `WP_ENABLED=true`, sem os 3 domínios WordPress | Sim |
+| Google | `enriquecimento` | Cada segmento | Corpo dos artigos | Não (`resume=False`); só entram os pendentes |
+| Principal | `wordpress` | Cada segmento | Só com `WP_ENABLED=true`. Posts de InfoMoney, Money Times e Exame: `desde` é o início do segmento menos 31 dias (aquecimento do boilerplate) e `ate` é o fim do segmento | Sim (por site e mês) |
+| Principal | `processar_wp` | Cada segmento | Só com `WP_ENABLED=true`. Processa do início ao fim do segmento, sem rede | Não se aplica (função) |
+| Principal | `cvm_ipe` | Cada segmento | Só o ano do segmento | Sim |
+| Principal | `juiza` (id no painel `juiza_wp`) | Cada segmento | Julga só os pares de WordPress e IPE do ano (`origens`), em modo `backlog`. Não espera o Google | Não se aplica (função) |
+| Principal | `finbert` | Cada segmento | Sentimento dos artigos do ano que ainda não têm score (`anos`). Espera o portão do ano | Não se aplica (função) |
+| Principal | `juiza` | Cada segmento | Julga os pares do ano que faltam, em modo `backlog`: sem teto de itens, limitada pela verba `JUIZA_BACKLOG_VERBA_USD` (US$ 15), cumulativa. Espera o portão do ano | Não se aplica (função) |
+| Principal | `build_entrega` | Cada segmento | Monta as 9 tabelas da entrega. Espera o portão do ano | Não se aplica (função) |
 
-A carga não segue a ordem do daily: primeiro vêm os passos globais, depois os passos ano a ano. Os coletores são os mesmos do daily (ver [02](02-pipeline-diaria.md), seção 3), exceto a carteira do IBOV (`b3_carteira_ibov`), que a carga não roda: ela existe só no daily e no `coletar`. A análise diária (`analise`) também não entra na carga.
+A carga não segue a ordem do daily. Os coletores são os mesmos do daily (ver [02](02-pipeline-diaria.md), seção 3), exceto a carteira do IBOV (`b3_carteira_ibov`), que a carga não roda: ela existe só no daily e no `coletar`. A análise diária (`analise`) também não entra na carga.
 
-A unidade de progresso é o par (coletor, ano). `v1-painel_historico_progresso` guarda uma linha por par.
+- **Por que duas trilhas.** O Google News é o passo mais lento (6 a 9 horas por ano). O WordPress e a IPE não dependem do corpo dos artigos do Google. Em sequência, a fila inteira esperava o Google.
+- **Por que o portão.** FinBERT e juíza pontuam e julgam pelo texto que já existe no banco. Se rodassem antes do `enriquecimento` do ano, pontuariam pela manchete os artigos cujo corpo ainda não foi processado. Por isso o FinBERT também recebe `anos`: pontua só o ano que chegou, e não o backlog inteiro.
+- **Por que a juíza de WordPress e IPE não espera.** Essas origens não dependem do corpo do Google, então podem ser julgadas enquanto o Google coleta o ano. Com `WP_ENABLED=false`, ela fica só com a IPE.
+- **Falha.** Se um passo falha em uma trilha, a outra para na unidade em curso e a carga vai a `falhou` (seção 8). Uma nova carga refaz o plano, e o checkpoint dos coletores evita refazer o que já está pronto.
+
+A unidade de progresso é o par (ano, id no painel). `v1-painel_historico_progresso` guarda uma linha por par. O id no painel é o nome do coletor, exceto a juíza de WordPress e IPE, que é `juiza_wp`.
 
 ## 4. Modos
 
@@ -65,11 +76,11 @@ Os três comandos chegam pelo painel (`POST /historico/pausar`, `/retomar`, `/ca
 
 | Comando | Precisa estar em | Vai para | Efeito |
 |---|---|---|---|
-| `pausar` | `em_andamento` | `pausando`, depois `pausada` | A unidade em curso termina. A carga então fica parada |
+| `pausar` | `em_andamento` | `pausando`, depois `pausada` | Cada trilha termina a unidade em curso e estaciona. `pausada` só é gravada quando todas as trilhas ainda ativas estão paradas |
 | `retomar` | `pausada` | `em_andamento` | Continua no mesmo passo e na mesma unidade |
 | `cancelar` | `em_andamento`, `pausando` ou `pausada` | `cancelando`, depois `cancelada`. Vai direto a `cancelada` se a thread não estiver ativa | A unidade em curso termina e a carga para |
 
-- **Ponto de parada.** A pausa e o cancelamento são checados entre unidades (coletores), entre blocos (`finbert`) e entre lotes (`juiza`). Nunca interrompem uma requisição no meio.
+- **Ponto de parada.** A pausa e o cancelamento são checados entre unidades (coletores), entre blocos (`finbert`) e entre lotes (`juiza`). Nunca interrompem uma requisição no meio. A espera do portão de um ano também para com pausa e cancelamento. Uma falha em uma trilha aborta a outra no mesmo ponto (seção 3).
 - **Transição inválida** é recusada. O executor confirma o comando com `ok: false` e uma mensagem, por exemplo `pausar exige carga em_andamento (atual: pausada)`.
 - **Passo pausado no meio.** Ao pausar, o passo fica `pausado` em `status_segmento`. Ao retomar, o passo roda de novo: coletores com checkpoint continuam de onde pararam, e os com `resume=False` começam do zero.
 - **Contadores.** Um mesmo objeto acompanha o passo inteiro, inclusive as retomadas. Os contadores não zeram quando a carga é pausada e retomada (ver seção 10 sobre um caso de contagem).
@@ -80,11 +91,11 @@ Quando o processo do executor sobe, a carga é reconciliada com o banco:
 
 | Status gravado | O que acontece ao subir |
 |---|---|
-| `em_andamento` ou `pausando` | Vira `em_andamento`. Uma thread nova começa no passo gravado (`ano_atual`, `coletor_atual`). Os passos anteriores não são refeitos. Log de aviso: `carga <id> retomada após reinício` |
+| `em_andamento` ou `pausando` | Vira `em_andamento`, e as duas trilhas começam de novo. Os passos com `concluido` em `v1-painel_historico_progresso` não são refeitos. Os demais (`pendente`, `em_andamento`, `pausado`, `falhou`) rodam, cada um respeitando o portão do seu ano. Log de aviso: `carga <id> retomada após reinício` |
 | `cancelando` | Vira `cancelada` |
 | `pausada` | Continua `pausada` até um comando `retomar` |
 
-O passo gravado roda de novo a partir do checkpoint, como na seção 5.
+A retomada decide pelo status de cada linha de progresso, e não pela posição única gravada em `v1-painel_historico`. Os passos que não estavam `concluido` rodam de novo a partir do checkpoint dos coletores, como na seção 5.
 
 ## 7. Prioridade sobre o daily
 
@@ -97,12 +108,12 @@ Enquanto a carga está `em_andamento` ou `pausando`, um daily ou uma etapa que c
 
 ## 8. Acompanhamento
 
-- **`v1-painel_historico`**: uma linha por carga. O id tem o formato `hist-<AAAAMMDD>-<HHMMSS>`, com a hora da criação em `DAILY_TZ`. Exemplo: `hist-20261019-210512`. Colunas: `id`, `status`, `modo`, `anos` (JSON), `ano_atual`, `coletor_atual`, `unidade_atual`, `iniciada_em`, `finalizada_em`, `itens_por_min`, `erro`, `atualizada_em`.
-- **`v1-painel_historico_progresso`**: uma linha por (ano, coletor). Criada com `status_segmento = pendente` no disparo, para o painel mostrar o plano antes de rodar. Valores: `pendente`, `em_andamento`, `pausado`, `concluido`, `falhou`. Colunas: `ano`, `coletor`, `unidades_total`, `unidades_feitas`, `unidades_erro`, `itens`, `status_segmento`, `atualizado_em`.
+- **`v1-painel_historico`**: uma linha por carga. O id tem o formato `hist-<AAAAMMDD>-<HHMMSS>`, com a hora da criação em `DAILY_TZ`. Exemplo: `hist-20261019-210512`. Colunas: `id`, `status`, `modo`, `anos` (JSON), `ano_atual`, `coletor_atual`, `unidade_atual`, `iniciada_em`, `finalizada_em`, `itens_por_min`, `erro`, `atualizada_em`. `ano_atual`, `coletor_atual` e `unidade_atual` são o último passo que gravou posição, de qualquer das duas trilhas. A posição de cada trilha está nas linhas de progresso.
+- **`v1-painel_historico_progresso`**: uma linha por (ano, coletor). Criada com `status_segmento = pendente` no disparo, para o painel mostrar o plano antes de rodar. Valores: `pendente`, `em_andamento`, `pausado`, `concluido`, `falhou`. Colunas: `ano`, `coletor`, `unidades_total`, `unidades_feitas`, `unidades_erro`, `itens`, `status_segmento`, `unidade_atual`, `ultimo_erro_unidade`, `ultimo_erro_mensagem`, `atualizado_em`. `unidade_atual` é a unidade em processamento do próprio (ano, coletor), gravada antes de cada unidade; some ao concluir o passo e fica na última unidade se ele pausar ou falhar. `ultimo_erro_unidade` e `ultimo_erro_mensagem` guardam o último erro do passo: de uma unidade, ou da exceção que parou o passo (`Tipo: mensagem`).
 - **`itens_por_min`** é uma média móvel dos últimos 10 minutos.
 - **Logs.** Saem com `origem = 'historico'`. Na coluna `etapa` fica o nome do coletor.
 
-Status da carga: `em_andamento`, `pausando`, `pausada`, `cancelando`, `cancelada`, `concluida`, `falhou`. Uma exceção fora de unidade (por exemplo, o banco fora do ar) leva a carga a `falhou`, com a mensagem em `erro`.
+Status da carga: `em_andamento`, `pausando`, `pausada`, `cancelando`, `cancelada`, `concluida`, `falhou`. Uma exceção fora de unidade (por exemplo, o banco fora do ar), ou a falha de um passo em qualquer trilha, leva a carga a `falhou`, com a mensagem em `erro`.
 
 ## 9. Tempos e custos esperados
 
@@ -128,7 +139,10 @@ A carga disputa o mesmo banco, o mesmo throttle e as mesmas fontes que o daily (
 - **Anos aceitos pela API e pelo executor são diferentes.** A API aceita 2021 a 2026. O executor ignora os anos fora da faixa calculada por `DATA_START`, e recusa o comando se nenhum cair nela.
 - **Contagem de passos com `resume=False`.** Pelo código de `ProgressoHistorico.plano`, quando um passo com `resume=False` é retomado depois de uma pausa, o total passa a somar as unidades já feitas com todas as unidades de novo. Isso pode contar unidades duas vezes em `unidades_total` e `unidades_feitas`. Não foi testado com uma carga real.
 - **`reprocessar_erros` não se aplica** a `finbert`, `juiza` e `build_entrega`. Eles rodam igual a `pendentes`.
-- **Uma carga por vez e um processo só.** Não há carga paralela, e o estado da thread fica em memória (ver [07](07-executor-e-painel.md), seção 9).
+- **Uma carga por vez e um processo só.** Não há carga paralela, e o estado da thread fica em memória (ver [07](07-executor-e-painel.md), seção 9). As duas trilhas da carga são threads desse mesmo processo.
+- **Deadlock entre as trilhas (não medido).** `google_news` (na gravação dos artigos) e `processar_wp` gravam em `raw_articles` ao mesmo tempo. O MySQL pode abortar uma das duas com o erro 1213 (deadlock). Se cair numa unidade do `google_news`, a unidade sai com erro. Se cair no `processar_wp`, o passo falha e a carga vai a `falhou`. Nos dois casos, uma nova carga refaz o que não ficou `ok` ou `concluido`. Não há retry automático para esse erro, e não houve carga real para medir a frequência.
+- **Fronteira de ano em UTC.** O filtro `anos` do FinBERT e da juíza usa `published_at` em UTC. A agregação diária em `America/Sao_Paulo` fica para o daily. Por isso, uma notícia publicada perto da virada do ano pode cair no segmento vizinho nesta carga.
+- **Verba do backlog gasta na ordem das juízas.** A verba da juíza (US$ 15, cumulativa) é gasta na ordem em que as juízas rodam. A juíza de WordPress e IPE de um ano roda antes de o Google terminar esse ano, então pode consumir a verba antes das notícias do Google daquele ano. Antes de uma carga grande, confira o gasto com `judge-news --status`.
 - **A CLI não respeita a prioridade da carga.** A CLI `daily` roda mesmo com carga `em_andamento` no banco, e os dois disputam o banco e as fontes. A CLI `historico` recusa o disparo se já houver carga ativa no banco, mas não espera um daily em andamento.
 - **Exemplos antigos de id.** Alguns documentos mostram `hist-20261019-2105`, sem segundos. O código gera o id com segundos.
 

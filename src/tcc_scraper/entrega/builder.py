@@ -1021,7 +1021,8 @@ class _Fontes:
             Article.resolved_url, Article.url, Article.published_at,
             Article.published_precision, Article.lang, Article.collected_at, Article.origem,
         ).where(Article.published_at >= self._limite)
-        # Republicacao entre veiculos conta como 1 noticia: sai o que nao e representante da historia.
+        # Republicacao entre veiculos conta como 1 noticia: sai o que nao e representante
+        # da historia.
         duplicados = select(StagingHistoria.article_id).where(
             StagingHistoria.article_id != StagingHistoria.historia_article_id
         )

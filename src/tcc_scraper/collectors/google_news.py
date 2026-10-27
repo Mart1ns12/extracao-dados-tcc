@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 from lxml import etree
 from sqlalchemy import select
 
-from tcc_scraper.collectors.base import Collector, UnitResult, WorkUnit
+from tcc_scraper.collectors.base import AbortarColeta, Collector, UnitResult, WorkUnit
 from tcc_scraper.config import (
     DOMINIOS_WP,
     GOOGLE_NEWS_ITEM_CAP,
@@ -47,6 +47,18 @@ FUSO_BRASIL = ZoneInfo("America/Sao_Paulo")
 # O Google anexa " - Veiculo" ao titulo. Isso e ruido para o FinBERT e atrapalha a
 # deduplicacao por titulo, entao e removido na entrada.
 _SOURCE_SUFFIX_RE = re.compile(r"\s+-\s+[^-]+$")
+
+
+class RespostaNaoRss(RuntimeError):
+    """Resposta 200 que nao e RSS: pagina de captcha, de consentimento ou corpo vazio.
+
+    Antes virava lista vazia e a unidade saia `ok` com 0 itens -- perda silenciosa, nunca
+    refeita. Agora a unidade sai `error` e volta na proxima execucao (pendentes refaz erros).
+    """
+
+
+def _inicio(xml: bytes) -> str:
+    return " ".join(xml[:120].decode("utf-8", errors="replace").split())
 
 
 @dataclass(frozen=True)
@@ -92,21 +104,34 @@ def _domain_of(url: str | None) -> str | None:
     return urllib.parse.urlsplit(url).netloc.lower().removeprefix("www.") or None
 
 
-def parse_rss(xml: str | bytes) -> list[NewsItem]:
+def parse_rss(xml: str | bytes, *, estrito: bool = False) -> list[NewsItem]:
     """Converte o XML do Google News em NewsItem.
 
     Tolerante por escolha: um item malformado e descartado com log em vez de
     abortar a janela inteira -- perder uma materia e melhor que perder a semana.
+
+    estrito=True (usado pela coleta): o documento precisa ser um RSS. Pagina de captcha,
+    consentimento ou corpo vazio levantam RespostaNaoRss em vez de virar lista vazia.
     """
     if isinstance(xml, str):
         xml = xml.encode("utf-8")
     try:
         root = etree.fromstring(xml, parser=etree.XMLParser(recover=True, huge_tree=True))
     except etree.XMLSyntaxError as exc:
+        if estrito:
+            raise RespostaNaoRss(
+                f"XML invalido do Google News: {exc}; inicio: {_inicio(xml)!r}"
+            ) from exc
         logger.warning("XML invalido do Google News: %s", exc)
         return []
     if root is None:
+        if estrito:
+            raise RespostaNaoRss(f"resposta vazia ou ilegivel; inicio: {_inicio(xml)!r}")
         return []
+    if estrito and (str(root.tag) != "rss" or root.find("channel") is None):
+        raise RespostaNaoRss(
+            f"resposta sem <rss>/<channel> (raiz <{root.tag}>); inicio: {_inicio(xml)!r}"
+        )
 
     items: list[NewsItem] = []
     for node in root.iter("item"):
@@ -206,6 +231,8 @@ class GoogleNewsCollector(Collector):
         self.ate = ate
         self.default_delay = self.settings.throttle_google_news
         self.throttle.configure("news.google.com", self.settings.throttle_google_news)
+        # Disjuntor: unidades seguidas com falha (ver process). Zera a cada sucesso.
+        self._falhas_seguidas = 0
 
     def work_units(self) -> Iterable[WorkUnit]:
         settings = get_settings()
@@ -242,9 +269,25 @@ class GoogleNewsCollector(Collector):
             "ceid": locale["ceid"],
         }
         url = f"{RSS_ENDPOINT}?{urllib.parse.urlencode(params)}"
-        return parse_rss(self.fetch(url).content)
+        return parse_rss(self.fetch(url).content, estrito=True)
 
     def process(self, unit: WorkUnit) -> UnitResult:
+        """Executa a janela e conta falhas seguidas (ver google_news_max_falhas_seguidas)."""
+        try:
+            resultado = self._processar(unit)
+        except Exception as exc:
+            self._falhas_seguidas += 1
+            limite = self.settings.google_news_max_falhas_seguidas
+            if limite and self._falhas_seguidas >= limite:
+                raise AbortarColeta(
+                    f"google_news: {self._falhas_seguidas} unidades seguidas falharam "
+                    f"(provavel bloqueio); ultima: {exc}"
+                ) from exc
+            raise
+        self._falhas_seguidas = 0
+        return resultado
+
+    def _processar(self, unit: WorkUnit) -> UnitResult:
         ticker = unit.payload["ticker"]
         company = unit.payload["company"]
         start: dt.date = unit.payload["start"]
@@ -254,18 +297,29 @@ class GoogleNewsCollector(Collector):
         items = self._fetch_window(ticker, company, start, end, locale)
         hit_cap = len(items) >= GOOGLE_NEWS_ITEM_CAP
 
+        falha: Exception | None = None
+        dia_falho: dt.date | None = None
         # Saturou o teto: subdivide em dias para nao perder materia. Sem isto, um
         # ticker em semana de noticia forte perderia tudo acima do centesimo item.
         if hit_cap:
             logger.info("%s %s: teto atingido, subdividindo em dias", ticker, start)
-            daily: dict[str, NewsItem] = {}
+            # A resposta da semana entra junto: e materia real, e o dict deduplica pelo id.
+            por_id: dict[str, NewsItem] = {i.google_id: i for i in items}
             for offset in range((end - start).days):
                 day = start + dt.timedelta(days=offset)
-                for item in self._fetch_window(
-                    ticker, company, day, day + dt.timedelta(days=1), locale
-                ):
-                    daily[item.google_id] = item
-            items = list(daily.values())
+                try:
+                    diarios = self._fetch_window(
+                        ticker, company, day, day + dt.timedelta(days=1), locale
+                    )
+                except Exception as exc:
+                    # Para no 1o dia que falha: se a fonte esta bloqueando, insistir nos outros
+                    # dias so gastaria tentativas. O que ja veio e gravado abaixo e a unidade
+                    # sai com erro para ser refeita (o persist e idempotente).
+                    falha, dia_falho = exc, day
+                    break
+                for item in diarios:
+                    por_id[item.google_id] = item
+            items = list(por_id.values())
 
         if self.settings.wp_enabled:
             # InfoMoney, Money Times e Exame vem pela API do WordPress (collectors/wordpress.py).
@@ -273,6 +327,10 @@ class GoogleNewsCollector(Collector):
             items = [i for i in items if i.source_domain not in DOMINIOS_WP]
 
         self._persist(items, ticker, locale["lang"])
+        if falha is not None:
+            raise RuntimeError(
+                f"subdivisao incompleta: o dia {dia_falho:%Y-%m-%d} falhou ({falha})"
+            ) from falha
         return UnitResult(items_found=len(items), hit_cap=hit_cap)
 
     def _persist(self, items: list[NewsItem], ticker: str, lang: str) -> None:

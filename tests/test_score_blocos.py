@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 from contextlib import nullcontext
+from types import SimpleNamespace
 
 from tcc_scraper.sentiment import scoring
 from tcc_scraper.sentiment.base import SentimentScore
@@ -89,7 +90,7 @@ def test_score_pending_grava_por_bloco_e_reporta(monkeypatch) -> None:
         (3, "Three", "en", None),
     ]
     gravacoes: list[list[dict]] = []
-    monkeypatch.setattr(scoring, "pendentes_de_score", lambda limit=None: rows)
+    monkeypatch.setattr(scoring, "pendentes_de_score", lambda limit=None, anos=None: rows)
     monkeypatch.setattr(scoring, "session_scope", lambda: nullcontext(None))
     monkeypatch.setattr(
         scoring,
@@ -109,7 +110,7 @@ def test_score_pending_grava_por_bloco_e_reporta(monkeypatch) -> None:
 
 
 def test_score_pending_sem_pendentes_devolve_zeros(monkeypatch) -> None:
-    monkeypatch.setattr(scoring, "pendentes_de_score", lambda limit=None: [])
+    monkeypatch.setattr(scoring, "pendentes_de_score", lambda limit=None, anos=None: [])
     observador = _ObservadorEspiao()
 
     out = score_pending(router=_RouterFalso(), observador=observador)
@@ -118,3 +119,37 @@ def test_score_pending_sem_pendentes_devolve_zeros(monkeypatch) -> None:
         "artigos": 0, "gravados": 0, "com_corpo": 0, "so_manchete": 0, "interrompido": 0,
     }
     assert observador.planos == [], "sem trabalho, o observador nem e avisado"
+
+
+class _SessaoEspia:
+    """Guarda as consultas executadas e devolve nenhuma linha."""
+
+    def __init__(self) -> None:
+        self.consultas: list = []
+
+    def execute(self, consulta):
+        self.consultas.append(consulta)
+        return SimpleNamespace(all=lambda: [])
+
+
+def test_pendentes_de_score_filtra_anos_no_sql(monkeypatch) -> None:
+    sessao = _SessaoEspia()
+    monkeypatch.setattr(scoring, "session_scope", lambda: nullcontext(sessao))
+
+    scoring.pendentes_de_score(anos=[2025])
+
+    assert "raw_articles.published_at >=" in str(sessao.consultas[0])
+
+
+def test_score_pending_repassa_anos_a_pendentes(monkeypatch) -> None:
+    chamadas: list = []
+
+    def falso(limit=None, anos=None):
+        chamadas.append(anos)
+        return []
+
+    monkeypatch.setattr(scoring, "pendentes_de_score", falso)
+
+    score_pending(anos=[2025], router=_RouterFalso())
+
+    assert chamadas == [[2025]]

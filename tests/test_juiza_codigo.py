@@ -253,7 +253,9 @@ def test_camadas_ativas_e_camadas_sem_julgamento():
     sem_julgamento = [
         classificar_par(_ev(n_titulo=1, outras=2), _artigo("Petrobras e Vale em alta"), NOMES),
         classificar_par(_ev(n_titulo=1), _artigo("Day trade: Compre PETR4 hoje"), NOMES),
-        classificar_par(_ev(n_corpo=MIN_CORPO, primeiro_bloco=0), _artigo("Empresa anuncia"), NOMES),
+        classificar_par(
+            _ev(n_corpo=MIN_CORPO, primeiro_bloco=0), _artigo("Empresa anuncia"), NOMES
+        ),
         classificar_par(_ev(n_titulo_revisavel=1), _artigo("Empresa anuncia"), NOMES),
     ]
     assert sem_julgamento == [("K4", None), ("T", None), ("K7", None), ("R", None)]

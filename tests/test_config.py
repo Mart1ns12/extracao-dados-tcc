@@ -210,4 +210,4 @@ def test_wp_endpoint_exame_termina_com_barra():
 
 
 def test_dominios_wp_sao_os_tres_veiculos():
-    assert DOMINIOS_WP == {"infomoney.com.br", "moneytimes.com.br", "exame.com"}
+    assert {"infomoney.com.br", "moneytimes.com.br", "exame.com"} == DOMINIOS_WP
