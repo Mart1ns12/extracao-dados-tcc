@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
+import sys
 import threading
+import types
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -470,6 +473,95 @@ def test_etapa_cadastro_interrompida_e_falhou(monkeypatch) -> None:
         monkeypatch.setattr(alvo, _coletor_falso(nome, registro))
 
     r = E.etapa_cadastro(_ctx(), _Observador())
+
+    assert r.status == "falhou"
+    assert r.erro == "interrompida: orçamento ou cancelamento"
+
+
+def _processar_wp_falso(registro: list, levanta: bool = False):
+    """Duble de `processar_wp`: anota o periodo e planeja 1 unidade, como o real faria."""
+
+    def processar_wp(*, desde, ate, observador=None, refazer=False) -> dict:
+        registro.append(("processar_wp", desde, ate))
+        observador.plano(1)
+        if levanta:
+            raise RuntimeError("processar_wp caiu")
+        return {"total": 1, "ok": 1, "erro": 0, "itens": 3, "saturadas": 0, "interrompido": 0}
+
+    return processar_wp
+
+
+def _noticias_falsas(
+    monkeypatch, registro: list, *, google_stats: dict | None = None, processar_levanta=False
+) -> None:
+    monkeypatch.setattr(
+        "tcc_scraper.collectors.google_news.GoogleNewsCollector",
+        _coletor_falso("google_news", registro, stats=google_stats),
+    )
+    monkeypatch.setattr(
+        "tcc_scraper.collectors.wordpress.WordPressCollector",
+        _coletor_falso("wordpress", registro),
+    )
+    # enrich/processar_wp.py pode nao existir ainda: o duble entra em sys.modules, sem o real.
+    modulo = types.ModuleType("tcc_scraper.enrich.processar_wp")
+    modulo.processar_wp = _processar_wp_falso(registro, levanta=processar_levanta)
+    monkeypatch.setitem(sys.modules, "tcc_scraper.enrich.processar_wp", modulo)
+
+
+def test_etapa_noticias_com_wp_roda_google_wordpress_e_processamento(monkeypatch) -> None:
+    registro: list = []
+    _noticias_falsas(monkeypatch, registro)
+    obs = _Observador()
+
+    r = E.etapa_noticias(_ctx(), obs)
+
+    # hoje = 2026-10-19: google e wordpress em hoje-2 .. hoje+1; processamento em hoje-3 .. hoje+1
+    assert r.status == "concluida"
+    assert r.itens == 2 + 2 + 3
+    assert [c[:2] for c in registro if c[0] == "run"] == [
+        ("run", "google_news"),
+        ("run", "wordpress"),
+    ]
+    assert all(c[2] is False for c in registro if c[0] == "run")
+    janela = {"desde": date(2026, 10, 17), "ate": date(2026, 10, 20)}
+    assert ("init", "google_news", janela) in registro
+    assert ("init", "wordpress", janela) in registro
+    assert ("processar_wp", date(2026, 10, 16), date(2026, 10, 20)) in registro
+    assert obs.planos == [1, 1, 1]
+
+
+def test_etapa_noticias_com_wp_desligado_roda_so_o_google(monkeypatch) -> None:
+    registro: list = []
+    _noticias_falsas(monkeypatch, registro)
+    ctx = dataclasses.replace(_ctx(), settings=Settings(gemini_api_key="", wp_enabled=False))
+
+    r = E.etapa_noticias(ctx, _Observador())
+
+    assert r.status == "concluida"
+    assert r.itens == 2
+    nomes = [c[1] for c in registro if c[0] in ("init", "run")]
+    assert nomes == ["google_news", "google_news"]
+    assert not any(c[0] == "processar_wp" for c in registro)
+
+
+def test_etapa_noticias_processar_wp_que_levanta_nao_derruba_o_google(monkeypatch) -> None:
+    registro: list = []
+    _noticias_falsas(monkeypatch, registro, processar_levanta=True)
+    obs = _Observador()
+
+    r = E.etapa_noticias(_ctx(), obs)
+
+    assert r.status == "concluida"
+    assert r.itens == 4  # google (2) e wordpress (2); o processamento caiu com 0
+    assert any(n == "erro" and "processar_wp" in m for n, m in obs.logs)
+
+
+def test_etapa_noticias_google_interrompido_e_falhou(monkeypatch) -> None:
+    registro: list = []
+    interrompido = {"total": 1, "ok": 0, "erro": 0, "itens": 0, "saturadas": 0, "interrompido": 1}
+    _noticias_falsas(monkeypatch, registro, google_stats=interrompido)
+
+    r = E.etapa_noticias(_ctx(), _Observador())
 
     assert r.status == "falhou"
     assert r.erro == "interrompida: orçamento ou cancelamento"

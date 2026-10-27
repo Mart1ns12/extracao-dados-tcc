@@ -50,11 +50,17 @@ uma fonte rejeitada sem antes provar, com uma chamada real, que a limitação mu
 | Fonte | Papel | Por quê |
 |---|---|---|
 | **Yahoo Finance chart API** | Preço **primário** | 5 anos com `adjclose`, sem chave. Cobre ações `.SA`, `^BVSP`, `BZ=F` (Brent), `USDBRL=X` |
-| **Google News RSS** | Notícias **históricas** | Único caminho grátis para 2 anos de histórico. Aceita `after:`/`before:` |
-| **RSS nativos dos veículos** | Notícias **correntes** (sem coletor implementado) | InfoMoney/MoneyTimes expõem `content:encoded` = corpo completo do artigo |
+| **API REST do WordPress** (InfoMoney, Money Times, Exame) | Notícias **históricas e correntes** desses 3 veículos, com `date_gmt` exato e o HTML do corpo | Pública, sem chave: `/wp-json/wp/v2/posts`, 100 posts por página, throttle de 1,0 s. Substitui o Google News nesses domínios (`WP_ENABLED=true`) |
+| **Google News RSS** | Notícias **históricas** dos demais veículos | Único caminho grátis para 2 anos de histórico fora da API WordPress. Aceita `after:`/`before:`. Descarta os 3 domínios WordPress quando `WP_ENABLED=true` |
+| **RSS nativos dos veículos** | Notícias **correntes** de veículos fora da API WordPress (sem coletor implementado) | InfoMoney e Money Times já estão cobertos pela API WordPress, com histórico |
 | **BCB SGS série 432** | Selic | Oficial, sem chave, sem limite |
 | **BCB PTAX** | Dólar | Oficial, sem chave. Usar `cotacaoVenda` |
 | **Brapi** | *Fallback* de preço (sem coletor implementado) | Funciona sem token; free = 15.000 req/mês. Só 1 ano de histórico |
+| **B3 COTAHIST** | Correção de preço por lista explícita (`CORRECOES_PRECO_B3`; hoje só AZUL3 de 2026-01-13 a 2026-04-17) | Oficial, sem chave. O Yahoo emenda papéis nessa janela (AZUL53 cotada por lote de 1 milhão). CSV versionado em `data/correcoes_precos/`, aplicado pelo coletor do Yahoo |
+
+**API WordPress, medida em 2026-03.** O Google News era lento para cobrir esses 3 veículos (throttle de 2,0 s, sequencial, ~9.010 consultas/ano, mais de 30 h para 5 anos). O WordPress entregou 11.306 posts no mês em 122 requisições, sem erro. A API cobre 862 de 865 (99,7%) do que o Google trouxe desses sites (faltaram 2 de conteúdo de marca e 1 renomeado), e a normalização de URL acertou 100%. Republicação entre veículos (106 pares/mês) conta como 1 notícia, a "história", com o representante no `date_gmt` mais antigo (decisão do dono). Posts por ano nos 3 sites: 89,5 mil (2021), 93,8 mil (2022), 83,6 mil (2023), 84,6 mil (2024) e 106,1 mil (2025).
+
+**Classificação por código.** A maior parte da classificação de notícias do WordPress é decidida por código (`llm/juiza_codigo.py`); a juíza só recebe o resíduo. Medido contra 28.279 julgamentos do Gemini, a camada K3 (ticker no título, matéria com corpo) acerta 91,5% no dev, 91,9% no teste e 92,4% em 2026-10. Com só o título (pares do Google) acerta ~78%, por isso o código não decide esses pares. A juíza fica com ~26% dos pares do WordPress, a ~US$ 0,000077 por par (Jev + Luna): ~US$ 0,11/mês, ~US$ 5,5 no histórico. A regra de entrega não muda: só `reportagem` com papel `protagonista` ou `citada_com_fato` entra.
 
 ### Rejeitadas — e o motivo
 
@@ -177,8 +183,9 @@ o que se perdeu com isso.**
 - **Deduplicação por `url_hash`**, nunca pela URL crua (querystrings de tracking variam).
 - **Alteração de schema é manual:** muda o model em `src/tcc_scraper/db/`, atualiza `sql/schema.mysql.sql` e escreve o ALTER em `sql/alteracoes/AAAA-MM-DD_descricao.mysql.sql`. Quem aplica é o dono, com usuário com DDL, após aprovação. Nada de `CREATE TABLE` solto.
 - **Prefixo `v1-` só nas tabelas criadas pela pipeline nova** (`PREFIXO_TABELA` em `db/models.py`):
-  as que nasceram nas antigas migrations 0004–0007 e nas alterações depois delas (27 tabelas: `painel_*`,
-  fontes/juíza e as 9 de entrega, sendo a 9ª `v1-composicao_ibov`, de 2026-10-23). O nome real é `v1-painel_logs`, `v1-raw_ipe_docs`, `v1-noticias` … `v1-indices` (o CSV
+  as que nasceram nas antigas migrations 0004–0007 e nas alterações depois delas (30 tabelas: `painel_*`,
+  fontes/juíza, as 9 de entrega, sendo a 9ª `v1-composicao_ibov`, de 2026-10-23, e as 3 da coleta WordPress,
+  de 2026-10-27: `v1-raw_wp_posts`, `v1-staging_historias` e `v1-staging_wp_processamento`). O nome real é `v1-painel_logs`, `v1-raw_ipe_docs`, `v1-noticias` … `v1-indices` (o CSV
   continua com o nome da spec). As 14 antigas mantêm o nome, inclusive `raw_articles`, `raw_prices` e
   `raw_llm_runs`; ficam sem prefixo também `features_dataset_v1`. O hífen exige
   crase em SQL escrito à mão: `` `v1-raw_ipe_docs` ``.
@@ -200,7 +207,10 @@ python -m tcc_scraper.cli validate-tickers     # tickers do IBOV respondem no Ya
 python -m tcc_scraper.cli validate-cadastro    # ticker -> codigo CVM -> B3
 python -m tcc_scraper.cli collect-prices       # Yahoo: acoes, Ibovespa, Brent, dolar
 python -m tcc_scraper.cli collect-macro        # Selic e PTAX (BCB)
-python -m tcc_scraper.cli collect-news         # Google News (retomavel; 6-9 h na carga completa)
+python -m tcc_scraper.cli gerar-correcao-precos  # COTAHIST da B3 -> data/correcoes_precos/*.csv (so quando CORRECOES_PRECO_B3 mudar)
+python -m tcc_scraper.cli collect-news         # Google News (retomavel; 6-9 h na carga completa; sem os 3 dominios WordPress se WP_ENABLED=true)
+python -m tcc_scraper.cli collect-wp           # API WordPress: InfoMoney, Money Times e Exame, so candidatos a ticker (--desde/--ate)
+python -m tcc_scraper.cli processar-wp         # casa tickers, agrupa historias e classifica por codigo (sem rede; --desde/--ate/--refazer)
 python -m tcc_scraper.cli enrich               # corpo dos artigos (resolve o link)
 python -m tcc_scraper.cli score                # FinBERT pt/en (exige o extra sentiment)
 python -m tcc_scraper.cli build-dataset        # 14 colunas -> features_dataset_v1, Parquet e CSV

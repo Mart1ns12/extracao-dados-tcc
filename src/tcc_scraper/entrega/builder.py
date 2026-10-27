@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import math
 import re
+import statistics
 import unicodedata
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -57,6 +59,7 @@ from tcc_scraper.db.models_fontes import (
     RawCvmAcoes,
     RawCvmBalanco,
     RawCvmCadastro,
+    StagingHistoria,
     StagingNoticiaJulgamento,
 )
 from tcc_scraper.db.session import session_scope
@@ -107,6 +110,9 @@ _DA_EXCLUI = (
     "custo de aquisicao",
 )
 TOLERANCIA_TAXA = 1e-6
+# Escala das acoes na CVM: janela do giro (pregoes) e minimo de pregoes com volume para ter giro.
+JANELA_GIRO_PREGOES = 60
+MIN_PREGOES_GIRO = 20
 _SUFIXO_NUMERICO = re.compile(r"(\d+)$")
 
 CHAVES: dict[str, list[str]] = {
@@ -535,10 +541,71 @@ def _da_do_periodo(
     return None
 
 
+def _documento(r: dict) -> tuple:
+    return (r["cnpj"], r["tipo_documento"], r["dt_refer"], r["versao"])
+
+
+def _magnitude_do_documento(linhas: list[dict], escala: str) -> float | None:
+    """Maior |valor| das linhas ULTIMO, lido na escala dada. Zeros e vazios nao contam."""
+    valores = [
+        abs(_valor_escalado({**r, "escala_moeda": escala}))
+        for r in linhas if _ultimo(r["ordem_exerc"]) and r["vl_conta"]
+    ]
+    return max(valores, default=None)
+
+
+def _corrigir_escala_balancos(balancos: list[dict]) -> list[dict]:
+    """Escala que a companhia declarou errada no documento. Devolve copias; o raw nao muda.
+
+    Escala do documento = a mais frequente nas suas linhas. Se difere da majoritaria do CNPJ e
+    a magnitude do documento fica 100x abaixo (UNIDADE em CNPJ MIL) ou acima (MIL em CNPJ
+    UNIDADE) da mediana dos documentos na majoritaria, o documento usa a majoritaria.
+    """
+    por_documento: dict[tuple, list[dict]] = defaultdict(list)
+    for r in balancos:
+        por_documento[_documento(r)].append(r)
+    escala_doc = {
+        chave: Counter(r["escala_moeda"] for r in linhas).most_common(1)[0][0]
+        for chave, linhas in por_documento.items()
+    }
+    docs_do_cnpj: dict[str, list[tuple]] = defaultdict(list)
+    for chave in por_documento:
+        docs_do_cnpj[chave[0]].append(chave)
+
+    corrigidas: dict[tuple, str] = {}
+    for cnpj, chaves in docs_do_cnpj.items():
+        majoritaria = Counter(escala_doc[k] for k in chaves).most_common(1)[0][0]
+        magnitudes = {k: _magnitude_do_documento(por_documento[k], escala_doc[k]) for k in chaves}
+        referencia = [m for k, m in magnitudes.items() if escala_doc[k] == majoritaria and m]
+        if not referencia:
+            continue
+        mediana = statistics.median(referencia)
+        for k in chaves:
+            declarada, magnitude = escala_doc[k], magnitudes[k]
+            if declarada == majoritaria or not magnitude:
+                continue
+            razao = magnitude / mediana
+            if declarada == "UNIDADE" and majoritaria == "MIL" and razao < 1 / 100:
+                nova = "MIL"
+            elif declarada == "MIL" and majoritaria == "UNIDADE" and razao > 100:
+                nova = "UNIDADE"
+            else:
+                continue
+            corrigidas[k] = nova
+            logger.warning(
+                "entrega: balancos: escala declarada corrigida (cnpj %s, %s, %s): %s -> %s",
+                cnpj, k[1], k[2], declarada, nova,
+            )
+    return [
+        {**r, "escala_moeda": corrigidas.get(_documento(r), r["escala_moeda"])} for r in balancos
+    ]
+
+
 def montar_balancos(balancos: list[dict]) -> list[dict]:
     """Uma linha por (cnpj, tipo, inicio, fim) da DRE. PL, caixa, aplicacoes e emprestimos
     do mesmo dt_refer valem para todas as linhas do documento; a D&A segue o periodo.
     Bancos e seguradoras (CD_CVM_BANCOS_SEGURADORAS) saem em branco nas colunas da spec."""
+    balancos = _corrigir_escala_balancos(balancos)
     validos = [dict(r, valor=_valor_escalado(r)) for r in balancos if _ultimo(r["ordem_exerc"])]
 
     maior: dict[tuple, int] = {}
@@ -608,14 +675,150 @@ def montar_balancos(balancos: list[dict]) -> list[dict]:
     return [saida[k] for k in sorted(saida, key=lambda k: (k[0], k[1], k[2], k[3]))]
 
 
-def montar_acoes_emitidas(raw_cvm_acoes: list[dict]) -> list[dict]:
-    """Maior versao por (cnpj, dt_refer); na mesma data, a DFP vence o ITR."""
+def volumes_por_cnpj(
+    cadastro: list[dict], precos_raw: list[dict]
+) -> dict[str, dict[dt.date, float]]:
+    """Volume diario somado por CNPJ (ON, PN e unit). Volume None ou zero nao conta."""
+    cnpj_por_ticker = {r["ticker"]: r["cnpj"] for r in cadastro if r["cnpj"]}
+    volumes: dict[str, dict[dt.date, float]] = {}
+    for r in precos_raw:
+        simbolo = r["ticker"]
+        ticker = simbolo[:-3] if simbolo.endswith(".SA") else simbolo
+        cnpj = cnpj_por_ticker.get(ticker)
+        volume = _volume(r["volume"])
+        if cnpj is None or volume is None:
+            continue
+        dia = volumes.setdefault(cnpj, {})
+        dia[r["date"]] = dia.get(r["date"], 0.0) + volume
+    return volumes
+
+
+def _total_acoes(linha: dict) -> int:
+    return (linha["qt_on"] or 0) + (linha["qt_pn"] or 0)
+
+
+def _troca_de_escala(razao: float) -> bool:
+    """Razao entre totais consecutivos de ~1000x, para cima ou para baixo."""
+    return 500 <= razao <= 2000 or 1 / 2000 <= razao <= 1 / 500
+
+
+def _segmentar(serie: list[dict]) -> list[list[dict]]:
+    """Abre segmento novo quando o total salta ~1000x em relacao ao ultimo total nao zero."""
+    segmentos: list[list[dict]] = []
+    anterior = 0
+    for linha in serie:
+        total = _total_acoes(linha)
+        nova = not segmentos or bool(total and anterior and _troca_de_escala(total / anterior))
+        if nova:
+            segmentos.append([])
+        segmentos[-1].append(linha)
+        if total:
+            anterior = total
+    return segmentos
+
+
+def _giro(linha: dict, volume_cnpj: dict[dt.date, float]) -> float | None:
+    """Mediana do volume dos ultimos 60 pregoes ate dt_refer, dividida pelo total de acoes.
+    Pregao = data com volume do CNPJ. Menos de 20 pregoes, ou total zero, nao tem giro."""
+    total = _total_acoes(linha)
+    datas = sorted(d for d in volume_cnpj if d <= linha["dt_refer"])[-JANELA_GIRO_PREGOES:]
+    if not total or len(datas) < MIN_PREGOES_GIRO:
+        return None
+    mediana = statistics.median(volume_cnpj[d] for d in datas)
+    return mediana / total if mediana > 0 else None
+
+
+def _em_milhares(segmento: list[dict], volume_cnpj: dict[dt.date, float]) -> bool | None:
+    """True se o giro mediano diz milhares (giro acima de 10% ao dia, impossivel em unidades).
+    None se nenhuma linha do segmento tem giro."""
+    logs = [math.log10(g) for g in (_giro(r, volume_cnpj) for r in segmento) if g is not None]
+    return statistics.median(logs) > -1 if logs else None
+
+
+def _herdar_escala(decisoes: list[bool | None]) -> list[bool]:
+    """Segmento sem giro herda pela cadeia: toda fronteira e uma troca de 1000x, entao a escala
+    alterna a partir do segmento decidido pelo giro mais proximo (ex.: trimestres de antes da
+    listagem, sem volume). Sem nenhum segmento decidido, fica em unidades, como esta."""
+    decididos = [i for i, d in enumerate(decisoes) if d is not None]
+    saida: list[bool] = []
+    for i, decisao in enumerate(decisoes):
+        if decisao is None and decididos:
+            j = min(decididos, key=lambda k: abs(k - i))
+            decisao = decisoes[j] != (abs(i - j) % 2 == 1)
+        saida.append(bool(decisao))
+    return saida
+
+
+def _alertar_isolados(cnpj: str, serie: list[dict]) -> None:
+    """Valor que sai de dois vizinhos que concordam (menos de 2x entre si) sem ser troca de
+    1000x. Nao corrige, so avisa."""
+    for i in range(1, len(serie) - 1):
+        ant, atual, prox = (_total_acoes(serie[k]) for k in (i - 1, i, i + 1))
+        if not (ant and atual and prox):
+            continue
+        if _troca_de_escala(atual / ant) or _troca_de_escala(atual / prox):
+            continue
+        baixo, alto = min(ant, prox), max(ant, prox)
+        if alto / baixo < 2 and not baixo / 2 <= atual <= alto * 2:
+            logger.warning(
+                "entrega: acoes_emitidas: %s em %s com valor isolado %s (vizinhos concordam); "
+                "nao corrigido",
+                cnpj, serie[i]["dt_refer"], atual,
+            )
+
+
+def _x1000(valor: int | None) -> int | None:
+    return None if valor is None else int(valor) * 1000
+
+
+def _corrigir_escala_acoes(
+    linhas: list[dict], volumes: dict[str, dict[dt.date, float]]
+) -> list[dict]:
+    """Segmentos em milhares viram unidades (x1000). Recebe as linhas escolhidas, em ordem de
+    (cnpj, dt_refer), e devolve copias; as originais nao mudam."""
+    por_cnpj: dict[str, list[dict]] = defaultdict(list)
+    for r in linhas:
+        por_cnpj[r["cnpj"]].append(dict(r))
+    multiplicadas = 0
+    for cnpj, serie in por_cnpj.items():
+        _alertar_isolados(cnpj, serie)
+        segmentos = _segmentar(serie)
+        decisoes = _herdar_escala(
+            [_em_milhares(seg, volumes.get(cnpj, {})) for seg in segmentos]
+        )
+        for seg, milhares in zip(segmentos, decisoes, strict=True):
+            if not milhares:
+                continue
+            multiplicadas += len(seg)
+            for r in seg:
+                r["qt_on"] = _x1000(r["qt_on"])
+                r["qt_pn"] = _x1000(r["qt_pn"])
+    if multiplicadas:
+        logger.info(
+            "entrega: acoes_emitidas: %d linhas em milhares multiplicadas por 1000", multiplicadas
+        )
+    return [r for serie in por_cnpj.values() for r in serie]
+
+
+def montar_acoes_emitidas(
+    raw_cvm_acoes: list[dict], volumes: dict[str, dict[dt.date, float]] | None = None
+) -> list[dict]:
+    """Maior versao por (cnpj, dt_refer); na mesma data, a DFP vence o ITR.
+
+    Com `volumes` (ver `volumes_por_cnpj`), corrige a escala: a CVM mistura unidades e
+    milhares. Sem ele, sai como a CVM publica.
+    """
     melhor: dict[tuple, tuple[tuple, dict]] = {}
     for r in raw_cvm_acoes:
         chave = (r["cnpj"], r["dt_refer"])
         ranking = (r["tipo_documento"] == "DFP", r["versao"])
         if chave not in melhor or ranking > melhor[chave][0]:
             melhor[chave] = (ranking, r)
+    escolhidas = [
+        r for _, r in sorted(melhor.values(), key=lambda par: (par[1]["cnpj"], par[1]["dt_refer"]))
+    ]
+    if volumes is not None:
+        escolhidas = _corrigir_escala_acoes(escolhidas, volumes)
     return [
         {
             "cnpj": r["cnpj"],
@@ -623,7 +826,7 @@ def montar_acoes_emitidas(raw_cvm_acoes: list[dict]) -> list[dict]:
             "qtd_on": r["qt_on"],
             "qtd_pn": r["qt_pn"],
         }
-        for _, r in sorted(melhor.values(), key=lambda par: (par[1]["cnpj"], par[1]["dt_refer"]))
+        for r in escolhidas
     ]
 
 
@@ -818,6 +1021,11 @@ class _Fontes:
             Article.resolved_url, Article.url, Article.published_at,
             Article.published_precision, Article.lang, Article.collected_at, Article.origem,
         ).where(Article.published_at >= self._limite)
+        # Republicacao entre veiculos conta como 1 noticia: sai o que nao e representante da historia.
+        duplicados = select(StagingHistoria.article_id).where(
+            StagingHistoria.article_id != StagingHistoria.historia_article_id
+        )
+        consulta = consulta.where(Article.id.not_in(duplicados))
         if self._somente_ids is not None:
             consulta = consulta.where(Article.id.in_(sorted(self._somente_ids)))
         return _consulta(consulta)
@@ -941,7 +1149,8 @@ def _montar(tabela: str, f: _Fontes, exigir_juiza: bool, modelos: dict[str, str]
     if tabela == "balancos":
         return montar_balancos(f.balancos)
     if tabela == "acoes_emitidas":
-        return montar_acoes_emitidas(f.acoes)
+        cadastro = montar_cadastro(f.b3_cadastro, f.cvm_cadastro, universo_coleta())
+        return montar_acoes_emitidas(f.acoes, volumes_por_cnpj(cadastro, f.precos_raw))
     if tabela == "proventos":
         return montar_proventos(f.proventos, f.suplemento, f.b3_cadastro)
     if tabela == "indices":

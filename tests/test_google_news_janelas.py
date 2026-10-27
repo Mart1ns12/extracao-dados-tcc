@@ -12,10 +12,17 @@ import pytest
 from typer.testing import CliRunner
 
 from tcc_scraper.cli import app
-from tcc_scraper.collectors.google_news import GoogleNewsCollector, iter_weeks
+from tcc_scraper.collectors.base import WorkUnit
+from tcc_scraper.collectors.google_news import GoogleNewsCollector, NewsItem, iter_weeks
 from tcc_scraper.collectors.macro_bcb import BcbCollector
 from tcc_scraper.collectors.prices_yahoo import YahooPriceCollector, parse_chart
-from tcc_scraper.config import GOOGLE_NEWS_LOCALES, IVVB11
+from tcc_scraper.config import (
+    DOMINIOS_WP,
+    GOOGLE_NEWS_ITEM_CAP,
+    GOOGLE_NEWS_LOCALES,
+    IVVB11,
+    Settings,
+)
 from tcc_scraper.enrich.article_fetcher import ArticleBodyCollector
 
 
@@ -55,6 +62,76 @@ def test_recorte_curto_gera_uma_janela_por_idioma() -> None:
 
     assert len(unidades) == len(GOOGLE_NEWS_LOCALES)
     assert {(u.payload["start"], u.payload["end"]) for u in unidades} == {(desde, ate)}
+
+
+def _item_google(dominio: str, marca: str) -> NewsItem:
+    return NewsItem(
+        title=f"Petrobras {marca}",
+        google_url=f"https://news.google.com/rss/articles/{marca}",
+        google_id=marca,
+        published_at=dt.datetime(2026, 7, 15, 15, 0, tzinfo=dt.UTC),
+        source_name=None,
+        source_domain=dominio,
+    )
+
+
+def _processar_janela(monkeypatch, wp_enabled: bool, itens: list[NewsItem]):
+    """Roda process() com o fetch e o persist trocados por listas em memoria (sem rede e sem banco)."""
+    hoje = dt.date.today()
+    gravadas: list[NewsItem] = []
+    locale = GOOGLE_NEWS_LOCALES[0]
+    with GoogleNewsCollector(
+        tickers={"PETR4": "Petrobras"}, desde=hoje - dt.timedelta(days=2), ate=hoje
+    ) as coletor:
+        monkeypatch.setattr(
+            coletor, "settings", Settings(gemini_api_key="", wp_enabled=wp_enabled)
+        )
+        monkeypatch.setattr(coletor, "_fetch_window", lambda *args: list(itens))
+        monkeypatch.setattr(
+            coletor, "_persist", lambda items, ticker, lang: gravadas.extend(items)
+        )
+        resultado = coletor.process(
+            WorkUnit(
+                key="PETR4|janela",
+                payload={
+                    "ticker": "PETR4",
+                    "company": "Petrobras",
+                    "start": hoje - dt.timedelta(days=2),
+                    "end": hoje,
+                    "locale": locale,
+                },
+            )
+        )
+    return resultado, gravadas
+
+
+def test_wp_enabled_descarta_dominios_wordpress_antes_do_persist(monkeypatch) -> None:
+    itens = [_item_google(dominio, dominio) for dominio in sorted(DOMINIOS_WP)]
+    itens.append(_item_google("valor.globo.com", "valor"))
+
+    _, gravadas = _processar_janela(monkeypatch, wp_enabled=True, itens=itens)
+
+    assert [i.source_domain for i in gravadas] == ["valor.globo.com"]
+
+
+def test_wp_disabled_mantem_dominios_wordpress(monkeypatch) -> None:
+    itens = [_item_google(dominio, dominio) for dominio in sorted(DOMINIOS_WP)]
+    itens.append(_item_google("valor.globo.com", "valor"))
+
+    _, gravadas = _processar_janela(monkeypatch, wp_enabled=False, itens=itens)
+
+    assert len(gravadas) == len(itens)
+    assert DOMINIOS_WP <= {i.source_domain for i in gravadas}
+
+
+def test_hit_cap_e_calculado_sobre_a_resposta_crua(monkeypatch) -> None:
+    """Teto atingido com itens so de dominios WP: o filtro esvazia o persist, mas o cap vale."""
+    itens = [_item_google("exame.com", f"exame{n}") for n in range(GOOGLE_NEWS_ITEM_CAP)]
+
+    resultado, gravadas = _processar_janela(monkeypatch, wp_enabled=True, itens=itens)
+
+    assert resultado.hit_cap is True
+    assert gravadas == []
 
 
 def test_desde_sem_ate_e_recusado() -> None:

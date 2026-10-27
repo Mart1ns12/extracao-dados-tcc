@@ -117,6 +117,8 @@ Catálogo de coletores:
 | `b3_proventos` | - | - | Refaz tudo (sem checkpoint) |
 | `cvm_itr_dfp` | `anos` | do ano de `data_start` menos 1 ao ano de `fim_coleta` | Checkpoint |
 | `google_news` | `tickers` (só os de `IBOV_TICKERS`), `desde` e `ate` | `desde` e `ate` em ISO, `ate` exclusivo, dentro de `inicio_noticias` até `fim_coleta` + 1 dia | Checkpoint |
+| `wordpress` | `desde` e `ate` | `desde` e `ate` em ISO, `ate` exclusivo. Só InfoMoney, Money Times e Exame (API WordPress) | Checkpoint, por site e mês |
+| `processar_wp` | `desde` e `ate` | `desde` e `ate` em ISO, `ate` exclusivo. Sem rede: lê o que o `wordpress` já gravou | Pula o que já foi processado. `refazer` reprocessa |
 | `cvm_ipe` | `anos` | do ano de `inicio_noticias` ao ano de `fim_coleta` | Checkpoint |
 | `enriquecimento` | - | - | Refaz tudo (sem checkpoint) |
 | `finbert` | - | - | Só pendentes. `refazer` não se aplica |

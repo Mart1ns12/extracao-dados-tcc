@@ -814,6 +814,104 @@ def test_jev_recebe_o_trecho_inteiro_e_a_llm_so_300_caracteres(
     assert "ZQX" not in cliente.prompts[0]
 
 
+class _ResultadoFalso:
+    def __init__(self, linhas) -> None:
+        self._linhas = list(linhas)
+
+    def mappings(self):
+        return self
+
+    def all(self):
+        return list(self._linhas)
+
+
+class _SessaoConsultaFalsa:
+    """A 1a execute devolve as linhas de pendentes; as seguintes, os corpos (tuplas)."""
+
+    def __init__(self, linhas, corpos) -> None:
+        self.linhas = linhas
+        self.corpos = corpos
+        self.execucoes = 0
+
+    def execute(self, *a, **k):
+        self.execucoes += 1
+        return _ResultadoFalso(self.linhas if self.execucoes == 1 else self.corpos)
+
+
+@pytest.fixture
+def consulta_pendentes(monkeypatch):
+    """Troca session_scope por uma sessao que responde as consultas de pendentes()."""
+    def montar(linhas: list[dict], corpos: list[tuple] = ()) -> _SessaoConsultaFalsa:
+        sessao = _SessaoConsultaFalsa(linhas, list(corpos))
+
+        @contextlib.contextmanager
+        def scope():
+            yield sessao
+
+        monkeypatch.setattr(juiza, "session_scope", scope)
+        return sessao
+
+    return montar
+
+
+# Mencao do ticker so no fim: os 300 primeiros caracteres (o substr do SQL) nao a contem.
+_CORPO_FIM = ("Mercado sem novidades relevantes no setor de energia e bancos. " * 30
+              + "A VALE3 subiu 3% no pregao de hoje.")
+
+
+def _linha_pendente(id_: int, origem: str, trecho_sql: str, ticker: str = "VALE3") -> dict:
+    return {"id": id_, "ticker": ticker, "title": "Mercado fecha em alta",
+            "source_domain": "x.com.br", "origem": origem, "lang": "pt",
+            "published_at": dt.datetime(2026, 10, 1, tzinfo=dt.UTC), "tentativas": 0,
+            "trecho": trecho_sql}
+
+
+def test_pendentes_wordpress_traz_a_mencao_que_esta_no_fim_do_corpo(consulta_pendentes) -> None:
+    truncado = _CORPO_FIM[:300]
+    assert "VALE3" not in truncado
+    sessao = consulta_pendentes([_linha_pendente(4, "wordpress", truncado)], [(4, _CORPO_FIM)])
+
+    itens = juiza.pendentes(7, trecho=1500)
+
+    assert "VALE3" in itens[0]["trecho"]
+    assert len(itens[0]["trecho"]) <= 1500
+    assert sessao.execucoes == 2
+
+
+def test_pendentes_google_news_nao_muda_o_trecho(consulta_pendentes) -> None:
+    truncado = _CORPO_FIM[:300]
+    sessao = consulta_pendentes([_linha_pendente(4, "google_news", truncado)], [(4, _CORPO_FIM)])
+
+    itens = juiza.pendentes(7, trecho=1500)
+
+    assert itens[0]["trecho"] == truncado
+    assert sessao.execucoes == 1  # nenhuma query extra para o corpo
+
+
+def test_pendentes_wordpress_sem_mencao_valida_mantem_o_trecho_do_sql(consulta_pendentes) -> None:
+    corpo = "Texto de economia geral, sem empresa da bolsa citada. " * 20
+    truncado = corpo[:300]
+    consulta_pendentes([_linha_pendente(4, "wordpress", truncado)], [(4, corpo)])
+
+    itens = juiza.pendentes(7, trecho=1500)
+
+    assert itens[0]["trecho"] == truncado
+
+
+def test_pendentes_wordpress_busca_os_corpos_em_uma_query_so(consulta_pendentes) -> None:
+    linhas = [_linha_pendente(4, "wordpress", ""), _linha_pendente(5, "wordpress", ""),
+              _linha_pendente(6, "google_news", "")]
+    sessao = consulta_pendentes(linhas, [(4, _CORPO_FIM), (5, _CORPO_FIM)])
+
+    juiza.pendentes(7, trecho=1500)
+
+    assert sessao.execucoes == 2  # consulta principal + um lote para os dois wordpress
+
+
+def test_regras_do_casador_sao_calculadas_uma_vez() -> None:
+    assert juiza._regras() is juiza._regras()
+
+
 def test_custo_usa_o_cache_da_llm_e_res_acumula_tokens_cache(
     gravacoes, pendentes_falsos, settings, monkeypatch
 ) -> None:

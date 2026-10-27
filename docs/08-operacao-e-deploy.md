@@ -66,8 +66,11 @@ python -m tcc_scraper.cli validate-cadastro
 | Comando | Opções | O que faz |
 |---|---|---|
 | `collect-prices` | `--resume` / `--no-resume` (padrão: resume); `--limit N` | Preços do Yahoo: ações, Ibovespa, Brent e dólar. Grava `raw_prices`. `--limit N` coleta só os N primeiros, para testar |
+| `gerar-correcao-precos` | - | Baixa o COTAHIST da B3 dos anos da janela de `CORRECOES_PRECO_B3` (hoje só AZUL3) e grava `data/correcoes_precos/<TICKER>.csv`. Lê o suplemento no banco e não grava no banco. Rode de novo só se a lista mudar |
 | `collect-macro` | `--resume` / `--no-resume` | Selic (SGS 432) e dólar PTAX do Banco Central. Grava `raw_macro` |
-| `collect-news` | `--resume` / `--no-resume`; `--limit N` (janelas); `--ticker T`; `--desde AAAA-MM-DD` e `--ate AAAA-MM-DD` (fim exclusivo) | Notícias históricas pelo Google News RSS. Dura 6 a 9 h na carga completa e é retomável. `--desde` e `--ate` devem ser usados juntos |
+| `collect-news` | `--resume` / `--no-resume`; `--limit N` (janelas); `--ticker T`; `--desde AAAA-MM-DD` e `--ate AAAA-MM-DD` (fim exclusivo) | Notícias históricas pelo Google News RSS. Dura 6 a 9 h na carga completa e é retomável. `--desde` e `--ate` devem ser usados juntos. Com `WP_ENABLED=true`, InfoMoney, Money Times e Exame saem daqui (ver `collect-wp`) |
+| `collect-wp` | `--resume` / `--no-resume`; `--desde AAAA-MM-DD` e `--ate AAAA-MM-DD` (fim exclusivo) | Posts de InfoMoney, Money Times e Exame pela API do WordPress, só os candidatos a ticker. Grava `v1-raw_wp_posts`. Throttle de `THROTTLE_WORDPRESS` (1,0 s). Se o total de um mês fechado divergir, a unidade falha |
+| `processar-wp` | `--desde AAAA-MM-DD` e `--ate AAAA-MM-DD` (fim exclusivo); `--refazer` | Sem rede. Casa os tickers, agrupa as histórias e classifica por código (`llm/juiza_codigo.py`). Grava `raw_articles` (origem `wordpress`), `staging_article_tickers`, `v1-staging_noticias_julgamento`, `v1-staging_historias` e `v1-staging_wp_processamento`. É idempotente |
 | `enrich` | `--limit N` (lotes) | Resolve o link de cada artigo e extrai o corpo dos artigos da allowlist. Grava `raw_article_bodies` e `raw_articles.resolved_url` |
 | `score` | `--batch-size N` (padrão 32); `--limit N` | Sentimento FinBERT (pt-BR e en), roteado por idioma. Grava `staging_article_sentiment`. Exige o extra `[sentiment]` |
 | `build-dataset` | `--export` / `--no-export` (padrão: export); `--persist` / `--no-persist` (padrão: persist); `--keep-unlabeled` / `--no-keep-unlabeled` (padrão: não) | Monta as 14 colunas do dataset v1, grava `features_dataset_v1` e exporta Parquet e CSV em `EXPORT_DIR` |
@@ -80,7 +83,7 @@ python -m tcc_scraper.cli score --batch-size 16 --limit 200
 python -m tcc_scraper.cli build-dataset --no-export
 ```
 
-A ordem de uso é `collect-prices`, `collect-macro`, `collect-news`, `enrich`, `score` e `build-dataset`. O
+A ordem de uso é `collect-prices`, `collect-macro`, `collect-news`, `collect-wp`, `processar-wp`, `enrich`, `score` e `build-dataset`. O
 `collect-news` respeita o teto de 100 itens por consulta do Google News: ao bater o teto, subdivide a janela.
 
 Para rodar tudo de uma vez, com log por etapa, em Linux: `nohup ./scripts/coleta-completa.sh > logs/coleta.log 2>&1 &` e depois `tail -f logs/coleta.log`. A coleta de notícias é retomável: rodar o mesmo comando de novo continua de onde parou. Rode-a sob `tmux` ou `nohup` para sobreviver à queda da sessão SSH.
@@ -213,6 +216,13 @@ ali. Os caminhos de `EXPORT_DIR`, `ENTREGA_CSV_DIR` e `HF_CACHE_DIR` são padrõ
 
 **GPU para o FinBERT.** Com `SENTIMENT_DEVICE=auto` (padrão) o FinBERT usa a GPU se o torch instalado tiver CUDA; senão roda na CPU. Para ter CUDA, instale o torch antes do projeto: `pip install torch --index-url https://download.pytorch.org/whl/cu124` e depois `pip install -e ".[llm,sentiment]"`. `SENTIMENT_DEVICE` aceita `auto`, `cuda`, `cuda:N` ou `cpu`; pedir `cuda` sem GPU falha com erro, em vez de cair na CPU. `SENTIMENT_BATCH_SIZE` (padrão 32; com GPU, 128 costuma caber em 6 GB de VRAM). O Dockerfile do Railway continua CPU.
 
+### 3.7 Notícias WordPress
+
+| Variável | Padrão | No `.env.example` | Uso |
+|---|---|---|---|
+| `WP_ENABLED` | `true` | sim | Liga a coleta WordPress (InfoMoney, Money Times, Exame) e o `processar_wp` no daily e na carga histórica. Com `false`, esses veículos voltam ao Google News |
+| `THROTTLE_WORDPRESS` | `1.0` | sim | Intervalo entre requisições à API do WordPress, em segundos. Medido sem erro em 216 requisições |
+
 ## 4. Deploy no Railway
 
 O scraper roda no Railway como **worker sempre ligado**: o serviço executa `python -m tcc_scraper.cli executor`. Não
@@ -256,7 +266,7 @@ Esta é a ordem. Cada passo depende do anterior.
 
 1. **Confirmar o servidor.** MySQL 8.0 ou superior, banco `tcc_scraper` com `utf8mb4`. Fazer backup antes de
    qualquer DDL. Ver [Banco de dados](06-banco-de-dados.md), seções 1 e 4.
-2. **Conferir o schema.** `sql/schema.mysql.sql` tem as 41 tabelas do estado atual (14 sem prefixo e 27
+2. **Conferir o schema.** `sql/schema.mysql.sql` tem as 44 tabelas do estado atual (14 sem prefixo e 30
    com `v1-`). O MySQL de produção ainda não recebeu os ALTERs de 2026-10-23: são o passo 1 da seção 5.1. Confira com `python -m tcc_scraper.cli db-info`, que só lê. Para banco vazio, aplique
    `sql/schema.mysql.sql` com usuário que tem DDL. Alterações futuras seguem [06](06-banco-de-dados.md), seção 4.2.
 3. **Conferir o `.env` local.** Pendência do dono: remover `DB_TARGET` e `DATABASE_URL`, variáveis do antigo

@@ -3,7 +3,7 @@
 -- alterar o model em src/tcc_scraper/db/ E este arquivo, e escrever o ALTER em
 -- sql/alteracoes/AAAA-MM-DD_descricao.mysql.sql, aplicado à mão.
 --
--- As tabelas criadas pela pipeline nova (26) saem com o prefixo `v1-` pelos RENAME da
+-- As tabelas criadas pela pipeline nova (30) saem com o prefixo `v1-` pelos RENAME da
 -- Etapa 0008, no fim do arquivo (a tabela de tentativas da Etapa 0009 já nasce com o prefixo).
 -- As 14 antigas mantêm o nome.
 --
@@ -685,5 +685,48 @@ CREATE TABLE `v1-composicao_ibov` (
     participacao DOUBLE NULL,
     fonte VARCHAR(32) NOT NULL,
     CONSTRAINT pk_composicao_ibov PRIMARY KEY (ticker, vigencia_inicio)
+);
+
+-- Etapa 0011: coleta hibrida WordPress (ver sql/alteracoes/2026-10-27_wordpress_historias)
+
+CREATE TABLE `v1-raw_wp_posts` (
+    site VARCHAR(16) NOT NULL,
+    wp_id BIGINT NOT NULL,
+    link TEXT NOT NULL,
+    date_gmt DATETIME(6) NOT NULL,
+    wp_type VARCHAR(32) NOT NULL,
+    titulo_html TEXT NOT NULL,
+    content_html LONGTEXT NOT NULL,
+    fetched_at DATETIME(6) NOT NULL,
+    CONSTRAINT pk_raw_wp_posts PRIMARY KEY (site, wp_id)
+);
+
+CREATE INDEX ix_raw_wp_posts_date_gmt ON `v1-raw_wp_posts` (date_gmt);
+
+CREATE TABLE `v1-staging_historias` (
+    article_id BIGINT NOT NULL,
+    historia_article_id BIGINT NOT NULL,
+    metodo VARCHAR(16) NOT NULL,
+    regras_versao INTEGER NOT NULL,
+    atualizado_em DATETIME(6) NOT NULL,
+    CONSTRAINT pk_staging_historias PRIMARY KEY (article_id),
+    CONSTRAINT fk_staging_historias_article_id FOREIGN KEY(article_id) REFERENCES raw_articles (id) ON DELETE CASCADE,
+    CONSTRAINT fk_staging_historias_historia_article_id FOREIGN KEY(historia_article_id) REFERENCES raw_articles (id)
+);
+
+CREATE INDEX ix_staging_historias_historia_article_id ON `v1-staging_historias` (historia_article_id);
+
+CREATE TABLE `v1-staging_wp_processamento` (
+    site VARCHAR(16) NOT NULL,
+    wp_id BIGINT NOT NULL,
+    regras_versao INTEGER NOT NULL,
+    prompt_versao INTEGER NOT NULL,
+    article_id BIGINT NULL,
+    papel_historia VARCHAR(16) NOT NULL,
+    n_pares INTEGER NOT NULL,
+    processado_em DATETIME(6) NOT NULL,
+    CONSTRAINT pk_staging_wp_processamento PRIMARY KEY (site, wp_id),
+    CONSTRAINT fk_staging_wp_processamento_raw_wp_posts FOREIGN KEY(site, wp_id) REFERENCES `v1-raw_wp_posts` (site, wp_id),
+    CONSTRAINT fk_staging_wp_processamento_article_id FOREIGN KEY(article_id) REFERENCES raw_articles (id)
 );
 

@@ -10,6 +10,7 @@ from tcc_scraper.config import (
     APELIDOS,
     CD_CVM_BANCOS_SEGURADORAS,
     CONTAS_CVM,
+    DOMINIOS_WP,
     IBOV_SECTORS,
     IBOV_TICKERS,
     MUDANCAS_TICKER,
@@ -17,6 +18,7 @@ from tcc_scraper.config import (
     TICKER_CODE_CVM,
     UNITS,
     UNIVERSO_HISTORICO,
+    WP_SITES,
     Settings,
     conta_ajuste_dfc,
     universo_coleta,
@@ -194,3 +196,18 @@ def test_chave_llm_segue_o_provedor(ambiente_juiza_limpo):
 def test_limiar_entrega_fora_da_faixa_e_rejeitado(ambiente_juiza_limpo):
     with pytest.raises(ValidationError):
         Settings(_env_file=None, juiza_jev_limiar_entrega=0.5)
+
+
+def test_wp_sites_tem_os_tres_veiculos_com_endpoint():
+    endpoints = {s.nome: s.endpoint for s in WP_SITES}
+    assert set(endpoints) == {"infomoney", "moneytimes", "exame"}
+    assert all(e.startswith("https://") and "/wp-json/wp/v2/posts" in e for e in endpoints.values())
+
+
+def test_wp_endpoint_exame_termina_com_barra():
+    exame = next(s for s in WP_SITES if s.nome == "exame")
+    assert exame.endpoint.endswith("/posts/")
+
+
+def test_dominios_wp_sao_os_tres_veiculos():
+    assert DOMINIOS_WP == {"infomoney.com.br", "moneytimes.com.br", "exame.com"}

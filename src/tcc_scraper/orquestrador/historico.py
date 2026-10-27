@@ -214,8 +214,17 @@ def _passos(settings: Settings, anos: list[int]) -> list[Passo]:
         Passo(primeiro, "cvm_itr_dfp", {"anos": ordem}),
     ]
     for seg in segmentos(settings, ordem):
+        passos.append(Passo(seg.ano, "google_news", {"desde": seg.inicio, "ate": seg.fim}))
+        # seg.fim e exclusivo (ver segmentos): vale para o WordPress e para o processamento.
+        # Os 31 d antes do segmento aquecem o boilerplate causal (30 d) do processar_wp.
+        if settings.wp_enabled:
+            passos += [
+                Passo(seg.ano, "wordpress", {
+                    "desde": seg.inicio - timedelta(days=31), "ate": seg.fim,
+                }),
+                Passo(seg.ano, "processar_wp", {"desde": seg.inicio, "ate": seg.fim}),
+            ]
         passos += [
-            Passo(seg.ano, "google_news", {"desde": seg.inicio, "ate": seg.fim}),
             Passo(seg.ano, "cvm_ipe", {"anos": [seg.ano]}),
             Passo(seg.ano, "enriquecimento"),
             Passo(seg.ano, "finbert"),

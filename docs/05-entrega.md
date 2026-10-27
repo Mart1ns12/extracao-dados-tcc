@@ -54,7 +54,7 @@ Depois das 10 colunas da spec, a tabela tem 7 colunas extras, nesta ordem:
 |---|---|---|
 | `data_publicacao` | `AAAA-MM-DD`, sempre preenchida | Data de `published_at` no fuso de São Paulo |
 | `momento_pregao` | `antes_abertura`, `durante`, `apos_fechamento`, `sem_pregao`, `desconhecido` | Ver a regra abaixo |
-| `origem` | `google_news` (padrão), `cvm_ipe` | `raw_articles.origem` |
+| `origem` | `google_news` (padrão), `wordpress`, `cvm_ipe` | `raw_articles.origem` |
 | `papel` | `protagonista`, `citada_com_fato`, `mencao`, `errada`, `matriz_estrangeira` | Julgamento da juíza do próprio ticker. Vazio sem julgamento |
 | `tipo_conteudo` | ver [04-juiza-e-llm.md](04-juiza-e-llm.md), seção 2.3 | Julgamento da juíza |
 | `evento` | ver [04-juiza-e-llm.md](04-juiza-e-llm.md), seção 2.3 | Julgamento da juíza |
@@ -75,11 +75,12 @@ Depois das 10 colunas da spec, a tabela tem 7 colunas extras, nesta ordem:
 - **Filtro da juíza.** Controlado por `ENTREGA_FILTRO_JUIZA`, com padrão `false`.
   - Com o filtro **desligado**, entra todo par com vínculo, inclusive panoramas e opiniões. Os campos da juíza saem vazios quando não há julgamento.
   - Com o filtro **ligado**, documentos do IPE entram sempre. As demais notícias só entram se `tipo_conteudo = reportagem` e `papel` for `protagonista` ou `citada_com_fato`. Artigo sem julgamento fica de fora.
+- **Duplicatas de história.** Um artigo que `v1-staging_historias` marca como duplicata (republicação entre InfoMoney, Money Times e Exame, ou uma duplicata do Google News que aponta para o representante) não entra em `v1-noticias`. A história conta uma vez, pelo representante, que é o post de `date_gmt` mais antigo.
 - **Remoção de reprovadas.** Com o filtro ligado, a montagem apaga da tabela as linhas que a juíza reprovou. Um artigo da janela que tem julgamento na versão vigente, mas nenhuma linha aprovada, sai pelo `id`. Um par que deixou de valer sai pela chave composta. Com o filtro desligado, saem só os pares obsoletos. Artigo sem julgamento na versão vigente fica como está.
 
 ## 3. Preços: `v1-precos`
 
-Chave: (`data`, `ticker`). Fonte: `raw_prices`, do Yahoo.
+Chave: (`data`, `ticker`). Fonte: `raw_prices`, do Yahoo. Exceção: a AZUL3 de 2026-01-13 a 2026-04-17 vem da COTAHIST da B3 (`data/correcoes_precos/AZUL3.csv`, gerado por `gerar-correcao-precos`), com `source` = `b3_cotahist`.
 
 | Coluna | Origem | Regra |
 |---|---|---|
@@ -166,6 +167,7 @@ Chave: (`cnpj`, `tipo_documento`, `data_inicio_periodo`, `data_fim_periodo`). Fo
 - Só entra a linha com `ORDEM_EXERC = ÚLTIMO`.
 - Para cada (CNPJ, tipo, `DT_REFER`), só a maior `VERSAO`.
 - Valores com escala `MIL` são multiplicados por 1.000. A multiplicação usa `Decimal`.
+- **Escala declarada errada.** Se a companhia declara `UNIDADE` num documento cuja magnitude fica 100x abaixo da mediana dos seus documentos em `MIL` (ou o contrário, com 100x acima), a escala do documento passa a ser a da maioria dos documentos do CNPJ. Cada correção sai no log. O raw não muda.
 - **Posições** (`caixa`, `aplicacoes_financeiras`, `emprestimos_*`) são saldos na data de referência do documento. Como o patrimônio, são copiadas para todas as linhas de DRE do documento.
 - **Empréstimos sem subconta.** CSN, Sabesp, Rede D'Or, Magalu, CMIN e outras lançam a dívida só na conta-pai (`2.01.04`, `2.02.01`), com as subcontas em 0. Por isso as subcontas valem quando somam mais que zero; senão, usa-se o pai menos o arrendamento (`.03`), tratado como 0 quando não existe. A regra não vale para aplicações financeiras, que zeradas continuam valendo 0. **Limitação da fonte:** se a empresa preenche só o pai e deixa o `.03` em 0, o valor pode incluir arrendamento, que a CVM não separa. As contas-pai só existem no `raw_cvm_balancos` depois de recoletar `cvm_itr_dfp`.
 - **D&A no ITR.** A DFC do ITR é acumulada no ano. Na linha cujo período é igual ao de uma DFC (acumulado, primeiro trimestre ou DFP), a D&A é a dessa DFC. No trimestre seguinte, a D&A é a acumulada até o fim do período menos a acumulada até a véspera do início, ambas do mesmo CNPJ. Se o documento anterior não existir, ou a diferença sair negativa, a coluna fica em branco. Se houver mais de uma versão do documento anterior, vale a de maior `VERSAO`.
@@ -184,6 +186,8 @@ Chave: (`cnpj`, `data_referencia`). Fonte: `raw_cvm_acoes`, da composição do c
 | `qtd_on`, `qtd_pn` | Quantidades ON e PN do registro, como vêm da CVM |
 
 Quando há mais de um registro para a mesma data, vence o DFP sobre o ITR; em empate de tipo, vence a maior `VERSAO`.
+
+**Escala.** A CVM não tem coluna de escala: cerca de 30% das linhas vêm em milhares e o resto em unidades. Algumas empresas estão sempre em milhares (VALE3) e outras alternam trimestre a trimestre (PSSA3). A correção é só na entrega, por CNPJ: a série é quebrada onde o total salta ~1000x, e um segmento está em milhares se a mediana do giro passar de 10% ao dia. O giro é a mediana do volume dos últimos 60 pregões (ON, PN e unit somados) dividida pelo total de ações, e é impossível passar de 10% em unidades. Segmento sem giro (ex.: trimestres de antes da listagem) herda pela cadeia: a escala alterna a cada troca de 1000x a partir do segmento decidido pelo giro mais próximo. Valor isolado que não é troca de 1000x (CMIN3 em 2025-12-31, AZUL3 em 2026-03-31) não é corrigido: só gera aviso no log. CNPJ sem nenhum volume não tem como ser decidido e fica como a CVM publica: a STBP3, sem preço no Yahoo, segue em milhares (851.018 a 864.170).
 
 **Atualização.** Upsert pela chave.
 
@@ -293,7 +297,7 @@ SELECT ticker, data_publicacao, titulo
 - **`qualidade` é número gerado pela LLM.** A coluna vem da nota de 0 a 1 da juíza. O `CLAUDE.md` diz que a LLM nunca gera número que vá para tabela entregue. Esse ponto precisa de decisão do dono: manter a coluna com essa ressalva ou tirá-la da entrega.
 - **Regra de atualização de `noticias` diferente da spec.** A spec diz que a regra diária só acrescenta e não reescreve `prob_*`. O código regrava todas as colunas que não são chave. A remoção de reprovadas é a única exceção.
 - **`--reprocessar` não existe.** A spec (seção 5.1) cita a opção para refazer o FinBERT ou a juíza quando a versão muda. O comando `build-entrega` tem só `--csv` e `--tabela`.
-- **`origem = 'rss_nativo'` não é gravado.** Não há coletor de RSS nativo (a constante `NATIVE_FEEDS`, sem uso, foi removida em 2026-10-20). Hoje a tabela só tem `google_news` e `cvm_ipe`.
+- **`origem = 'rss_nativo'` não é gravado.** Não há coletor de RSS nativo (a constante `NATIVE_FEEDS`, sem uso, foi removida em 2026-10-20). Hoje a tabela tem `google_news`, `wordpress` (InfoMoney, Money Times e Exame) e `cvm_ipe`.
 - **CRFB3 sem código CVM.** Não há código CVM em `TICKER_CODE_CVM`. A linha do CRFB3 em `v1-cadastro` sai com `cnpj` e setor vazios. Está registrado como caso de teste pendente (`xfail` em `tests/test_config.py`).
 - **Proventos de outros rótulos.** Rendimentos, restituições de capital e outros rótulos da B3 não entram. A spec previa listá-los no spike antes de decidir.
 - **Fator de ajuste e data de pagamento.** A conferência dos fatores em cinco empresas e da data de pagamento está listada como spike na spec, seção 5.7, e não foi documentada como concluída.

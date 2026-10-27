@@ -34,7 +34,16 @@ ORDEM_PREVIA = [
     "b3_proventos",
     "cvm_itr_dfp",
 ]
-ORDEM_ANO = ["google_news", "cvm_ipe", "enriquecimento", "finbert", "juiza", "build_entrega"]
+ORDEM_ANO = [
+    "google_news",
+    "wordpress",
+    "processar_wp",
+    "cvm_ipe",
+    "enriquecimento",
+    "finbert",
+    "juiza",
+    "build_entrega",
+]
 
 
 def _settings(data_start: date = date(2025, 9, 1)) -> Settings:
@@ -58,12 +67,14 @@ class Falso:
         "B3ProventosCollector": "b3_proventos",
         "CvmDemonstracoesCollector": "cvm_itr_dfp",
         "GoogleNewsCollector": "google_news",
+        "WordPressCollector": "wordpress",
         "CvmIpeCollector": "cvm_ipe",
         "ArticleBodyCollector": "enriquecimento",
     }
     FUNCOES = {
         "score_pending": "finbert",
         "julgar_pendentes": "juiza",
+        "processar_wp": "processar_wp",
         "build_entrega": "build_entrega",
     }
 
@@ -183,6 +194,39 @@ def test_passo_da_juiza_leva_o_ano_e_roda_em_backlog():
     passos = H._passos(_settings(), [2026])
     juizas = [p for p in passos if p.coletor == "juiza"]
     assert juizas == [H.Passo(2026, "juiza", {"anos": [2026], "modo": "backlog"})]
+
+
+def test_passos_wordpress_recuam_31_dias_e_processamento_fica_no_segmento():
+    s = _settings(date(2025, 9, 1))
+    passos = H._passos(s, [2025])
+    ini = s.inicio_noticias
+    assert [p for p in passos if p.coletor == "wordpress"] == [
+        H.Passo(2025, "wordpress", {"desde": ini - timedelta(days=31), "ate": date(2026, 1, 1)}),
+    ]
+    assert [p for p in passos if p.coletor == "processar_wp"] == [
+        H.Passo(2025, "processar_wp", {"desde": ini, "ate": date(2026, 1, 1)}),
+    ]
+
+
+def test_passos_wordpress_vem_logo_depois_do_google_news():
+    nomes = [p.coletor for p in H._passos(_settings(), [2026])]
+    assert nomes[nomes.index("google_news") + 1 : nomes.index("google_news") + 3] == [
+        "wordpress",
+        "processar_wp",
+    ]
+
+
+def test_wp_desligado_tira_wordpress_e_processamento_da_carga():
+    s = Settings(
+        gemini_api_key="",
+        data_start=date(2025, 9, 1),
+        data_fim_coleta=date(2026, 10, 19),
+        wp_enabled=False,
+    )
+    nomes = [p.coletor for p in H._passos(s, [2026])]
+    assert "google_news" in nomes
+    assert "wordpress" not in nomes
+    assert "processar_wp" not in nomes
 
 
 # -- ordem e flags dos coletores ---------------------------------------------------------

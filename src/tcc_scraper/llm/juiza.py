@@ -20,6 +20,7 @@ teto).
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import json
 import logging
 import re
@@ -41,6 +42,7 @@ from tcc_scraper.db.models_fontes import (
 from tcc_scraper.db.session import session_scope
 from tcc_scraper.db.upsert import bulk_upsert
 from tcc_scraper.entrega.filtros import Julgamento, aprovado_para_entrega
+from tcc_scraper.enrich import casador
 from tcc_scraper.llm.jev_client import (
     JevFalhaLote,
     decisao_entrega,
@@ -127,6 +129,12 @@ def _juntar(consulta, prompt_versao: int):
     )
 
 
+@functools.lru_cache(maxsize=1)
+def _regras() -> dict:
+    """Regras de casamento do casador, calculadas uma vez por processo."""
+    return casador.construir_regras()
+
+
 def pendentes(
     prompt_versao: int,
     limite: int | None = None,
@@ -142,7 +150,8 @@ def pendentes(
     `apos` e o cursor keyset (published_at, id, ticker) do ultimo par da pagina anterior.
     `anos` filtra pelo ano de publicacao em UTC. `max_tentativas` deixa de fora os pares
     que ja esgotaram as tentativas. `trecho` e o numero de caracteres do corpo na coluna
-    `trecho`.
+    `trecho`. Para origem wordpress, a coluna traz as janelas do corpo completo em volta das
+    mencoes do ticker (casador.trecho_mencoes); sem mencao valida, fica o inicio do corpo.
     """
     corpo = func.substr(ArticleBody.body_text, 1, trecho)
     tentativas = func.coalesce(StagingJuizaTentativa.tentativas, 0)
@@ -176,7 +185,25 @@ def pendentes(
         consulta = consulta.limit(limite)
     with session_scope() as s:
         linhas = s.execute(consulta).mappings().all()
-    return [{**dict(linha), "trecho": linha["trecho"] or ""} for linha in linhas]
+        # A consulta acima so traz o inicio do corpo. Posts WordPress precisam do corpo inteiro
+        # para a mencao do ticker entrar no trecho: uma query em lote, nunca uma por item.
+        ids_wp = list({linha["id"] for linha in linhas if linha["origem"] == "wordpress"})
+        corpos_wp = {}
+        if ids_wp:
+            corpos_wp = dict(s.execute(
+                select(ArticleBody.article_id, ArticleBody.body_text)
+                .where(ArticleBody.article_id.in_(ids_wp))
+            ).all())
+    saida = []
+    for linha in linhas:
+        item = {**dict(linha), "trecho": linha["trecho"] or ""}
+        texto_completo = corpos_wp.get(linha["id"])
+        if linha["origem"] == "wordpress" and texto_completo:
+            mencoes = casador.trecho_mencoes(texto_completo, linha["ticker"], _regras(), trecho)
+            if mencoes:
+                item["trecho"] = mencoes
+        saida.append(item)
+    return saida
 
 
 def _consulta_contagem(max_tentativas: int, prompt_versao: int = VERSAO):

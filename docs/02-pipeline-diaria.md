@@ -23,7 +23,7 @@ Ordem de `orquestrador/etapas.py::ETAPAS`. As etapas rodam em sequência. Uma fa
 |---|---|---|---|---|
 | 1 | `precos` | Preços do universo, `^BVSP`, `BZ=F`, `USDBRL=X` e `IVVB11`; índices IDIV, SMLL e IFIX; carteira do IBOV | Yahoo Finance; B3 | Não |
 | 2 | `macro` | Selic e PTAX; CDI e IPCA do ano corrente | BCB SGS (séries 432, 12 e 433) e PTAX | Não |
-| 3 | `noticias` | Notícias de `fim_coleta − 2` até `fim_coleta` | Google News RSS | Não |
+| 3 | `noticias` | Notícias de `fim_coleta − 2` até `fim_coleta`, em 3 partes: `google_news`, `wordpress` e `processar_wp` | Google News RSS e API WordPress (InfoMoney, Money Times, Exame) | Não |
 | 4 | `ipe` | Fatos relevantes e comunicados do ano corrente | CVM (IPE) | Não |
 | 5 | `enriquecimento` | Corpo dos artigos (só veículos da allowlist) e sentimento FinBERT, local | Páginas dos veículos; FinBERT | Não |
 | 6 | `juiza` | Julga os pares (artigo, ticker) pendentes | Regra local; Jev; OpenAI `gpt-5.6-luna` | Sim (Jev e LLM) |
@@ -97,13 +97,14 @@ flowchart LR
   e1["1 precos"] --> e2["2 macro"] --> e3["3 noticias"] --> e4["4 ipe"] --> e5["5 enriquecimento"] --> e6["6 juiza"] --> e7["7 cadastro"] --> e8["8 entrega"] --> e9["9 analise"]
   yf["Yahoo, B3, BCB"] -.-> e1
   gn["Google News RSS"] -.-> e3
+  wp["API WordPress (InfoMoney, Money Times, Exame)"] -.-> e3
   cvm["CVM (IPE, cadastro, ITR/DFP)"] -.-> e4
   cvm -.-> e7
   veic["Páginas dos veículos"] -.-> e5
   jev["Jev (pago)"] -.-> e6
   oai["OpenAI gpt-5.6-luna (pago)"] -.-> e6
   gem["Gemini (pago, desligado)"] -.-> e9
-  e3 --> t1[("raw_articles, staging_article_tickers")]
+  e3 --> t1[("raw_articles, staging_article_tickers, v1-raw_wp_posts, v1-staging_historias")]
   e6 --> t2[("v1-staging_noticias_julgamento, v1-raw_llm_juiza_runs")]
   e8 --> t3[("v1-noticias ... v1-composicao_ibov")]
   e9 --> t4[("staging_llm_*, raw_llm_runs")]
@@ -186,7 +187,7 @@ A CLI roda o daily no processo atual e não aplica a prioridade da carga histór
 ## 2. Dia de referência e janelas de coleta
 
 - **Fim rolante.** O dia de referência (`fim_coleta`) é hoje, no fuso `DAILY_TZ` (padrão `America/Sao_Paulo`). A variável `DATA_FIM_COLETA` fixa outra data. Deixe-a vazia no servidor: ela serve só para reproduzir um dia. Nenhuma das duas mexe na janela do dataset (`DATA_START` e `DATA_END`).
-- **Notícias.** Do dia `fim_coleta − 2` até `fim_coleta`. A busca do Google News usa `after:` com `fim_coleta − 2` e `before:` com `fim_coleta + 1`.
+- **Notícias.** Do dia `fim_coleta − 2` até `fim_coleta`. A busca do Google News usa `after:` com `fim_coleta − 2` e `before:` com `fim_coleta + 1`. InfoMoney, Money Times e Exame vêm da API WordPress: `wordpress` busca de `fim_coleta − 2` até `fim_coleta + 1` (exclusivo), e `processar_wp` processa a partir de `fim_coleta − 3`, para aquecer o boilerplate. Com `WP_ENABLED=true`, o Google News descarta os itens desses 3 domínios.
 - **Preços.** Do `price_start` (`DATA_START` menos `PRICE_WARMUP_DAYS`, padrão 400 dias corridos) até `fim_coleta`, inclusive.
 - **Juros e inflação.** CDI e IPCA do ano civil de `fim_coleta`.
 - **Fatos relevantes (IPE) e demonstrações (ITR/DFP).** Só o ano civil de `fim_coleta`.
@@ -199,7 +200,7 @@ Os ids, nomes e coletores são o contrato com o painel. Não renomear sem combin
 |---|---|---|---|---|---|---|
 | 1 | `precos` | Preços e índices | `yahoo` | Yahoo Finance, chart API (`adjclose`), e B3 (`GetPortfolioDay`, para IDIV, SMLL e IFIX) | Um ticker: o universo de coleta, `^BVSP`, `BZ=F`, `USDBRL=X`, `IVVB11`; depois, um índice da B3 no ano corrente (`b3\|<indice>\|<ano>`); por fim, a carteira do IBOV (`b3_carteira_ibov`, grava as mudanças em `v1-composicao_ibov`) | Não: refaz todos os tickers a cada dia |
 | 2 | `macro` | Macro do BCB | `bcb` e `indices_bcb` | BCB SGS (Selic, série 432; CDI, série 12; IPCA, série 433) e PTAX (`cotacaoVenda`) | Uma série; depois, uma série por ano (`sgs\|<serie>\|<ano>`) | Não |
-| 3 | `noticias` | Notícias | `google_news` | Google News RSS, sem chave | Ticker × semana × idioma, na janela da seção 2 | Não |
+| 3 | `noticias` | Notícias | `google_news`, `wordpress`, `processar_wp` | Google News RSS, sem chave; API WordPress de InfoMoney, Money Times e Exame, sem chave; processamento local | Google: ticker × semana × idioma, na janela da seção 2. WordPress: site × mês | Não |
 | 4 | `ipe` | Fatos relevantes | `cvm_ipe` | CVM, IPE (fatos relevantes e comunicados), arquivo anual | Um arquivo do IPE do ano (`ipe\|<ano>\|<Last-Modified>`) | Sim |
 | 5 | `enriquecimento` | Corpo e sentimento | `finbert` | Página do veículo (só domínios da allowlist) e FinBERT local | Lote de artigos sem corpo; depois, bloco de textos sem sentimento | Não é preciso: só entram os pendentes |
 | 6 | `juiza` | Juíza de qualidade | `juiza` | Regra local, sem API; depois Jev (se ligado; em `JUIZA_JEV_MODO=entrega`, decide por entrega segura); depois LLM de fallback (OpenAI `gpt-5.6-luna` ou Gemini, conforme `JUIZA_PROVEDOR`), sem busca na web | Lote de `JUIZA_LOTE` pares (artigo, ticker) pendentes, até `JUIZA_MAX_ITENS_DIA` por dia e até o teto mensal em US$ (`JUIZA_ORCAMENTO_MENSAL_USD`) | Só entram os pendentes |
@@ -211,13 +212,13 @@ Ordem de execução: `precos`, `macro`, `noticias`, `ipe`, `enriquecimento`, `ju
 
 ## 4. Tabelas gravadas e regra de falha
 
-Só as 27 tabelas criadas pela pipeline nova (fontes novas, painel e entrega) têm o prefixo `v1-`. As demais mantêm o nome de camada (`raw_prices`, `raw_articles` etc.). Ver [06](06-banco-de-dados.md).
+Só as 30 tabelas criadas pela pipeline nova (fontes novas, painel e entrega) têm o prefixo `v1-`. As demais mantêm o nome de camada (`raw_prices`, `raw_articles` etc.). Ver [06](06-banco-de-dados.md).
 
 | Etapa | Tabelas que grava | Sai `falhou` quando | Sai `pulada` quando |
 |---|---|---|---|
 | `precos` | `raw_prices`, `raw_collection_runs`, `v1-composicao_ibov` | Foi interrompida (orçamento ou cancelamento), ou as três partes falharam (Yahoo, índices B3 e carteira do IBOV) | Orçamento esgotado antes de começar, ou cancelamento |
 | `macro` | `raw_macro`, `raw_collection_runs` | Alguma parte foi interrompida, ou as duas partes falharam | Orçamento esgotado antes de começar, ou cancelamento |
-| `noticias` | `raw_articles`, `staging_article_tickers`, `raw_collection_runs` | Foi interrompida, ou todas as janelas falharam | Orçamento esgotado antes de começar, ou cancelamento |
+| `noticias` | `raw_articles`, `staging_article_tickers`, `raw_collection_runs`; com `WP_ENABLED=true`, também `v1-raw_wp_posts`, `v1-staging_historias`, `v1-staging_wp_processamento` e `v1-staging_noticias_julgamento` (julgamento por código) | Foi interrompida, ou as três partes falharam (Google News, WordPress e processamento) | Orçamento esgotado antes de começar, ou cancelamento |
 | `ipe` | `v1-raw_ipe_docs`, `raw_articles`, `staging_article_tickers`, `raw_collection_runs` | Foi interrompida, ou todas as unidades falharam | Orçamento esgotado antes de começar, ou cancelamento |
 | `enriquecimento` | `raw_article_bodies`, `raw_articles` (coluna `resolved_url`), `staging_article_sentiment` | Foi interrompida, ou todas as páginas falharam, ou o FinBERT não está instalado (falta o extra `[sentiment]`). O corpo já gravado fica | Orçamento esgotado antes de começar, ou cancelamento |
 | `juiza` | `v1-staging_noticias_julgamento`, `v1-raw_llm_juiza_runs` | Foi interrompida (orçamento ou cancelamento), ou parou por `jev_sem_chave`, `erro_jev` ou `sem_credito` (ver nota abaixo) | Orçamento esgotado antes de começar, ou cancelamento. Sem a chave da LLM de fallback (`OPENAI_API_KEY`, ou `GEMINI_API_KEY` com `JUIZA_PROVEDOR=gemini`), a etapa sai `concluida` sem julgar pela LLM (ver nota abaixo) |
@@ -229,7 +230,7 @@ Regras de falha, valem para todas as etapas:
 
 - **Unidade com erro não derruba a etapa.** Ela fica contada em `unidades_erro`, e a última falha aparece em `ultimo_erro_unidade` e `ultimo_erro_mensagem`. A etapa só sai `falhou` se nenhuma unidade deu certo, ou se foi interrompida.
 - **Exceção que escapa da etapa** vira `falhou`, com a mensagem `TipoDoErro: texto`. A execução segue para a etapa seguinte.
-- **Etapas com várias partes** (`macro`, `cadastro`): uma parte que levanta exceção não impede as outras.
+- **Etapas com várias partes** (`macro`, `cadastro`, `noticias`): uma parte que levanta exceção não impede as outras. Na `noticias`, a etapa só sai `falhou` se as três partes falharem.
 - **Juíza sem chave.** Sem a chave da LLM de fallback (`OPENAI_API_KEY`, ou `GEMINI_API_KEY` com `JUIZA_PROVEDOR=gemini`), a etapa registra um aviso e sai `concluida`, com a regra local e o Jev aplicados. Os pares que restaram ficam pendentes e entram na próxima execução. A etapa não sai `pulada` nesse caso.
 - **Paradas da juíza.** `jev_sem_chave` (`JEV_ENABLED=true` sem `JEV_API_KEY`: a LLM fica bloqueada), `erro_jev` (lote do Jev falhou 2 vezes seguidas, ou 401, 402 ou 403 em todos os itens: o lote fica pendente e não vai à LLM), `sem_credito` (OpenAI com `insufficient_quota`, ou Gemini com 402; sem retry) e `cancelado` (cancelamento ou fim do orçamento no meio da etapa) deixam a etapa `falhou`. Paradas `erro_api`, `orcamento_usd` e `teto_itens` deixam a etapa `concluida`, com os pares pendentes para a próxima execução. Ver a seção "Como a pipeline funciona hoje", item D, e [04](04-juiza-e-llm.md), seção 2.9.
 

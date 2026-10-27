@@ -209,6 +209,7 @@ __marimo__/
 # Project data and local artifacts
 data/*
 !data/composicao_ibov/
+!data/correcoes_precos/
 exports/
 *.parquet
 *.duckdb

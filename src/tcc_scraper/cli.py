@@ -151,6 +151,62 @@ def collect_news(
         )
 
 
+def _recorte_wp(desde: str | None, ate: str | None) -> tuple[dt.date | None, dt.date | None]:
+    """--desde e --ate do WordPress: juntos ou ausentes (ausentes = janela padrao do coletor)."""
+    if (desde is None) != (ate is None):
+        raise typer.BadParameter("--desde e --ate devem ser usados juntos")
+    if desde is None:
+        return None, None
+    try:
+        d_desde = dt.date.fromisoformat(desde)
+        d_ate = dt.date.fromisoformat(ate)
+    except ValueError as exc:
+        raise typer.BadParameter("datas no formato YYYY-MM-DD") from exc
+    if d_ate <= d_desde:
+        raise typer.BadParameter("--ate deve ser posterior a --desde")
+    return d_desde, d_ate
+
+
+@app.command("collect-wp")
+def collect_wp(
+    resume: bool = typer.Option(True, help="Pula o que ja foi coletado"),
+    desde: str = typer.Option(None, help="Inicio do recorte, YYYY-MM-DD (use com --ate)"),
+    ate: str = typer.Option(
+        None, help="Fim do recorte, exclusivo, YYYY-MM-DD (use com --desde)"
+    ),
+) -> None:
+    """Posts de InfoMoney, Money Times e Exame pela API do WordPress (so candidatos a ticker)."""
+    _setup_logging()
+    from tcc_scraper.collectors.wordpress import WordPressCollector
+
+    d_desde, d_ate = _recorte_wp(desde, ate)
+    with WordPressCollector(desde=d_desde, ate=d_ate) as collector:
+        _report("noticias (WordPress)", collector.run(resume=resume))
+
+
+@app.command("processar-wp")
+def processar_wp_cmd(
+    desde: str = typer.Option(None, help="Inicio do recorte, YYYY-MM-DD (use com --ate)"),
+    ate: str = typer.Option(
+        None, help="Fim do recorte, exclusivo, YYYY-MM-DD (use com --desde)"
+    ),
+    refazer: bool = typer.Option(False, help="Processa de novo o que ja foi processado"),
+) -> None:
+    """Casa os posts WordPress com os tickers, agrupa as historias e grava a classificacao."""
+    _setup_logging()
+    d_desde, d_ate = _recorte_wp(desde, ate)
+    from tcc_scraper.config import get_settings
+    from tcc_scraper.enrich.processar_wp import processar_wp
+
+    if d_desde is None:
+        s = get_settings()
+        d_desde, d_ate = s.inicio_noticias, s.fim_coleta + dt.timedelta(days=1)
+    _report(
+        "processamento (WordPress)",
+        processar_wp(desde=d_desde, ate=d_ate, refazer=refazer),
+    )
+
+
 @app.command("enrich")
 def enrich(limit: int = typer.Option(None, help="Processa so os N primeiros lotes")) -> None:
     """Fase 4: resolve o link e extrai o corpo dos artigos da allowlist."""
@@ -447,6 +503,15 @@ def collect_indices(
 
     with IndicesBcbCollector(anos=anos or None) as collector:
         _report("indices (BCB: CDI e IPCA)", collector.run(resume=resume))
+
+
+@app.command("gerar-correcao-precos")
+def gerar_correcao_precos() -> None:
+    """Precos da B3 (COTAHIST) dos papeis em CORRECOES_PRECO_B3 -> data/correcoes_precos/."""
+    _setup_logging()
+    from tcc_scraper.collectors.b3_cotahist import gerar_correcoes
+
+    _report("correcao de precos (B3 COTAHIST)", gerar_correcoes())
 
 
 @app.command("validate-cadastro")

@@ -206,12 +206,37 @@ def etapa_cadastro(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
 
 def etapa_noticias(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
     from tcc_scraper.collectors.google_news import GoogleNewsCollector
+    from tcc_scraper.collectors.wordpress import WordPressCollector
 
-    with GoogleNewsCollector(
-        desde=ctx.hoje - timedelta(days=2), ate=ctx.hoje + timedelta(days=1)
-    ) as c:
-        st = c.run(resume=False, observador=p)
-    return de_stats(st)
+    desde = ctx.hoje - timedelta(days=2)
+    ate = ctx.hoje + timedelta(days=1)
+    partes: list[tuple[str, Callable[[], dict]]] = [
+        (
+            "google_news",
+            lambda: _roda_coletor(GoogleNewsCollector(desde=desde, ate=ate), p, resume=False),
+        ),
+    ]
+    # WordPress e o processamento so entram com a fonte ligada; desligada, o daily e o de antes.
+    if ctx.settings.wp_enabled:
+        partes += [
+            (
+                "wordpress",
+                lambda: _roda_coletor(WordPressCollector(desde=desde, ate=ate), p, resume=False),
+            ),
+            (
+                "processar_wp",
+                lambda: _roda_processar_wp(
+                    p, desde=ctx.hoje - timedelta(days=3), ate=ate
+                ),
+            ),
+        ]
+    return _executa_partes(p, partes)
+
+
+def _roda_processar_wp(p: Progresso, *, desde: date, ate: date) -> dict:
+    from tcc_scraper.enrich.processar_wp import processar_wp
+
+    return processar_wp(desde=desde, ate=ate, observador=p)
 
 
 def etapa_enriquecimento(ctx: Contexto, p: Progresso) -> ResultadoEtapa:

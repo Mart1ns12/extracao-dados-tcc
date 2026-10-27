@@ -18,7 +18,7 @@ Uma carga por vez. Enquanto existir uma carga com status `em_andamento`, `pausan
 
 ## 2. Faixa de datas e segmentos
 
-- **Faixa.** Vai de `inicio_noticias` até `fim_coleta + 1 dia`. `inicio_noticias` é `DATA_START` menos 31 dias. `fim_coleta` está descrito em [02](02-pipeline-diaria.md), seção 2.
+- **Faixa.** Vai de `inicio_noticias` até `fim_coleta + 1 dia`. No WordPress, a coleta de cada segmento começa 31 dias antes do início dele, para o boilerplate causal (30 dias) já ter aquecimento. O processamento (`processar_wp`) começa no início do segmento. `inicio_noticias` é `DATA_START` menos 31 dias. `fim_coleta` está descrito em [02](02-pipeline-diaria.md), seção 2.
 - **Segmento.** Cada ano civil dentro da faixa é um segmento. O primeiro e o último podem ser parciais.
 - **Anos fora da faixa** são ignorados. Se nenhum dos anos pedidos cai na faixa, o disparo é recusado com `nenhum dos anos está na janela de coleta`.
 - **Ordem.** Do segmento mais recente para o mais antigo. Assim, a entrega parcial já cobre o período recente enquanto o resto carrega.
@@ -39,12 +39,14 @@ Cada passo é uma unidade de trabalho com um coletor e um ano. Os passos globais
 | 6 | `b3_cadastro` | Mais recente | Cadastro da B3 | Sim |
 | 7 | `b3_proventos` | Mais recente | Proventos da B3 | Não (`resume=False`): refaz tudo |
 | 8 | `cvm_itr_dfp` | Mais recente | ITR e DFP de todos os anos pedidos | Sim |
-| 9 | `google_news` | Cada segmento | Do início do segmento até o fim (exclusivo) | Sim |
-| 10 | `cvm_ipe` | Cada segmento | Só o ano do segmento | Sim |
-| 11 | `enriquecimento` | Cada segmento | Corpo dos artigos | Não (`resume=False`); só entram os pendentes |
-| 12 | `finbert` | Cada segmento | Sentimento dos artigos pendentes | Não se aplica (função) |
-| 13 | `juiza` | Cada segmento | Modo `backlog`: do par mais antigo ao mais recente, sem teto de itens; limitada pela verba `JUIZA_BACKLOG_VERBA_USD` (US$ 15), cumulativa | Não se aplica (função) |
-| 14 | `build_entrega` | Cada segmento | Monta as 9 tabelas da entrega | Não se aplica (função) |
+| 9 | `google_news` | Cada segmento | Do início do segmento até o fim (exclusivo). Com `WP_ENABLED=true`, sem os 3 domínios WordPress | Sim |
+| 10 | `wordpress` | Cada segmento | Só com `WP_ENABLED=true`. Posts de InfoMoney, Money Times e Exame: `desde` é o início do segmento menos 31 dias (aquecimento do boilerplate) e `ate` é o fim do segmento | Sim (por site e mês) |
+| 11 | `processar_wp` | Cada segmento | Só com `WP_ENABLED=true`. Processa do início ao fim do segmento, sem rede | Não se aplica (função) |
+| 12 | `cvm_ipe` | Cada segmento | Só o ano do segmento | Sim |
+| 13 | `enriquecimento` | Cada segmento | Corpo dos artigos | Não (`resume=False`); só entram os pendentes |
+| 14 | `finbert` | Cada segmento | Sentimento dos artigos pendentes | Não se aplica (função) |
+| 15 | `juiza` | Cada segmento | Modo `backlog`: do par mais antigo ao mais recente, sem teto de itens; limitada pela verba `JUIZA_BACKLOG_VERBA_USD` (US$ 15), cumulativa | Não se aplica (função) |
+| 16 | `build_entrega` | Cada segmento | Monta as 9 tabelas da entrega | Não se aplica (função) |
 
 A carga não segue a ordem do daily: primeiro vêm os passos globais, depois os passos ano a ano. Os coletores são os mesmos do daily (ver [02](02-pipeline-diaria.md), seção 3), exceto a carteira do IBOV (`b3_carteira_ibov`), que a carga não roda: ela existe só no daily e no `coletar`. A análise diária (`analise`) também não entra na carga.
 
@@ -109,6 +111,7 @@ Status da carga: `em_andamento`, `pausando`, `pausada`, `cancelando`, `cancelada
 | Google News | 6 a 9 horas por ano de notícias | Spec de entrega, seção 9.2. A ADR registra 6 a 9 horas para as 9.010 janelas da v1 |
 | CVM, B3, BCB e Yahoo | Minutos para cinco anos | Spec de entrega, seção 9.2 |
 | Juíza (Jev e OpenAI) e análise (Gemini) | Juíza do backlog: verba de US$ 15, cumulativa, somando Jev e LLM de fallback. Análise diária: teto de US$ 5/mês no Gemini | [04](04-juiza-e-llm.md), seção 2.5. A juíza diária tem teto próprio de US$ 3/mês |
+| WordPress (InfoMoney, Money Times, Exame) | Medido em 2026-03: 11.306 posts de um mês em 122 requisições, sem erro, com throttle de 1,0 s. Por ano, 83,6 a 106,1 mil posts nos 3 sites | Teste real da API, em [09](09-historico-de-mudancas.md) e no [ADR](ADR.md) |
 | Carga completa | Não medida neste código | Não há medição de uma carga multi-ano |
 
 **Atenção ao custo da juíza.** Em cada segmento, a juíza roda em modo backlog: sem teto de itens, limitada pela verba de US$ 15 (`JUIZA_BACKLOG_VERBA_USD`), que é cumulativa entre execuções. A checagem é feita antes de cada lote, e o estouro máximo é de um lote. Antes de uma carga grande, confira `judge-news --status` (verba e gasto do backlog) e a estimativa em [04](04-juiza-e-llm.md).

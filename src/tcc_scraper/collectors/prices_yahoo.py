@@ -41,6 +41,7 @@ class PriceRow:
     close: float | None
     adj_close: float | None
     volume: int | None
+    source: str = "yahoo"
 
 
 def parse_chart(payload: dict, ticker: str) -> list[PriceRow]:
@@ -98,6 +99,27 @@ def _adj_ou_close(adj: list | None, index: int, close: float) -> float:
     return ajustado if ajustado is not None else close
 
 
+def aplicar_correcoes(
+    rows: list[PriceRow],
+    correcoes: dict[str, list[PriceRow]],
+    ticker: str | None = None,
+) -> list[PriceRow]:
+    """Troca o trecho do Yahoo pela serie da B3 quando o ticker tem correcao.
+
+    Descarta as linhas do Yahoo entre a menor e a maior data da correcao e mete as da
+    correcao no lugar. Fora dessa janela o Yahoo fica. `ticker` so importa quando `rows`
+    esta vazio: sem linhas do Yahoo, o ticker nao sai delas.
+    """
+    alvo = ticker or (rows[0].ticker if rows else None)
+    correcao = correcoes.get(alvo) if alvo else None
+    if not correcao:
+        return rows
+    inicio = min(r.date for r in correcao)
+    fim = max(r.date for r in correcao)
+    mantidas = [r for r in rows if not inicio <= r.date <= fim]
+    return sorted([*mantidas, *correcao], key=lambda r: r.date)
+
+
 def tickers_padrao() -> list[str]:
     """Simbolos coletados por padrao: universo, Ibovespa, macro e IVVB11.
 
@@ -146,6 +168,10 @@ class YahooPriceCollector(Collector):
         }
         url = f"{CHART_ENDPOINT}/{urllib.parse.quote(symbol)}?{urllib.parse.urlencode(params)}"
         rows = parse_chart(self.fetch(url).json(), ticker=ticker)
+        # Import local: b3_cotahist importa PriceRow daqui, e o import no topo daria ciclo.
+        from tcc_scraper.collectors.b3_cotahist import carregar_correcoes
+
+        rows = aplicar_correcoes(rows, carregar_correcoes(), ticker=ticker)
 
         self._persist(rows)
         return UnitResult(items_found=len(rows))
@@ -158,7 +184,7 @@ class YahooPriceCollector(Collector):
             {
                 "ticker": r.ticker, "date": r.date, "open": r.open, "high": r.high,
                 "low": r.low, "close": r.close, "adj_close": r.adj_close,
-                "volume": r.volume, "source": "yahoo",
+                "volume": r.volume, "source": r.source,
             }
             for r in rows
         ]

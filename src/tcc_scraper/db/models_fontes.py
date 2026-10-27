@@ -16,6 +16,7 @@ from sqlalchemy import (
     Date,
     Double,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -237,3 +238,73 @@ class StagingJuizaTentativa(Base):
     ultimo_status: Mapped[str] = mapped_column(String(16), nullable=False)
     ultimo_erro: Mapped[str | None] = mapped_column(Text)
     atualizado_em: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+
+
+class RawWpPost(Base):
+    """Post do WordPress (InfoMoney, Money Times, Exame), uma linha por site e id do WP."""
+
+    __tablename__ = f"{PREFIXO_TABELA}raw_wp_posts"
+    __table_args__ = (Index("ix_raw_wp_posts_date_gmt", "date_gmt"),)
+
+    site: Mapped[str] = mapped_column(String(16), primary_key=True)
+    wp_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    link: Mapped[str] = mapped_column(Text, nullable=False)
+    date_gmt: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+    wp_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    titulo_html: Mapped[str] = mapped_column(Text, nullable=False)
+    content_html: Mapped[str] = mapped_column(LongText, nullable=False)
+    fetched_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+
+
+class StagingHistoria(Base):
+    """Historia (republicacao entre veiculos) a que cada artigo pertence.
+
+    O metodo diz como o artigo foi ligado a historia; regras_versao, a versao do casador.
+    """
+
+    __tablename__ = f"{PREFIXO_TABELA}staging_historias"
+    __table_args__ = (Index("ix_staging_historias_historia_article_id", "historia_article_id"),)
+
+    article_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "raw_articles.id", ondelete="CASCADE",
+            name="fk_staging_historias_article_id",
+        ),
+        primary_key=True,
+    )
+    historia_article_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("raw_articles.id", name="fk_staging_historias_historia_article_id"),
+        nullable=False,
+    )
+    # wp_titulo | wp_fuzzy | google_url | google_titulo | google_fuzzy | representante
+    metodo: Mapped[str] = mapped_column(String(16), nullable=False)
+    regras_versao: Mapped[int] = mapped_column(Integer, nullable=False)
+    atualizado_em: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+
+
+class StagingWpProcessamento(Base):
+    """Processamento de um post WordPress por versao de regras e prompt (com ou sem ticker)."""
+
+    __tablename__ = f"{PREFIXO_TABELA}staging_wp_processamento"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["site", "wp_id"],
+            [f"{PREFIXO_TABELA}raw_wp_posts.site", f"{PREFIXO_TABELA}raw_wp_posts.wp_id"],
+            name="fk_staging_wp_processamento_raw_wp_posts",
+        ),
+    )
+
+    site: Mapped[str] = mapped_column(String(16), primary_key=True)
+    wp_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    regras_versao: Mapped[int] = mapped_column(Integer, nullable=False)
+    prompt_versao: Mapped[int] = mapped_column(Integer, nullable=False)
+    article_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("raw_articles.id", name="fk_staging_wp_processamento_article_id"),
+    )
+    # representante | membro | sem_ticker
+    papel_historia: Mapped[str] = mapped_column(String(16), nullable=False)
+    n_pares: Mapped[int] = mapped_column(Integer, nullable=False)
+    processado_em: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)

@@ -24,6 +24,8 @@ ORDEM = [
     "b3_proventos",
     "cvm_itr_dfp",
     "google_news",
+    "wordpress",
+    "processar_wp",
     "cvm_ipe",
     "enriquecimento",
     "finbert",
@@ -58,7 +60,7 @@ def _resolvedor_classe(registro: list):
     return resolver_falso
 
 
-def test_catalogo_tem_os_15_ids_da_carga_e_as_2_avulsas_no_fim():
+def test_catalogo_tem_os_17_ids_da_carga_e_as_2_avulsas_no_fim():
     assert list(CATALOGO) == ORDEM + AVULSOS
 
 
@@ -78,6 +80,7 @@ def test_funcoes_sao_so_as_esperadas():
     assert {c for c, d in CATALOGO.items() if not d.classe} == {
         "finbert",
         "juiza",
+        "processar_wp",
         "build_entrega",
         "corrigir_horas",
         "juiza_concordancia",
@@ -218,3 +221,35 @@ def test_parametros_aceitos_por_coletor():
     assert CATALOGO["yahoo"].aceita == frozenset({"tickers"})
     assert CATALOGO["google_news"].aceita == frozenset({"tickers", "desde", "ate"})
     assert CATALOGO["cvm_itr_dfp"].aceita == frozenset({"anos"})
+
+
+def test_wordpress_e_processar_wp_aceitam_desde_e_ate():
+    assert CATALOGO["wordpress"].aceita == frozenset({"desde", "ate"})
+    assert CATALOGO["processar_wp"].aceita == frozenset({"desde", "ate"})
+    assert CATALOGO["wordpress"].alvo == "tcc_scraper.collectors.wordpress:WordPressCollector"
+    assert CATALOGO["processar_wp"].alvo == "tcc_scraper.enrich.processar_wp:processar_wp"
+
+
+def test_wordpress_passa_desde_e_ate_ao_construtor_e_roda_com_checkpoint():
+    registro: list = []
+    desde, ate = date(2026, 1, 1), date(2026, 2, 1)
+    CATALOGO["wordpress"].executar(
+        object(), args={"desde": desde, "ate": ate}, resolver_alvo=_resolvedor_classe(registro)
+    )
+    assert ("init", CATALOGO["wordpress"].alvo, {"desde": desde, "ate": ate}) in registro
+    assert ("run", CATALOGO["wordpress"].alvo, {"resume": True}) in registro
+
+
+def test_processar_wp_recebe_observador_e_periodo():
+    chamadas: list = []
+
+    def funcao_falsa(**kwargs):
+        chamadas.append(kwargs)
+        return dict(RESULTADO_FALSO)
+
+    obs = object()
+    desde, ate = date(2026, 1, 1), date(2026, 2, 1)
+    CATALOGO["processar_wp"].executar(
+        obs, args={"desde": desde, "ate": ate}, resolver_alvo=lambda alvo: funcao_falsa
+    )
+    assert chamadas == [{"observador": obs, "desde": desde, "ate": ate}]

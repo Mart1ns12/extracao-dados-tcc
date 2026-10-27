@@ -33,7 +33,7 @@ saída.
 |---|---|---|
 | Objetivo | Base do TCC: 14 colunas por (data, ticker) | Nove tabelas para a etapa seguinte, com as colunas da spec (a nona, `v1-composicao_ibov`, não está na spec) |
 | Janela | Fixa: `DATA_START` a `DATA_END`, com aquecimento de preços antes do início | Fim rolante: a coleta avança até hoje (`fim_coleta`) |
-| Como roda | Um comando por fase: `collect-prices`, `collect-macro`, `collect-news`, `enrich`, `score`, `build-dataset` | `daily` com 9 etapas; `executor` como worker; `historico` para anos passados; comandos `collect-*`, `judge-news` e `build-entrega` |
+| Como roda | Um comando por fase: `collect-prices`, `collect-macro`, `collect-news`, `collect-wp`, `processar-wp`, `enrich`, `score`, `build-dataset` | `daily` com 9 etapas; `executor` como worker; `historico` para anos passados; comandos `collect-*`, `judge-news` e `build-entrega` |
 | Saída | Tabela `features_dataset_v1`, mais Parquet e CSV (`build-dataset`) | Tabelas `v1-noticias` a `v1-indices`, e CSV com `build-entrega --csv` |
 | Juíza e LLM | Não usa a juíza. A análise diária (`analyze-llm`) grava em `staging_llm_*` | A juíza filtra as notícias antes da entrega. A análise diária (etapa `analise`) não entra nas 9 tabelas |
 | Tabelas | Nomes antigos, sem prefixo: `raw_articles`, `raw_prices`, `raw_macro`, `staging_article_sentiment` e outras | Tabelas novas com prefixo `v1-`, mais as de notícias, preços e macro que ela reaproveita |
@@ -68,6 +68,7 @@ flowchart LR
     subgraph Fontes
         Y[Yahoo Finance]
         GN[Google News RSS]
+        WP[API WordPress: InfoMoney, Money Times, Exame]
         VS[Sites dos veiculos]
         BCB[BCB SGS e PTAX]
         CVM[CVM dados abertos]
@@ -88,6 +89,7 @@ flowchart LR
     end
     Y --> R
     GN --> R
+    WP --> R
     VS --> R
     BCB --> R
     CVM --> R
@@ -123,8 +125,10 @@ repositório. A API nunca chama o scraper: ela só grava o comando na fila. Deta
 | Fonte | O que entrega | Precisa de chave de API? | Limite conhecido | Coletor |
 |---|---|---|---|---|
 | Yahoo Finance (chart API) | Cotações diárias das ações do universo, IBOV, BRENT (`BZ=F`) e USDBRL | Não | Sem limite documentado. Intervalo de 1 s por domínio | `collectors/prices_yahoo.py` |
+| B3 COTAHIST (ZIP anual) | Preço e volume da AZUL3 de 2026-01-13 a 2026-04-17, janela em que o Yahoo erra. Só pelo comando `gerar-correcao-precos`, não pelo daily | Não | Arquivo de ~96 MB por ano, uma requisição por comando. Intervalo de 1 s | `collectors/b3_cotahist.py` |
 | B3 (indexStatisticsProxy, `GetPortfolioDay`) | Fechamento diário dos índices IDIV, SMLL e IFIX, um ano por chamada. O Yahoo devolve só 1 dia deles | Não | Sem limite documentado. Intervalo de 1 s por domínio | `collectors/b3_indices.py` |
-| Google News RSS | Notícias por ticker e contexto, em janelas semanais | Não | Satura em 100 itens por consulta. Por isso a coleta é semanal e a janela é subdividida ao bater 100 | `collectors/google_news.py` (intervalo de 2 s) |
+| Google News RSS | Notícias por ticker e contexto, em janelas semanais. Com `WP_ENABLED=true`, sem os 3 domínios da API WordPress | Não | Satura em 100 itens por consulta. Por isso a coleta é semanal e a janela é subdividida ao bater 100 | `collectors/google_news.py` (intervalo de 2 s) |
+| API REST do WordPress (InfoMoney, Money Times, Exame) | Todos os posts do período, com `date_gmt` exato e o HTML do corpo. Só os candidatos a ticker são gravados | Não | Sem chave. 100 posts por página. Intervalo de 1 s por domínio. Medido: 99,7% do que o Google trouxe desses sites | `collectors/wordpress.py`, com `enrich/processar_wp.py` para o casamento e a classificação |
 | Link do Google News (`batchexecute`) | URL real do artigo a partir do link opaco | Não | Endpoint interno e não documentado. Quando falha, a notícia fica só com a manchete | `enrich/link_resolver.py` (intervalo de 0,4 s) |
 | Sites dos veículos (allowlist) | Corpo do artigo, extraído com trafilatura | Não | Só veículos da allowlist. Intervalo de 1,5 s | `enrich/article_fetcher.py` |
 | BCB SGS 432 e PTAX | Selic e dólar oficial (cotação de venda) | Não | Sem limite documentado. Intervalo de 0,5 s | `collectors/macro_bcb.py` |
@@ -158,7 +162,7 @@ Os intervalos de cada fonte vêm de `config.py` (`throttle_*`). Toda requisiçã
 | Carga histórica | Coleta de anos passados, feita por coletor e por ano. Pode ser pausada, cancelada e retomada. |
 | Fim rolante | Data final da coleta diária, que avança até hoje. É diferente da janela fixa do v1. |
 | Aquecimento | Dias de cotação coletados antes de `DATA_START` (`PRICE_WARMUP_DAYS`, padrão 400). Assim as janelas de 20 pregões já estão cheias no primeiro dia do dataset. |
-| `v1-` | Prefixo das 27 tabelas criadas pela pipeline nova, incluindo as 9 de entrega. As tabelas do dataset v1 mantêm o nome antigo. |
+| `v1-` | Prefixo das 30 tabelas criadas pela pipeline nova, incluindo as 9 de entrega. As tabelas do dataset v1 mantêm o nome antigo. |
 | Upsert | Gravação que cria a linha se a chave não existe e atualiza se ela existe. Uma chave repetida nunca gera linha duplicada. |
 
 ## 7. Limitações conhecidas

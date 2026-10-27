@@ -543,6 +543,34 @@ Contagem de papéis depois de cada data da linha do tempo:
 
 **Não verificado.** A execução ponta a ponta pelo painel (o painel é outro repositório, editado em paralelo) e a medição real da concordância, que gasta API.
 
+## 17. Escala de ações e balanços na entrega (2026-10-26)
+
+**O problema.** Medido no banco real: a CVM publica a composição do capital sem coluna de escala. Cerca de 30% das linhas vêm em milhares e o resto em unidades. VALE3 saía sempre em milhares (4.255.763 em vez de ~4,26 bi). PSSA3 alternava trimestre a trimestre (646.586 → 646.586.060 → 646.586). Nos balanços, alguns documentos declaram a escala errada: SAUD3 (ITR 2021-06-30, UNIDADE com valores em milhares, enquanto os outros 21 documentos são MIL) e JBSS32 (DFP 2023-12-31, UNIDADE, com PL 1000x menor que o ITR seguinte em MIL).
+
+**Decisão.**
+
+1. **Ações.** O raw continua como a CVM publica. Na entrega, a série de cada CNPJ é quebrada onde o total salta ~1000x. Um segmento está em milhares quando a mediana do giro passa de 10% ao dia. O giro é a mediana do volume dos últimos 60 pregões, somado de ON, PN e unit, dividida pelo total de ações. Segmento sem giro (trimestres de antes da listagem, como AURE3 até 2022-03 e NATU3 até 2025-07) herda pela cadeia: a escala alterna a cada troca de 1000x a partir do segmento decidido pelo giro mais próximo. Valor isolado que não é troca de 1000x não é corrigido: só gera aviso (CMIN3 em 2025-12-31, 10x; AZUL3 em 2026-03-31, 18.000x).
+2. **Balanços.** Documento cuja escala declarada difere da majoritária do CNPJ passa a usar a majoritária quando a magnitude fica 100x abaixo (UNIDADE em CNPJ MIL) ou acima (MIL em CNPJ UNIDADE) da mediana dos documentos na majoritária. A Vivara, que declara UNIDADE em tudo e está correta, não muda.
+
+**Arquivos alterados:**
+
+- `src/tcc_scraper/entrega/builder.py`: `volumes_por_cnpj`, `_corrigir_escala_acoes` e helpers do giro e dos segmentos, `montar_acoes_emitidas` (parâmetro `volumes`), `_corrigir_escala_balancos` e helpers, chamada em `montar_balancos`, e `_montar` para `acoes_emitidas`. Constantes `JANELA_GIRO_PREGOES` e `MIN_PREGOES_GIRO`.
+- `tests/test_entrega_builder.py`: 12 testes novos (8 de ações, 4 de balanços).
+- `docs/05-entrega.md`: seção 6 (regra de escala declarada errada) e seção 7 (regra de escala das ações).
+
+**Verificação.** Suíte inteira: 712 passed, 39 skipped, 1 xfailed. Simulação em seco sobre o banco real, sem gravar: 503 de 1.847 linhas de ações mudam; depois da correção, nenhuma empresa fica com valor de mercado implícito abaixo de R$ 500 mi (antes, 16 tickers ficavam abaixo de R$ 10 mi). Nos balanços, mudam 3 linhas (SAUD3 e JBSS32).
+
+**Aplicação (2026-10-27).** `build-entrega` rodado junto com a correção da AZUL3 (entrada 19): `v1-acoes_emitidas` com 1.850 linhas e `v1-balancos` com 2.694. Conferido no banco: VALE3 com 4.255.763.000 ações; SAUD3 no ITR 2021-06-30 com receita de R$ 906.007.000 e PL de R$ 1,09 bi.
+
+**Saltos que continuam, sem ser escala:** SRNA3 com 10 e 100 ações antes do IPO (2021), IGTI11 com 87.889 antes da reorganização com a Jereissati (2021), AUAU3 com salto de 111x na fusão (2025-03) e AZUL3 na reestruturação (2026-03, com aviso).
+
+**Limitações.**
+
+- CNPJ sem nenhum volume em `raw_prices` não é corrigido. É o caso da STBP3: o Yahoo não devolve preço, e as 22 linhas seguem em milhares (851.018 a 864.170 ações, contra cerca de 863 milhões reais).
+- Valor isolado na ponta da série (sem os dois vizinhos) não gera aviso.
+- O giro soma o volume de unit com o de ON e PN do mesmo CNPJ, como pedido. Isso pode contar a mesma negociação duas vezes. A decisão não muda, porque o limiar de 10% tem mais de uma ordem de grandeza de folga.
+- Sem `volumes`, `montar_acoes_emitidas` mantém o comportamento antigo.
+
 ## 18. Juíza refeita, medições e análise desligada (2026-10-26)
 
 **O problema.** Em 2026-10-24, a carga histórica gastou US$ 2,24 em 13.144 pares julgados só pelo Gemini `gemini-3.1-flash-lite`, e parou com 402 (crédito esgotado). O Jev nunca tinha rodado: `JEV_ENABLED=true` sem `JEV_API_KEY` era ignorado em silêncio. A análise diária também depende do Gemini e ficou sem crédito. Faltavam medições de custo por par, do limiar do Jev e da LLM de fallback.
@@ -586,3 +614,63 @@ Contagem de papéis depois de cada data da linha do tempo:
 - Perda de `tickers_adicionais` em 28% dos pares decididos pelo Jev.
 - Assimetria de contexto: a referência viu 300 caracteres e o Jev vê 1.500. Na amostra, o trecho médio tinha 88 caracteres, então o Jev julgou quase só pela manchete.
 - A chave atual do Jev vazou em uma transcrição e precisa ser substituída antes da implantação.
+
+## 19. Preços da AZUL3 pela B3 (2026-10-26)
+
+**O problema.** O Yahoo (`AZUL3.SA`) emenda papéis diferentes entre 2026-01-13 e 2026-04-17: fechamentos de 41,25 → 7,42 → 341 → 28 milhões, com volume alternando entre dezenas e centenas de milhões. Na COTAHIST da B3, nessa janela a ON da Azul negociou como AZUL53 (ISIN BRAZULA01OR8), cotada por lote de 1.000.000 de ações (FATCOT = 1000000). A partir de 2026-04-20 negocia como AZUL3 por ação, e ali o Yahoo bate com a B3. O Yahoo não registra os grupamentos de 75:1 (lastDatePrior 2026-02-18) e 150.000:1 (lastDatePrior 2026-04-17) que explicam a série.
+
+**Decisão.**
+
+- Na janela de 2026-01-13 a 2026-04-17, o preço da AZUL3 vem da COTAHIST. Preço por ação = preço ÷ FATCOT, dividido pelo produto dos grupamentos do suplemento com lastDatePrior ≥ data. Volume = QUATOT × o mesmo fator, arredondado. Fonte gravada: `b3_cotahist`.
+- O CSV `data/correcoes_precos/AZUL3.csv` é versionado. Em cada execução, o coletor do Yahoo troca a janela pelo CSV (`aplicar_correcoes`). Como ele rebaixa o histórico inteiro e faz upsert, sem isso o Yahoo sobrescreveria a correção. Fora da janela, o Yahoo fica.
+- A correção é uma lista explícita, `CORRECOES_PRECO_B3` em `config.py`. O comando `gerar-correcao-precos` baixa o ZIP anual da B3 (~96 MB) e lê o suplemento do banco, só em leitura.
+
+**Arquivos alterados:**
+
+- `src/tcc_scraper/collectors/b3_cotahist.py` (novo): `parse_linha`, `ler_cotahist`, `grupamentos_do_suplemento`, `serie_corrigida`, `gerar_correcoes`, `carregar_correcoes` e `CotahistCollector`.
+- `src/tcc_scraper/collectors/prices_yahoo.py`: `PriceRow.source` (padrão `yahoo`), `aplicar_correcoes`, chamada em `process`, e `_persist` grava `r.source`.
+- `src/tcc_scraper/config.py`: `CorrecaoPrecoB3` e `CORRECOES_PRECO_B3`.
+- `src/tcc_scraper/cli.py`: comando `gerar-correcao-precos`.
+- `data/correcoes_precos/AZUL3.csv` (novo, 66 linhas) e `.gitignore` (`!data/correcoes_precos/`).
+- `tests/test_b3_cotahist.py` e `tests/test_prices_yahoo_correcoes.py` (novos, 36 testes).
+- `docs/01-visao-geral.md`, `docs/05-entrega.md` e `docs/08-operacao-e-deploy.md`.
+
+**Verificação.** Suíte inteira: 817 passed, 39 skipped, 1 xfailed. Ruff limpo nos arquivos alterados. CSV gerado pelo comando, 66 linhas de 2026-01-13 a 2026-04-17:
+
+- Fechamento de 2026-01-13: 464,0602. O nominal (41,25 ÷ 1e6 × 75 × 150.000) dá 464,0625. A diferença de 5e-6 vem do fator publicado pela B3, 0,00000666670, que tem 6 algarismos significativos.
+- Fechamento de 2026-02-18: 38,2498. Fechamento de 2026-04-17: 32,2498.
+- Volume de 2026-01-13: 24.310.
+- Continuidade: 2026-04-17 (32,25) → 2026-04-20 (30,54, igual no Yahoo e na B3).
+- QUATOT em ações: em 2026-04-20 o volume do Yahoo (74.200) é igual ao QUATOT da B3. Preço × QUATOT ÷ FATCOT ÷ VOLTOT tem mediana 0,989 na AZUL53, entre 0,68 e 1,32. A razão foge de 1 porque VOLTOT usa o preço médio dos negócios, e PREULT é o último negócio.
+
+**Aplicação (2026-10-27).** `collect-prices --no-resume` (92 de 92; sem dados no Yahoo: CRFB3, SRNA3 e STBP3), `build-dataset` (114.224 linhas em `features_dataset_v1`) e `build-entrega` (`v1-precos` com 143.686 linhas). Conferido no banco: a AZUL3 tem 66 pregões com `source = b3_cotahist` (2026-01-13 a 2026-04-17) e 131 do Yahoo a partir de 2026-04-20; o fechamento de 2026-04-14 passou de 29.852.850 para 29,85; `retorno_1d` e `volume_relativo` da AZUL3 voltaram a valores normais. Registrado no `docs/ADR.md` e no `CLAUDE.md` (seções 2 e 6).
+
+**Limitações.**
+
+- A correção é por lista explícita em `CORRECOES_PRECO_B3`. Outro papel com o mesmo problema precisa entrar lá e ter o CSV gerado.
+- O fator publicado pela B3 é arredondado (erro de 5e-6 na escala). Nos retornos o efeito é desprezível, porque a escala é constante na janela.
+- Os preços de 2026-01-13 a 2026-04-17 não são o Yahoo. Se a B3 republicar o COTAHIST, o CSV precisa ser regenerado.
+
+## 20. Coleta híbrida de notícias: API WordPress e classificador por código (2026-10-27)
+
+Decisão e opções: [ADR](ADR.md), seção "Coleta de notícias dos 3 veículos pela API do WordPress". Aqui ficam o que foi feito e o que foi medido.
+
+**Medições.** Teste real de março de 2026: 11.306 posts no mês, em 122 requisições, sem erro. A API cobre 862 de 865 (99,7%) do que o Google trouxe desses sites, e a normalização de URL acertou 100%. Republicação entre veículos: 106 pares por mês, contados como 1 notícia. Throttle de 1,0 s: 216 requisições sem erro. Posts por ano nos 3 sites: 89,5 mil (2021), 93,8 mil (2022), 83,6 mil (2023), 84,6 mil (2024) e 106,1 mil (2025). Classificador contra 28.279 julgamentos do Gemini, com critério de n ≥ 30 e precisão ≥ 0,90: K3 com 91,5% no dev, 91,9% no teste e 92,4% em 2026-10 (aprovado); K6 com 100% (n = 31); eliminação de E5 e de "sem ocorrência" com 90,1% e 90,8% em 2026-10; K5 de 24% a 52% (reprovado, vai para a juíza); tipo pelo título de 52% a 65% (só marca o par como duvidoso).
+
+**Módulos novos.** `collectors/wordpress.py` (download por site e mês), `enrich/wp_html.py` (limpeza do HTML em blocos), `enrich/casador.py` (casador v3, com os motivos de invalidação E1 a E6), `enrich/boilerplate.py` (índice de shingles causal), `enrich/historias.py` (republicações e duplicatas do Google), `enrich/processar_wp.py` (núcleo puro e gravação) e `llm/juiza_codigo.py` (classificador por camadas, com `REGRAS_VERSAO = 1`).
+
+**Alterações de banco e de execução.**
+
+- Tabelas novas: `v1-raw_wp_posts`, `v1-staging_historias` e `v1-staging_wp_processamento`. O ALTER está em `sql/alteracoes/2026-10-27_wordpress_historias.mysql.sql` e foi aplicado em 2026-10-27. O total de tabelas `v1-` passa de 27 para 30.
+- A etapa `noticias` do daily tem 3 partes: `google_news`, `wordpress` e `processar_wp`. A etapa só sai `falhou` se as três falharem. Novos ids de coletor: `wordpress` e `processar_wp`.
+- Novos comandos: `collect-wp` e `processar-wp`. Novas settings: `WP_ENABLED` (padrão `true`) e `THROTTLE_WORDPRESS` (padrão `1.0`), ambas em `.env.example`.
+- Com `WP_ENABLED=true`, o Google News descarta os itens dos 3 domínios.
+- Na entrega, artigo que é duplicata de história sai de `v1-noticias`, e `origem = 'wordpress'` é um valor válido.
+
+**Limitações.**
+
+- Os 3 itens que o Google trouxe e a API não cobre (2 de conteúdo de marca e 1 renomeado) não são recuperados.
+- A coleta depende de um site público sem contrato. Se a API mudar, a coleta falha e precisa de ajuste.
+- Panoramas de mercado com ticker no título continuam entrando. É a limitação já registrada na seção 2 do CLAUDE.md.
+- O classificador por código é heurística. Se as listas de regra mudarem, é preciso medir de novo e subir `REGRAS_VERSAO`.
+- A juíza fica com cerca de 26% dos pares do WordPress, a US$ 0,000077 por par (Jev mais Luna): cerca de US$ 0,11 por mês e US$ 5,5 no histórico.

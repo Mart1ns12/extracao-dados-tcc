@@ -6,7 +6,8 @@ nenhum Float (só Double) nas tabelas.
 
 from __future__ import annotations
 
-from sqlalchemy import Double, Float
+from sqlalchemy import Double, Float, ForeignKeyConstraint
+from sqlalchemy.dialects import mysql
 
 from tcc_scraper.db import models_fontes  # noqa: F401  (registra as tabelas no metadata)
 from tcc_scraper.db.models import Base, tabela_do_projeto
@@ -22,6 +23,9 @@ TABELAS_FONTES = {
     "v1-raw_llm_juiza_runs",
     "v1-staging_noticias_julgamento",
     "v1-staging_juiza_tentativas",
+    "v1-raw_wp_posts",
+    "v1-staging_historias",
+    "v1-staging_wp_processamento",
 }
 
 PKS_ESPERADAS = {
@@ -38,6 +42,9 @@ PKS_ESPERADAS = {
     "v1-raw_llm_juiza_runs": ["id"],
     "v1-staging_noticias_julgamento": ["article_id", "ticker", "prompt_versao"],
     "v1-staging_juiza_tentativas": ["article_id", "ticker", "prompt_versao"],
+    "v1-raw_wp_posts": ["site", "wp_id"],
+    "v1-staging_historias": ["article_id"],
+    "v1-staging_wp_processamento": ["site", "wp_id"],
 }
 
 
@@ -102,3 +109,40 @@ def test_juiza_runs_aponta_para_o_prompt() -> None:
     assert len(fks) == 1
     assert fks[0].column.table.name == "raw_llm_prompts"
     assert fks[0].column.name == "id"
+
+
+def test_raw_wp_posts_tem_indice_de_data_e_html_em_longtext() -> None:
+    tabela = Base.metadata.tables["v1-raw_wp_posts"]
+
+    assert "ix_raw_wp_posts_date_gmt" in {idx.name for idx in tabela.indexes}
+    assert isinstance(tabela.c.content_html.type, mysql.LONGTEXT)
+
+
+def test_staging_historias_cascateia_do_artigo_e_indexa_a_historia() -> None:
+    tabela = Base.metadata.tables["v1-staging_historias"]
+    fks = {fk.parent.name: fk for fk in tabela.foreign_keys}
+
+    assert fks["article_id"].column.table.name == "raw_articles"
+    assert fks["article_id"].ondelete == "CASCADE"
+    assert fks["historia_article_id"].column.table.name == "raw_articles"
+    assert fks["historia_article_id"].ondelete is None
+    assert "ix_staging_historias_historia_article_id" in {idx.name for idx in tabela.indexes}
+
+
+def test_processamento_aponta_para_o_post_com_fk_composta() -> None:
+    tabela = Base.metadata.tables["v1-staging_wp_processamento"]
+    fks_do_post = {
+        fk.parent.name: fk.column.name
+        for fk in tabela.foreign_keys
+        if fk.column.table.name == "v1-raw_wp_posts"
+    }
+    composta = [
+        c for c in tabela.constraints
+        if isinstance(c, ForeignKeyConstraint) and len(c.elements) == 2
+    ]
+
+    # Uma constraint so para (site, wp_id), nao uma FK por coluna.
+    assert fks_do_post == {"site": "site", "wp_id": "wp_id"}
+    assert len(composta) == 1
+    assert tabela.c.article_id.nullable
+    assert {fk.column.table.name for fk in tabela.c.article_id.foreign_keys} == {"raw_articles"}

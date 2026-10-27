@@ -24,6 +24,7 @@ from sqlalchemy import select
 
 from tcc_scraper.collectors.base import Collector, UnitResult, WorkUnit
 from tcc_scraper.config import (
+    DOMINIOS_WP,
     GOOGLE_NEWS_ITEM_CAP,
     GOOGLE_NEWS_LOCALES,
     IBOV_TICKERS,
@@ -265,6 +266,11 @@ class GoogleNewsCollector(Collector):
                 ):
                     daily[item.google_id] = item
             items = list(daily.values())
+
+        if self.settings.wp_enabled:
+            # InfoMoney, Money Times e Exame vem pela API do WordPress (collectors/wordpress.py).
+            # O hit_cap acima ja foi calculado sobre a resposta crua.
+            items = [i for i in items if i.source_domain not in DOMINIOS_WP]
 
         self._persist(items, ticker, locale["lang"])
         return UnitResult(items_found=len(items), hit_cap=hit_cap)

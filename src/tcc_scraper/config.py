@@ -13,6 +13,7 @@ Duas janelas de tempo convivem aqui e nao se misturam:
 from __future__ import annotations
 
 import socket
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -66,6 +67,12 @@ class Settings(BaseSettings):
     # de seguranca que quase nao cobra latencia, ja que o request demora mais que
     # isso de qualquer forma.
     throttle_link_resolve: float = 0.4
+
+    # WordPress (InfoMoney, Money Times, Exame): API REST /wp-json/wp/v2/posts. O intervalo
+    # de 1,0 s foi medido sem erro em 216 requisicoes em 2026-10-27. Abaixo disso nao foi
+    # testado. WP_ENABLED=false desliga a coleta WordPress e devolve esses veiculos ao Google News.
+    throttle_wordpress: float = 1.0
+    wp_enabled: bool = True
 
     # Workers do enriquecimento. O ganho vem de uma assimetria: todo artigo passa
     # pelo news.google.com (que o throttle por dominio serializa), mas o download
@@ -480,6 +487,35 @@ def yahoo_symbol(ticker: str) -> str:
     return f"{ticker}.SA"
 
 
+@dataclass(frozen=True)
+class CorrecaoPrecoB3:
+    """Janela em que o Yahoo erra o preco de um papel e a serie da B3 substitui a dele.
+
+    codigos: codigos negociados na janela (COTAHIST, mercado a vista). isin: o do papel,
+    para achar os grupamentos no suplemento. inicio e fim: datas inclusivas.
+    """
+
+    codigos: tuple[str, ...]
+    isin: str
+    inicio: date
+    fim: date
+
+
+# Papeis em que o Yahoo emenda ativos diferentes e fica corrompido (medido em 2026-10-26).
+# AZUL3 (Yahoo: 41,25 -> 7,42 -> 341 -> 28 milhoes entre 2026-01-13 e 2026-04-17): nessa
+# janela a ON negociou como AZUL53, cotada por lote de 1.000.000 de acoes. Fora dela, o
+# Yahoo bate com a B3 e nao e corrigido. Outro papel com o mesmo problema precisa entrar
+# aqui e ter o CSV gerado por `gerar-correcao-precos`.
+CORRECOES_PRECO_B3: dict[str, CorrecaoPrecoB3] = {
+    "AZUL3": CorrecaoPrecoB3(
+        codigos=("AZUL53",),
+        isin="BRAZULA01OR8",
+        inicio=date(2026, 1, 13),
+        fim=date(2026, 4, 17),
+    ),
+}
+
+
 # --------------------------------------------------------------------------------------
 # Veiculos liberados para extracao do corpo do artigo
 # --------------------------------------------------------------------------------------
@@ -507,6 +543,45 @@ GOOGLE_NEWS_LOCALES: tuple[dict[str, str], ...] = (
 # medicao: janela mensal satura em 100, semanal devolve ~52. Ao bater esse valor
 # a janela e subdividida, senao ha perda silenciosa de noticias.
 GOOGLE_NEWS_ITEM_CAP = 100
+
+# --------------------------------------------------------------------------------------
+# Veiculos com API WordPress (coletados direto, sem passar pelo Google News)
+# --------------------------------------------------------------------------------------
+@dataclass(frozen=True)
+class SiteWP:
+    """Veiculo WordPress. nome: chave do site (raw_wp_posts.site). fonte: nome exibido
+    (raw_articles.source_name). dominio: dominio canonico (source_domain). endpoint: API REST."""
+
+    nome: str
+    fonte: str
+    dominio: str
+    endpoint: str
+
+
+WP_SITES: tuple[SiteWP, ...] = (
+    SiteWP(
+        nome="infomoney",
+        fonte="InfoMoney",
+        dominio="infomoney.com.br",
+        endpoint="https://www.infomoney.com.br/wp-json/wp/v2/posts",
+    ),
+    SiteWP(
+        nome="moneytimes",
+        fonte="Money Times",
+        dominio="moneytimes.com.br",
+        endpoint="https://www.moneytimes.com.br/wp-json/wp/v2/posts",
+    ),
+    # A barra final e obrigatoria: sem ela o Exame responde 308.
+    SiteWP(
+        nome="exame",
+        fonte="Exame",
+        dominio="exame.com",
+        endpoint="https://exame.com/wp-json/wp/v2/posts/",
+    ),
+)
+
+# Dominios cobertos pela API WordPress. O Google News descarta esses itens quando wp_enabled.
+DOMINIOS_WP: frozenset[str] = frozenset(s.dominio for s in WP_SITES)
 
 # --------------------------------------------------------------------------------------
 # Universo historico e entrega

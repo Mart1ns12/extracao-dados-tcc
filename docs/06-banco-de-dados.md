@@ -1,4 +1,4 @@
-# Banco de dados: MySQL 8 único, dicionário das 41 tabelas e schema
+# Banco de dados: MySQL 8 único, dicionário das 44 tabelas e schema
 
 Este documento cobre o banco do projeto: o servidor, o dicionário de todas as tabelas, o schema e as alterações de
 schema, as regras de tipo e de escrita e os testes que gravam no banco. Absorve o antigo roteiro de migração MySQL, que foi removido.
@@ -53,8 +53,8 @@ As camadas são **prefixo no nome da tabela**, não schema: no MySQL, "schema" e
 | `painel_` | Estado do executor e da carga, lido pelo painel | `painel_logs` |
 | sem prefixo de camada | Tabelas de entrega, com nomes fixos pela spec | `noticias` (com `v1-`) |
 
-O prefixo `v1-` (`PREFIXO_TABELA` em `db/models.py`) marca as **27 tabelas criadas pela pipeline nova**
-(criadas nas antigas migrations 0004 a 0007 e nas alterações posteriores), por pedido do dono: 8 `painel_*`, 10 de fontes e juíza e as 9 de entrega (incluindo `v1-composicao_ibov`).
+O prefixo `v1-` (`PREFIXO_TABELA` em `db/models.py`) marca as **30 tabelas criadas pela pipeline nova**
+(criadas nas antigas migrations 0004 a 0007 e nas alterações posteriores), por pedido do dono: 8 `painel_*`, 13 de fontes, juíza e coleta WordPress e as 9 de entrega (incluindo `v1-composicao_ibov`).
 As 14 tabelas que já existiam (antigas migrations 0001 a 0003) mantêm o nome original. `features_dataset_v1` também não
 recebe o prefixo.
 
@@ -67,7 +67,7 @@ SELECT * FROM `v1-painel_logs` ORDER BY ts DESC LIMIT 20;
 A função `tabela_do_projeto(name)` (`db/models.py`) diz se uma tabela pertence ao projeto. Ela tira o `v1-` antes de
 comparar o prefixo de camada.
 
-## 3. Dicionário das 41 tabelas
+## 3. Dicionário das 44 tabelas
 
 Chave primária (PK) segundo o modelo SQLAlchemy. "Escreve" aponta o módulo que grava a tabela. "Linhas" aparece
 só onde o ledger do trabalho registra um número; caso contrário, `-`.
@@ -91,7 +91,7 @@ só onde o ledger do trabalho registra um número; caso contrário, `-`.
 | `staging_llm_acoes_sinais` | staging (LLM) | `llm/job.py`, substituída por dia | `data_referencia`, `ticker` | 0003 | - |
 | `staging_llm_mercados` | staging (LLM) | `llm/job.py`, substituída por dia | `data_referencia`, `nome` | 0003 | - |
 
-### 3.2 Tabelas com prefixo `v1-` (27)
+### 3.2 Tabelas com prefixo `v1-` (30)
 
 Painel (migration 0004). Quem escreve é o executor, salvo `v1-painel_comandos`, que a API do painel cria e confirma.
 
@@ -121,7 +121,17 @@ Fontes oficiais e juíza (migration 0005).
 | `v1-staging_juiza_tentativas` | `llm/juiza.py`: tentativas por par que a LLM de fallback não aceitou | `article_id`, `ticker`, `prompt_versao` | 2026-10-23 (`sql/alteracoes/2026-10-23_juiza_custo_tentativas.mysql.sql`) | - |
 | `v1-staging_noticias_julgamento` | `llm/juiza.py` (julgamento por artigo e ticker) | `article_id`, `ticker`, `prompt_versao` | 0005 | - |
 
-Na juíza, cada chamada paga (Jev ou LLM de fallback) gera uma run. O campo `modelo` das tabelas da juíza vale `regra` (regra barata), `jev-1.13.0/q1/t1500` (Jev; `t1500` é o `JEV_TRECHO` usado), `gpt-5.6-luna` (OpenAI) ou o nome do modelo do Gemini. Os prompts ficam em `raw_llm_prompts`: `juiza` (Gemini) e `juiza_openai` (OpenAI), ambos na versão 1. Ver [04](04-juiza-e-llm.md), seções 2.3 e 2.6.
+Na juíza, cada chamada paga (Jev ou LLM de fallback) gera uma run. O campo `modelo` das tabelas da juíza vale `regra` (regra barata), `jev-1.13.0/q1/t1500` (Jev; `t1500` é o `JEV_TRECHO` usado), `gpt-5.6-luna` (OpenAI), o nome do modelo do Gemini ou `codigo/r1/<camada>` (julgamento por código das notícias WordPress, sem run; ver [04](04-juiza-e-llm.md)). Os prompts ficam em `raw_llm_prompts`: `juiza` (Gemini) e `juiza_openai` (OpenAI), ambos na versão 1. Ver [04](04-juiza-e-llm.md), seções 2.3 e 2.6.
+
+Coleta WordPress (alteração de 2026-10-27, `sql/alteracoes/2026-10-27_wordpress_historias.mysql.sql`, aplicada em 2026-10-27):
+
+| Tabela | Escreve | Chave (PK) | Migration | Linhas |
+|---|---|---|---|---|
+| `v1-raw_wp_posts` | `collectors/wordpress.py`: posts candidatos a ticker (pré-filtro bruto), com o HTML do corpo | `site`, `wp_id` | 2026-10-27 | - |
+| `v1-staging_historias` | `enrich/processar_wp.py`: a história a que cada artigo pertence (representante, ou duplicata do Google apontando para ele) | `article_id` | 2026-10-27 | - |
+| `v1-staging_wp_processamento` | `enrich/processar_wp.py`: um registro por post processado, com a versão de regras e de prompt | `site`, `wp_id` | 2026-10-27 | - |
+
+`v1-raw_wp_posts` é append-only (`update_columns=None`), por isso não entra na exceção da seção 3.3. As duas tabelas de staging são regravadas por upsert.
 
 Entrega (migration 0006). Os nomes e as colunas seguem a spec em `spec-entrega-etapa-seguinte.md`. Quem escreve é
 `entrega/builder.py`, que faz upsert e, em `v1-noticias`, remove as reprovadas. `v1-composicao_ibov` (alteração de 2026-10-23, `sql/alteracoes/2026-10-23_composicao_ibov.mysql.sql`) é escrita pelo builder e pelo coletor `b3_carteira_ibov`, na etapa `precos` do daily.
@@ -168,7 +178,7 @@ descontinuado: o schema atual fica em um arquivo SQL, e cada alteração é escr
 
 ### 4.1 Banco vazio
 
-`sql/schema.mysql.sql` tem o schema completo do estado atual, com as 41 tabelas. Para criar um banco vazio, aplique esse
+`sql/schema.mysql.sql` tem o schema completo do estado atual, com as 44 tabelas. Para criar um banco vazio, aplique esse
 arquivo com um usuário que tem DDL. Ele não cria a tabela `alembic_version`. Banco que já tem as tabelas não precisa dele.
 
 ### 4.2 Alterar o schema

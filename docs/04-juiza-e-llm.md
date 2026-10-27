@@ -164,11 +164,13 @@ Os tetos em US$ são somas de `custo_usd` por `finalidade`, com o índice `ix_ra
 |---|---|
 | `article_id`, `ticker`, `prompt_versao` | Chave primária. `article_id` referencia `raw_articles` |
 | `run_id` | FK para `v1-raw_llm_juiza_runs`. Vazio quando o julgamento veio da regra barata |
-| `modelo` | `'regra'`, o nome do modelo da LLM de fallback (`gpt-5.6-luna` ou o modelo do Gemini), ou `jev-1.13.0/q1/t1500` quando o Jev decidiu |
+| `modelo` | `'regra'`, o nome do modelo da LLM de fallback (`gpt-5.6-luna` ou o modelo do Gemini), `jev-1.13.0/q1/t1500` quando o Jev decidiu, ou `codigo/r1/<camada>` quando o classificador por código decidiu (ver a nota abaixo) |
 | `papel`, `tipo_conteudo`, `evento` | Valores da seção 2.3 |
 | `tickers_adicionais` | JSON com a lista de tickers do universo |
 | `qualidade`, `confianca` | `Double` |
 | `julgado_em` | Momento do julgamento, em UTC |
+
+**Julgamento por código (notícias WordPress).** `llm/juiza_codigo.py` decide, sem LLM, os pares de InfoMoney, Money Times e Exame que a evidência do casador resolve. Quem grava é o `processar_wp`, dentro da etapa `noticias`, e não a juíza: `run_id` fica vazio e `modelo` vale `codigo/r1/<camada>`, com as camadas K1, K2, K3 e K6 (`CAMADAS_ATIVAS`). Os pares das camadas R, T, K4 e K7 não têm julgamento de código e seguem como pendentes para a juíza. A regra de entrega não muda. Os números medidos estão em [09](09-historico-de-mudancas.md) e no [ADR](ADR.md).
 
 A gravação usa `bulk_upsert` sem colunas para atualizar. Se já existe linha para (artigo, ticker, versão), a linha antiga é mantida. Uma nova versão do prompt cria linhas novas, e por isso os pares voltam a ser pendentes quando `VERSAO` sobe.
 

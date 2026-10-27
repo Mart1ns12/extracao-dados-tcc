@@ -206,6 +206,7 @@ def test_prob_vem_do_modelo_do_idioma_do_artigo() -> None:
         (None, "google_news", True, False),
         (None, "google_news", False, True),
         (Julgamento("protagonista", "reportagem", "outro", 0.9, ()), "google_news", True, True),
+        (Julgamento("protagonista", "reportagem", "outro", 0.9, ()), "wordpress", True, True),
         (Julgamento("citada_com_fato", "reportagem", "outro", 0.9, ()), "rss_nativo", True, True),
         (Julgamento("mencao", "reportagem", "outro", 0.9, ()), "google_news", True, False),
         (Julgamento("protagonista", "opiniao", "outro", 0.9, ()), "google_news", True, False),
@@ -214,6 +215,24 @@ def test_prob_vem_do_modelo_do_idioma_do_artigo() -> None:
 )
 def test_aprovado_para_entrega_combinacoes(julgamento, origem, exigir, esperado) -> None:
     assert aprovado_para_entrega(julgamento, origem, exigir) is esperado
+
+
+# -- artigos: republicacao entre veiculos -----------------------------------------------------
+
+def test_artigos_exclui_republicacao_que_nao_e_representante(monkeypatch) -> None:
+    """A consulta de artigos tira os article_id de staging_historias com article_id != historia.
+
+    Sem banco: a consulta e capturada no lugar de executada, e so o SQL e conferido.
+    """
+    capturadas = []
+    monkeypatch.setattr(B, "_consulta", lambda stmt: capturadas.append(stmt) or [])
+
+    B._Fontes(dt.date(2026, 1, 1)).artigos
+
+    sql = str(capturadas[0].compile())
+    assert "staging_historias" in sql
+    assert "NOT IN" in sql.upper()
+    assert "!=" in sql or "<>" in sql
 
 
 # -- precos e indices ------------------------------------------------------------------------
@@ -717,3 +736,148 @@ def test_unit_e_composta_pelas_acoes_on_e_pn_da_mesma_empresa() -> None:
     assert len(unit) == 1
     assert unit[0]["valor_por_acao"] == pytest.approx(1 * 0.10 + 4 * 0.20)
     assert unit[0]["tipo"] == "DIVIDENDO"
+
+
+# -- escala das acoes (CVM mistura unidades e milhares) ----------------------------------------
+
+MARCOS = [dt.date(2025, 3, 31), dt.date(2025, 6, 30), dt.date(2025, 9, 30)]
+
+
+def _acao(data: dt.date, on: int, pn: int = 0) -> dict:
+    return {"cnpj": PETROBRAS, "tipo_documento": "ITR", "dt_refer": data, "versao": 1,
+            "qt_on": on, "qt_pn": pn}
+
+
+def _volumes_diarios(valor: float, inicio: dt.date = dt.date(2024, 1, 1)) -> dict:
+    """Volume de 50 mi por dia, em todo dia de `inicio` a jun/2026, para o CNPJ da Petrobras."""
+    dias = [inicio + dt.timedelta(days=n) for n in range((dt.date(2026, 6, 30) - inicio).days + 1)]
+    return {PETROBRAS: {d: valor for d in dias}}
+
+
+def test_acoes_sempre_em_milhares_com_giro_alto_saem_em_unidades() -> None:
+    # 4,26 mi de acoes em milhares = 4,26 bi reais de acoes: giro de ~12% ao dia.
+    linhas = B.montar_acoes_emitidas([_acao(d, 4_255_763) for d in MARCOS], _volumes_diarios(5e7))
+    assert [r["qtd_on"] for r in linhas] == [4_255_763_000] * 3
+
+
+def test_cnpj_alternando_unidades_e_milhares_fica_tudo_em_unidades() -> None:
+    linhas = B.montar_acoes_emitidas([
+        _acao(MARCOS[0], 4_255_763_000),
+        _acao(MARCOS[1], 4_255_763, 1_000),
+        _acao(MARCOS[2], 4_255_763_000),
+    ], _volumes_diarios(5e7))
+    assert [r["qtd_on"] for r in linhas] == [4_255_763_000] * 3
+    assert [r["qtd_pn"] for r in linhas] == [0, 1_000_000, 0]
+
+
+def test_cnpj_em_unidades_com_giro_baixo_fica_intacto() -> None:
+    linhas = B.montar_acoes_emitidas(
+        [_acao(d, 4_255_763_000) for d in MARCOS], _volumes_diarios(5e7)
+    )
+    assert [r["qtd_on"] for r in linhas] == [4_255_763_000] * 3
+
+
+def test_segmento_sem_volume_herda_escala_oposta_do_vizinho_decidido() -> None:
+    # Dez/2024 nao tem volume antes dela (sem giro); o trimestre seguinte, em unidades, decide.
+    linhas = B.montar_acoes_emitidas([
+        _acao(dt.date(2024, 12, 31), 4_000_000),
+        _acao(MARCOS[0], 4_000_000_000),
+    ], _volumes_diarios(5e7, inicio=dt.date(2025, 1, 1)))
+    assert [r["qtd_on"] for r in linhas] == [4_000_000_000, 4_000_000_000]
+
+
+def test_heranca_de_escala_se_propaga_em_cadeia_ate_o_segmento_decidido() -> None:
+    # Caso Natura: milhares, unidades, milhares antes da listagem (sem volume); so o ultimo
+    # segmento tem giro. A escala alterna a cada troca de 1000x a partir dele.
+    linhas = B.montar_acoes_emitidas([
+        _acao(dt.date(2024, 3, 31), 920_205),
+        _acao(dt.date(2024, 6, 30), 920_205_397),
+        _acao(dt.date(2024, 9, 30), 920_205),
+        _acao(MARCOS[0], 920_205_397),
+    ], _volumes_diarios(5e6, inicio=dt.date(2025, 1, 1)))
+    assert [r["qtd_on"] for r in linhas] == [920_205_000, 920_205_397, 920_205_000, 920_205_397]
+
+
+def test_sem_volumes_a_escala_nao_e_corrigida() -> None:
+    linhas = B.montar_acoes_emitidas([_acao(d, 4_255_763) for d in MARCOS])
+    assert [r["qtd_on"] for r in linhas] == [4_255_763] * 3
+
+
+def test_valor_isolado_10x_nao_e_corrigido_e_gera_aviso(caplog) -> None:
+    linhas = B.montar_acoes_emitidas([
+        _acao(MARCOS[0], 1_000_000_000),
+        _acao(MARCOS[1], 10_000_000_000),
+        _acao(MARCOS[2], 1_000_000_000),
+    ], _volumes_diarios(5e7))
+    assert [r["qtd_on"] for r in linhas] == [1_000_000_000, 10_000_000_000, 1_000_000_000]
+    avisos = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("2025-06-30" in aviso and "10000000000" in aviso for aviso in avisos)
+
+
+def test_volumes_por_cnpj_soma_on_e_pn_e_tira_o_sa() -> None:
+    cadastro = [
+        {"ticker": "PETR3", "cnpj": PETROBRAS},
+        {"ticker": "PETR4", "cnpj": PETROBRAS},
+        {"ticker": "SEMCNPJ3", "cnpj": None},
+    ]
+    dia = dt.date(2026, 6, 18)
+    precos = [
+        {"ticker": "PETR3.SA", "date": dia, "volume": 100},
+        {"ticker": "PETR4.SA", "date": dia, "volume": 50},
+        {"ticker": "PETR4.SA", "date": dt.date(2026, 6, 19), "volume": None},
+        {"ticker": "SEMCNPJ3.SA", "date": dia, "volume": 999},
+        {"ticker": "^BVSP", "date": dia, "volume": 999},
+    ]
+    assert B.volumes_por_cnpj(cadastro, precos) == {PETROBRAS: {dia: 150.0}}
+
+
+# -- escala declarada errada nos balancos -------------------------------------------------------
+
+def _itr_receita(fim: dt.date, valor: float, escala: str) -> dict:
+    """Linha da receita (3.01) de um ITR trimestral, com a escala que a companhia declarou."""
+    ini = dt.date(fim.year, fim.month - 2, 1)
+    return _bal("3.01", "Receita de Venda de Bens e/ou Serviços", valor, ini=ini, fim=fim,
+                refer=fim, escala=escala)
+
+
+def test_documento_em_unidade_em_cnpj_mil_vira_mil() -> None:
+    # 3T25 declarou UNIDADE, mas o valor esta em milhares: 120.000 mil = 120 mi de reais.
+    linhas = B.montar_balancos([
+        _itr_receita(dt.date(2025, 3, 31), 100_000.0, "MIL"),
+        _itr_receita(dt.date(2025, 6, 30), 110_000.0, "MIL"),
+        _itr_receita(dt.date(2025, 9, 30), 120_000.0, "UNIDADE"),
+        _itr_receita(dt.date(2025, 12, 31), 130_000.0, "MIL"),
+    ])
+    periodos = _por_periodo(linhas)
+    assert periodos[(dt.date(2025, 7, 1), dt.date(2025, 9, 30))]["receita_liquida"] == 120_000_000.0
+
+
+def test_cnpj_sempre_em_unidade_fica_intacto() -> None:
+    linhas = B.montar_balancos([
+        _itr_receita(dt.date(2025, 3, 31), 100_000_000.0, "UNIDADE"),
+        _itr_receita(dt.date(2025, 6, 30), 110_000_000.0, "UNIDADE"),
+    ])
+    assert [r["receita_liquida"] for r in linhas] == [100_000_000.0, 110_000_000.0]
+
+
+def test_documento_em_unidade_de_magnitude_compativel_mantem_unidade() -> None:
+    # 120 mi em unidades bate com os trimestres em MIL (~110 mi): nao e erro de escala.
+    linhas = B.montar_balancos([
+        _itr_receita(dt.date(2025, 3, 31), 100_000.0, "MIL"),
+        _itr_receita(dt.date(2025, 6, 30), 110_000.0, "MIL"),
+        _itr_receita(dt.date(2025, 9, 30), 120_000_000.0, "UNIDADE"),
+    ])
+    assert [r["receita_liquida"] for r in linhas] == [100_000_000.0, 110_000_000.0, 120_000_000.0]
+
+
+def test_documento_em_mil_em_cnpj_unidade_vira_unidade() -> None:
+    # 3T25 declarou MIL, mas o valor ja esta em unidades: 120 mi, nao 120 bi.
+    linhas = B.montar_balancos([
+        _itr_receita(dt.date(2025, 3, 31), 100_000_000.0, "UNIDADE"),
+        _itr_receita(dt.date(2025, 6, 30), 110_000_000.0, "UNIDADE"),
+        _itr_receita(dt.date(2025, 9, 30), 120_000_000.0, "MIL"),
+        _itr_receita(dt.date(2025, 12, 31), 130_000_000.0, "UNIDADE"),
+    ])
+    assert [r["receita_liquida"] for r in linhas] == [
+        100_000_000.0, 110_000_000.0, 120_000_000.0, 130_000_000.0,
+    ]
