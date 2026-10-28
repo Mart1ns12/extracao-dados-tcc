@@ -143,6 +143,31 @@ def test_cache_maior_que_a_entrada_e_limitado() -> None:
     assert custo == pytest.approx(0.02)
 
 
+ANTHROPIC_SEM_OVERRIDE = SimpleNamespace(
+    juiza_provedor="anthropic",
+    juiza_preco_entrada_usd_mtok=None,
+    juiza_preco_cache_usd_mtok=None,
+    juiza_preco_saida_usd_mtok=None,
+)
+
+
+def test_anthropic_sem_override_usa_a_tabela_haiku_5_5() -> None:
+    # Haiku 5.5, prompt ate 100K: entrada 0.10, cache 0.01, saida 0.50 US$/MTok.
+    assert juiza_custo.precos_llm(ANTHROPIC_SEM_OVERRIDE) == (0.10, 0.01, 0.50)
+    assert juiza_custo.custo_llm(1_000_000, 0, s=ANTHROPIC_SEM_OVERRIDE) == pytest.approx(0.10)
+    assert juiza_custo.custo_llm(0, 1_000_000, s=ANTHROPIC_SEM_OVERRIDE) == pytest.approx(0.50)
+    assert juiza_custo.custo_llm(1_000_000, 0, tokens_cache=1_000_000,
+                                 s=ANTHROPIC_SEM_OVERRIDE) == pytest.approx(0.01)
+
+
+def test_anthropic_nao_cobra_pensamento_duas_vezes() -> None:
+    # Pensamento ja esta em output_tokens: tokens_pensamento=None, saida conta uma vez so.
+    resposta = SimpleNamespace(tokens_entrada=0, tokens_saida=400_000,
+                               tokens_cache=None, tokens_pensamento=None)
+
+    assert juiza_custo.custo_resposta(resposta, ANTHROPIC_SEM_OVERRIDE) == pytest.approx(0.20)
+
+
 def test_gemini_soma_o_pensamento_como_saida() -> None:
     s = SimpleNamespace(juiza_provedor="gemini", juiza_preco_entrada_usd_mtok=None,
                         juiza_preco_cache_usd_mtok=None, juiza_preco_saida_usd_mtok=None)

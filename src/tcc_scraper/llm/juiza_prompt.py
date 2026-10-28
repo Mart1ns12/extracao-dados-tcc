@@ -16,8 +16,10 @@ from tcc_scraper.llm.prompt import PromptRenderizado
 
 NOME = "juiza"
 # Schema estrito da OpenAI difere do Gemini: outro nome, pois garantir_prompt recusa texto
-# diferente na mesma (nome, versao).
+# diferente na mesma (nome, versao). A Anthropic usa o mesmo schema estrito da OpenAI, mas
+# tem nome proprio pelo mesmo motivo (o prompt renderizado pode diferir por provedor).
 NOME_OPENAI = "juiza_openai"
+NOME_ANTHROPIC = "juiza_anthropic"
 VERSAO = 1
 
 
@@ -44,11 +46,12 @@ def universo_juiza() -> str:
 def renderizar_prompt_juiza(itens: list[dict], provedor: str = "gemini") -> PromptRenderizado:
     """itens: dicts com id, ticker, empresa, titulo, fonte e trecho (serializados como estao).
 
-    provedor: 'gemini' (padrao, inalterado) ou 'openai' (schema estrito, nome juiza_openai).
+    provedor: 'anthropic' (padrao; schema estrito, nome juiza_anthropic), 'openai' (schema
+    estrito, nome juiza_openai) ou 'gemini' (inalterado).
     """
     template = _carregar_template()
     schema = schema_juiza(provedor)
-    nome = NOME_OPENAI if provedor == "openai" else NOME
+    nome = {"openai": NOME_OPENAI, "anthropic": NOME_ANTHROPIC}.get(provedor, NOME)
     texto = Template(template).substitute(
         universo=universo_juiza(),
         itens=json.dumps(itens, ensure_ascii=False, indent=2),

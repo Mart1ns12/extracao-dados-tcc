@@ -9,7 +9,7 @@ Este documento cobre a juíza de notícias (julgamento de pares artigo-ticker se
 | Juíza | Julga pares (artigo, ticker) já coletados: regra barata, depois Jev, depois LLM de fallback | Não | `v1-raw_llm_juiza_runs`, `v1-staging_noticias_julgamento`, `v1-staging_juiza_tentativas` | Sim, como filtro e como colunas `papel`, `tipo_conteudo`, `evento`, `qualidade` de `v1-noticias` |
 | Análise diária v3 | Pesquisa as notícias do dia e produz sinais por ação | Sim (`google_search`) | `raw_llm_prompts`, `raw_llm_runs`, `staging_llm_*` | Não. A montagem da entrega não lê estas tabelas |
 
-A juíza roda na etapa `juiza` do daily (ordem 6), antes da montagem da entrega. A análise roda na etapa `analise` (ordem 9), depois dela. A análise diária usa o Gemini. A juíza usa o Jev e, para o que ele não resolve, a LLM de fallback: OpenAI `gpt-5.6-luna` por padrão (`JUIZA_PROVEDOR=openai`), ou Gemini (`JUIZA_PROVEDOR=gemini`).
+A juíza roda na etapa `juiza` do daily (ordem 6), antes da montagem da entrega. A análise roda na etapa `analise` (ordem 9), depois dela. A análise diária usa o Gemini. A juíza usa o Jev e, para o que ele não resolve, a LLM de fallback: Anthropic `claude-haiku-5-5` por padrão (`JUIZA_PROVEDOR=anthropic`, desde 2026-10-28), ou OpenAI `gpt-5.6-luna` (`JUIZA_PROVEDOR=openai`), ou Gemini (`JUIZA_PROVEDOR=gemini`).
 
 ## 2. Juíza de notícias
 
@@ -18,7 +18,7 @@ A juíza roda na etapa `juiza` do daily (ordem 6), antes da montagem da entrega.
 1. **Pendentes.** Pares (artigo, ticker) com vínculo em `article_tickers` e sem linha em `v1-staging_noticias_julgamento` para a versão vigente do prompt (`VERSAO` em `llm/juiza_prompt.py`, hoje `1`). Pares que já gastaram `JUIZA_MAX_TENTATIVAS` tentativas (padrão 3) saem da fila. A leitura é paginada, com `JUIZA_PAGINA` pares por página. A ordem depende do modo (seção 2.5): o diário vai do mais recente para o mais antigo; o backlog, do mais antigo para o mais recente.
 2. **Regra barata** (seção 2.2). Resolve o caso óbvio sem LLM e grava com `modelo = 'regra'`. A regra não conta para o teto de itens.
 3. **Jev** (seção 2.4). Roda se `JEV_ENABLED=true` e houver `JEV_API_KEY`. Recebe o que a regra não resolveu, em lotes de `JEV_LOTE` pares. Conforme `JUIZA_JEV_MODO` (`entrega` por padrão), o Jev decide os pares que tem segurança de decidir; o resto segue para a LLM. Um lote que o Jev não consegue julgar fica pendente e não vai à LLM.
-4. **LLM de fallback.** Recebe só o que o Jev não decidiu. Provedor em `JUIZA_PROVEDOR`: OpenAI `gpt-5.6-luna` (padrão) ou Gemini (seção 2.3). Lotes de `JUIZA_LOTE` itens (padrão 50). Uma chamada por lote, sem busca na web, com saída em JSON conforme o schema.
+4. **LLM de fallback.** Recebe só o que o Jev não decidiu. Provedor em `JUIZA_PROVEDOR`: Anthropic `claude-haiku-5-5` (padrão), OpenAI `gpt-5.6-luna` ou Gemini (seção 2.3). Lotes de `JUIZA_LOTE` itens (padrão 50). Uma chamada por lote, sem busca na web, com saída em JSON conforme o schema.
 5. **Validação.** A resposta é validada item a item. Um item inválido (enum fora da lista, nota fora de 0 a 1 etc.) vira erro da run e não derruba o lote: os demais itens válidos entram. Só entram os pares pedidos no lote, sem duplicatas. JSON inválido ou resposta sem a lista `itens` derrubam o lote inteiro.
 6. **Gravação.** Cada chamada paga (Jev ou LLM) gera uma linha em `v1-raw_llm_juiza_runs`, com `custo_usd` e `finalidade`, inclusive as que falharam. Só os julgamentos aceitos vão para `v1-staging_noticias_julgamento`, na mesma transação da run. Cada par pedido à LLM de fallback e não aceito ganha uma tentativa em `v1-staging_juiza_tentativas` (seção 2.6).
 7. **Teto.** Antes de cada lote pago, o teto em US$ é conferido (seção 2.5). Cada par que gasta chamada paga conta uma vez no teto de itens, mesmo que passe pelo Jev e depois pela LLM.
@@ -35,7 +35,7 @@ O processo é retomável. Um par sem julgamento para a versão vigente continua 
 
 As runs do Jev usam `ok`, `parcial` ou `erro_api`. Os pares que o Jev não decide não ganham tentativa: seguem para a LLM de fallback.
 
-Sem a chave do provedor escolhido (`OPENAI_API_KEY` ou `GEMINI_API_KEY`), os pares que sobram da regra barata (e do Jev) ficam pendentes e o log registra um aviso. A etapa `juiza` termina como concluída, com zero itens julgados pela LLM. Sem chave de nenhum dos dois, só a primeira página de regra roda. Com `JEV_ENABLED=true` e sem `JEV_API_KEY`, a LLM fica bloqueada (parada `jev_sem_chave`, seção 2.9).
+Sem a chave do provedor escolhido (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` ou `GEMINI_API_KEY`), os pares que sobram da regra barata (e do Jev) ficam pendentes e o log registra um aviso. A etapa `juiza` termina como concluída, com zero itens julgados pela LLM. Sem chave de nenhum dos dois, só a primeira página de regra roda. Com `JEV_ENABLED=true` e sem `JEV_API_KEY`, a LLM fica bloqueada (parada `jev_sem_chave`, seção 2.9).
 
 ### 2.2 Regra barata (`llm/juiza_regras.py`)
 
@@ -55,13 +55,14 @@ Os nomes casam como palavra inteira, sem acento e sem diferença de maiúscula. 
 
 O que o Jev não decide vai à LLM. O provedor é escolhido por `JUIZA_PROVEDOR`:
 
-- **`openai` (padrão).** Modelo `gpt-5.6-luna`, pela Responses API, com `reasoning.effort = none` (o menor valor aceito; não existe `minimal`), Structured Outputs com `json_schema` estrito e `store = false`. Timeout de `OPENAI_TIMEOUT_S` (120 s), até `OPENAI_MAX_ATTEMPTS` tentativas (3) e teto de saída de `OPENAI_MAX_OUTPUT_TOKENS` (16.000). Chave em `OPENAI_API_KEY`; a base da API é `OPENAI_BASE_URL`. Um 429 com `insufficient_quota` é a parada `sem_credito`: não há retry.
+- **`anthropic` (padrão).** Modelo `claude-haiku-5-5`, pela Messages API, com `output_config.effort = medium` (`ANTHROPIC_EFFORT`) e saída JSON estrita (`output_config.format` com `json_schema`, o mesmo schema estrito da OpenAI, sem envelope). Não se envia `temperature`, `top_p`, `top_k`, `thinking` nem prefill: o Haiku 5.5 rejeita esses campos. O pensamento é o adaptativo padrão e já conta na saída. Timeout de `ANTHROPIC_TIMEOUT_S` (120 s), até `ANTHROPIC_MAX_ATTEMPTS` tentativas (3; o SDK repete 408, 409, 429, 5xx e falhas de conexão), e teto de saída de `ANTHROPIC_MAX_OUTPUT_TOKENS` (16.000). Chave em `ANTHROPIC_API_KEY`. Recusa (`refusal`) e saída cortada (`max_tokens`) não geram julgamento e caem no tratamento de texto inválido da juíza. Crédito esgotado (402, ou 400 com `credit balance`) é a parada `sem_credito`: não há retry.
+- **`openai` (alternativa).** Modelo `gpt-5.6-luna`, pela Responses API, com `reasoning.effort = none` (o menor valor aceito; não existe `minimal`), Structured Outputs com `json_schema` estrito e `store = false`. Timeout de `OPENAI_TIMEOUT_S` (120 s), até `OPENAI_MAX_ATTEMPTS` tentativas (3) e teto de saída de `OPENAI_MAX_OUTPUT_TOKENS` (16.000). Chave em `OPENAI_API_KEY`; a base da API é `OPENAI_BASE_URL`. Um 429 com `insufficient_quota` é a parada `sem_credito`: não há retry.
 - **`gemini`.** Método `classificar` do `GeminiClient`, que usa `_chamar_api_sem_busca`: sem `google_search`, com `temperature = 0` e `response_format` JSON com o schema. Falhas transitórias são repetidas com backoff, até `LLM_MAX_ATTEMPTS` tentativas e com timeout `LLM_TIMEOUT_S`. Um 402 (crédito esgotado) é a parada `sem_credito`.
 
 Em qualquer provedor:
 
-- **Modelo:** `JUIZA_MODELO`. Vazio = padrão do provedor (`gpt-5.6-luna` na OpenAI; `gemini-3.1-flash-lite` no Gemini). `JUIZA_MODELO` é independente de `GEMINI_MODEL`, que é da análise diária. Um `JUIZA_MODELO=gemini-...` com `JUIZA_PROVEDOR=openai` gera o aviso `modelo_incompativel`: remova a variável do `.env`.
-- **Prompt versionado:** o prompt da OpenAI é registrado em `raw_llm_prompts` com `nome = 'juiza_openai'` e a mesma versão `1` do prompt do Gemini. O schema estrito é diferente, mas a versão do julgamento (`prompt_versao`) não mudou. Por isso os julgamentos feitos com o Gemini continuam válidos.
+- **Modelo:** `JUIZA_MODELO`. Vazio = padrão do provedor (`claude-haiku-5-5` na Anthropic; `gpt-5.6-luna` na OpenAI; `gemini-3.1-flash-lite` no Gemini). `JUIZA_MODELO` é independente de `GEMINI_MODEL`, que é da análise diária. Um `JUIZA_MODELO=gemini-...` com `JUIZA_PROVEDOR=openai` gera o aviso `modelo_incompativel`: remova a variável do `.env`. Vale o mesmo para modelo de outro provedor: `claude*` só com `anthropic`, e `anthropic` exige `claude*`.
+- **Prompt versionado:** o prompt da OpenAI é registrado em `raw_llm_prompts` com `nome = 'juiza_openai'` e a mesma versão `1` do prompt do Gemini. O da Anthropic usa `nome = 'juiza_anthropic'`, com o mesmo schema estrito da OpenAI. O schema estrito é diferente, mas a versão do julgamento (`prompt_versao`) não mudou. Por isso os julgamentos feitos com o Gemini continuam válidos.
 - **Entrada por item:** `id`, `ticker`, `empresa`, `titulo`, `fonte` e `trecho`. O `trecho` são os primeiros 300 caracteres do corpo, quando o corpo existe (o Jev vê 1.500; ver seção 2.4). O universo, com nome e setor de cada ticker e os apelidos, vai uma vez no cabeçalho do prompt.
 - **Saída por item:**
 
@@ -134,6 +135,7 @@ A `confianca` gravada é a probabilidade do lado decidido. O limiar padrão, 0,9
 - **Backlog e carga histórica.** A carga histórica roda a juíza em modo `backlog`, uma vez por ano, sem teto de itens. O que limita é a verba de US$ 15, cumulativa entre execuções. A verba não entra no teto mensal do diário.
 - **Teto separado da análise.** A análise diária tem teto de US$ 5/mês no Gemini (seção 3.6). A juíza não usa esse teto: os tetos dela cobrem o Jev e a LLM de fallback, seja OpenAI ou Gemini. A juíza diária usa até US$ 3/mês, e o backlog tem verba de US$ 15.
 - **Concordância não tem teto.** O `judge-news --concordancia` não consulta nenhum teto e não chama a LLM: só o Jev é chamado. O custo aparece no resumo (seção 2.7).
+- **Preço da LLM de fallback (Anthropic, padrão).** `claude-haiku-5-5`, tabela da Anthropic de 2026-10: US$ 0,10 por milhão de tokens de entrada, US$ 0,01 de cache de leitura e US$ 0,50 de saída (prompt até 100K tokens). Medido em 2026-10-28: cerca de US$ 0,00012 por par (seção 3.6). Sem `cache_control`, o cache não entra na conta. Com `JUIZA_PRECO_*` vazios, vale a tabela do provedor.
 - **Preço da LLM de fallback (OpenAI).** `gpt-5.6-luna`, preço oficial de 2026-10-26: US$ 0,20 por milhão de tokens de entrada, US$ 0,02 de entrada em cache e US$ 1,20 de saída. Com `JUIZA_PRECO_*` vazios, vale a tabela do provedor. O raciocínio do `effort none` já está em `output_tokens` e não é somado de novo. O custo cobra o cache à parte (`custo_llm`). Medido em 2026-10-26, em um lote de 50 pares: schema estrito aceito de primeira, 50 de 50 itens válidos, `reasoning_tokens = 0`, cerca de 5.976 tokens de entrada e 2.750 de saída. Sem cache, isso dá cerca de US$ 0,00009 por par. Numa repetição do mesmo prompt, o cache cobriu 5.973 tokens (cerca de US$ 0,00007 por par). Em produção o cache cobre só o prefixo fixo, então o custo real fica entre os dois. Latência de cerca de 18 s por lote. Concordância com o Gemini nos mesmos 50: entrega 44 de 50, papel 34 de 50, tipo 36 de 50.
 - **Preço da LLM de fallback (Gemini).** Se `JUIZA_PROVEDOR=gemini`: `gemini-3.1-flash-lite`, conforme a tabela da seção 3.6 (verificada em 2026-10-15): US$ 0,25 por milhão de tokens de entrada e US$ 1,50 de saída. O pensamento, quando o modelo informa, é cobrado como saída.
 - **Batch API: rejeitada.** Vale para o Gemini e para a OpenAI. O desconto seria de 50%, mas o job assíncrono pode levar até 24 h, o que não cabe no daily. Ver o ADR "Juíza: Jev decide por entrega segura; fallback OpenAI gpt-5.6-luna (effort none)".
@@ -266,7 +268,7 @@ Avisos (`avisos_config`, no log da etapa e no `judge-news --status`):
 |---|---|
 | `jev_desligado` | `JEV_ENABLED=false`. O Jev não roda e não há erro |
 | `jev_sem_chave` | `JEV_ENABLED=true` sem `JEV_API_KEY` (também é parada, acima) |
-| `openai_sem_chave` ou `gemini_sem_chave` | Falta a chave do provedor escolhido em `JUIZA_PROVEDOR`. Os pares que sobram ficam pendentes |
+| `anthropic_sem_chave`, `openai_sem_chave` ou `gemini_sem_chave` | Falta a chave do provedor escolhido em `JUIZA_PROVEDOR`. Os pares que sobram ficam pendentes |
 | `modelo_incompativel` | `JUIZA_MODELO=gemini-...` com `JUIZA_PROVEDOR=openai`. O erro é claro. Remova `JUIZA_MODELO` do `.env` |
 
 `judge-news --status` mostra: se o Jev está ligado ou desligado, se a chave do Jev está presente ou AUSENTE, o modo (`JUIZA_JEV_MODO`), o limiar (`JUIZA_JEV_LIMIAR_ENTREGA`), o trecho (`JEV_TRECHO`), o provedor, o modelo, se a chave da LLM está presente, e os avisos.
@@ -354,7 +356,7 @@ Se o template da versão atual mudar sem subir `VERSAO`, `garantir_prompt` recus
 | `LLM_TIMEOUT_S` | `180` | Timeout de cada chamada |
 | `LLM_MAX_ATTEMPTS` | `3` | Tentativas com backoff em falhas transitórias |
 | `LLM_TZ` | `America/Sao_Paulo` | Fuso que define a `data_referencia` |
-| `JUIZA_PROVEDOR` | `openai` | LLM de fallback da juíza: `openai` ou `gemini` (seção 2.3) |
+| `JUIZA_PROVEDOR` | `anthropic` | LLM de fallback da juíza: `anthropic` (padrão), `openai` ou `gemini` (seção 2.3) |
 | `JUIZA_MODELO` | vazio | Override do modelo da juíza. Vazio = padrão do provedor (`gpt-5.6-luna` ou `gemini-3.1-flash-lite`). Com `openai`, um `gemini-...` gera `modelo_incompativel`: remova a variável |
 | `JUIZA_MAX_ITENS_DIA` | `2000` | Teto de pares pagos na etapa diária (seção 2.5) |
 | `JUIZA_LOTE` | `50` | Itens por chamada à LLM de fallback |
@@ -374,7 +376,12 @@ Se o template da versão atual mudar sem subir `VERSAO`, `garantir_prompt` recus
 | `JEV_LOTE`, `JEV_CONCORRENCIA` | `50`, `8` | Pares por lote e requisições em paralelo |
 | `JEV_TIMEOUT_S` | `30.0` | Timeout de cada requisição ao Jev |
 | `JEV_TRECHO` | `1500` | Caracteres do corpo que o Jev recebe (faixa de 300 a 8.000). A LLM continua com 300 |
-| `OPENAI_API_KEY` | vazio | Chave da OpenAI, da LLM de fallback com `JUIZA_PROVEDOR=openai`. Sem ela, aviso `openai_sem_chave` |
+| `ANTHROPIC_API_KEY` | vazio | Chave da Anthropic, da LLM de fallback com `JUIZA_PROVEDOR=anthropic` (padrão). Sem ela, aviso `anthropic_sem_chave` |
+| `ANTHROPIC_TIMEOUT_S` | `120` | Timeout de cada chamada à Anthropic |
+| `ANTHROPIC_MAX_ATTEMPTS` | `3` | Tentativas por chamada à Anthropic (o SDK repete 408, 409, 429, 5xx e falha de conexão). Não há retry em crédito esgotado (parada `sem_credito`) |
+| `ANTHROPIC_EFFORT` | `medium` | Esforço do `claude-haiku-5-5`: `low`, `medium`, `high`, `xhigh` ou `max` |
+| `ANTHROPIC_MAX_OUTPUT_TOKENS` | `16000` | Teto de tokens de saída por chamada à Anthropic |
+| `OPENAI_API_KEY` | vazio | Chave da OpenAI, da LLM de fallback com `JUIZA_PROVEDOR=openai` (alternativa). Sem ela, aviso `openai_sem_chave` |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Base da API da OpenAI |
 | `OPENAI_TIMEOUT_S` | `120` | Timeout de cada chamada à OpenAI |
 | `OPENAI_MAX_ATTEMPTS` | `3` | Tentativas por chamada à OpenAI em falhas transitórias. Não há retry em `insufficient_quota` (parada `sem_credito`) |
@@ -387,11 +394,18 @@ Se o template da versão atual mudar sem subir `VERSAO`, `garantir_prompt` recus
 Há duas frentes pagas, com tetos separados:
 
 - **Análise diária (Gemini).** **Teto aprovado: US$ 5/mês** para o Gemini da análise. Não inclui a juíza, que não usa mais o Gemini por padrão. Desde 2026-10-26 a etapa está desligada (`ANALISE_ENABLED=false`), porque o crédito pré-pago acabou em 2026-10-24. O teto fica como referência até a migração para a OpenAI.
-- **Juíza (Jev e LLM de fallback).** Teto de US$ 3/mês para a juíza diária (`JUIZA_ORCAMENTO_MENSAL_USD`) e verba única de US$ 15 para o backlog (`JUIZA_BACKLOG_VERBA_USD`, seção 2.5). Os dois tetos somam o Jev e a LLM de fallback, seja OpenAI ou Gemini. O Jev custa US$ 0,042 por milhão de tokens de entrada. A LLM de fallback padrão é a OpenAI `gpt-5.6-luna`, com preço oficial de 2026-10-26: US$ 0,20 de entrada, US$ 0,02 de entrada em cache e US$ 1,20 de saída, por milhão de tokens.
+- **Juíza (Jev e LLM de fallback).** Teto de US$ 3/mês para a juíza diária (`JUIZA_ORCAMENTO_MENSAL_USD`) e verba única de US$ 15 para o backlog (`JUIZA_BACKLOG_VERBA_USD`, seção 2.5). Os dois tetos somam o Jev e a LLM de fallback, seja Anthropic, OpenAI ou Gemini. O Jev custa US$ 0,042 por milhão de tokens de entrada. A LLM de fallback padrão é a Anthropic `claude-haiku-5-5` (ver abaixo). As alternativas são a OpenAI `gpt-5.6-luna`, com preço oficial de 2026-10-26 (US$ 0,20 de entrada, US$ 0,02 de entrada em cache e US$ 1,20 de saída, por milhão de tokens) e o Gemini.
+
+**Juíza com Anthropic (padrão desde 2026-10-28), medida.** Preço da tabela da Anthropic de 2026-10: `claude-haiku-5-5` a US$ 0,10 por milhão de tokens de entrada, US$ 0,01 de cache de leitura e US$ 0,50 de saída. A faixa vale para prompt até 100K tokens; acima disso o preço sobe 5x, o que não acontece num lote de 50 pares. Medido em 2026-10-28 com chamada real (effort `medium`), em 300 pares sorteados entre os que o Gemini já julgou (semente 42, 6 lotes de 50, sem gravar nada):
+- Por lote: 9.581 a 12.154 tokens de entrada, 9.088 a 11.343 de saída (o pensamento está dentro da saída), cache 0, de 31 a 42 s (média 34,7 s). Os 300 itens vieram válidos e não houve recusa.
+- Custo: US$ 0,0357 nos 300 pares, ou **US$ 0,000119 por par**. É o dobro da estimativa (US$ 0,00006), por causa do pensamento no effort `medium`, e fica perto da Luna (US$ 0,00009), mas é pago pelo crédito da Anthropic.
+- Concordância com o Gemini (n = 300): papel 68,0% (kappa 0,53), tipo_conteudo 76,7% (kappa 0,49) e **entrega 86,7% (kappa 0,735)**. Nas 40 discordâncias de entrega, em 33 o Gemini aceita e o Haiku não, e em 7 o contrário. Os exemplos são opinião ou análise que um dos dois chama de reportagem. Concordância não é acurácia: o Gemini também é inconsistente nesse ponto.
+- `tickers_adicionais`: o Gemini trouxe algum em 82 pares e o Haiku em 27 (25 em comum).
+O Jev continua na frente: nos pares que ele decide (cobertura de 69%), concorda 95,9% com o Gemini e custa US$ 0,000049 por par. O Haiku só recebe o resto. O schema enviado à Anthropic sai sem `minimum`/`maximum`, que a API recusa com 400; a faixa de 0 a 1 de `qualidade` e `confianca` continua validada pelo Pydantic. Sem `cache_control`, o cache não entra na conta, e o pensamento já está em `output_tokens`, sem cobrança dupla. Os tetos (US$ 3/mês e verba de US$ 15) não mudam.
 
 Essas exceções estão em `CLAUDE.md`, seções 1 e 9.
 
-Se a OpenAI devolver `insufficient_quota` (crédito esgotado), a juíza para com `sem_credito` e não repete a chamada. Recarregue o crédito antes de retomar. O mesmo vale para o 402 do Gemini. Isso já aconteceu: em 2026-10-24, o crédito pré-pago do Gemini acabou no meio da carga histórica, com 402. Naquela carga, a juíza gastou US$ 2,24 em 13.144 pares, julgados só pelo Gemini `gemini-3.1-flash-lite` (cerca de 139 tokens de entrada e 91 de saída por par; quase 80% do custo era saída).
+Se a OpenAI devolver `insufficient_quota` (crédito esgotado), a juíza para com `sem_credito` e não repete a chamada. Recarregue o crédito antes de retomar. O mesmo vale para o 402 do Gemini e para o 402 (ou o 400 com `credit balance`) da Anthropic. Isso já aconteceu: em 2026-10-24, o crédito pré-pago do Gemini acabou no meio da carga histórica, com 402. Naquela carga, a juíza gastou US$ 2,24 em 13.144 pares, julgados só pelo Gemini `gemini-3.1-flash-lite` (cerca de 139 tokens de entrada e 91 de saída por par; quase 80% do custo era saída).
 
 Preço do `gemini-3.8-flash`, verificado em 2026-10-15: US$ 0,75 por milhão de tokens de entrada e US$ 3,75 por milhão de saída (inclui o raciocínio). Buscas do Google: 5.000 por mês grátis; depois, US$ 14 por mil. O preço vale até 31/12/2026 e dobra em 2027.
 

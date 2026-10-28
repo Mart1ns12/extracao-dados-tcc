@@ -16,8 +16,14 @@ from tcc_scraper.db.session import session_scope
 
 _MILHAO = 1_000_000
 
-# US$/MTok do provedor da juiza: (entrada, cache, saida)
-_PRECOS_PADRAO = {"openai": (0.20, 0.02, 1.20), "gemini": (0.25, 0.25, 1.50)}
+# US$/MTok do provedor da juiza: (entrada, cache, saida).
+# anthropic: tabela da Anthropic de 2026-10, Haiku 5.5 para prompt ate 100K tokens. Acima
+# disso o preco sobe 5x, o que nao acontece num lote de 50 pares.
+_PRECOS_PADRAO = {
+    "anthropic": (0.10, 0.01, 0.50),
+    "openai": (0.20, 0.02, 1.20),
+    "gemini": (0.25, 0.25, 1.50),
+}
 
 
 def precos_llm(s) -> tuple[float, float, float]:

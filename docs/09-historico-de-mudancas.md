@@ -681,12 +681,12 @@ Motivo: com as duas trilhas paralelas da carga, a posição única de `v1-painel
 
 O que foi feito, sem commit:
 
-- `v1-painel_historico_progresso` ganha `unidade_atual`, `ultimo_erro_unidade` e `ultimo_erro_mensagem`. O ALTER está em `sql/alteracoes/2026-10-27_historico_progresso_unidade_erro.mysql.sql` e não foi aplicado. O schema recebe a Etapa 0012 no fim. Como o dono aplica a DDL antes de publicar, o `ProgressoHistorico` novo depende dela.
+- `v1-painel_historico_progresso` ganha `unidade_atual`, `ultimo_erro_unidade` e `ultimo_erro_mensagem`. O ALTER está em `sql/alteracoes/2026-10-27_historico_progresso_unidade_erro.mysql.sql`, aplicado pelo dono em 2026-10-27. O schema recebe a Etapa 0012 no fim. Como o dono aplica a DDL antes de publicar, o `ProgressoHistorico` novo depende dela.
 - `ProgressoHistorico.inicio_unidade(key)` grava a unidade antes de ela rodar. `Collector.run` chama esse gancho por `getattr`, para não mudar o Protocol do observador.
 - `unidade(ok=False)` grava o último erro na hora. O flush seguinte não apaga um erro anterior, mesmo num objeto novo depois de reinício.
 - Exceção do passo: `_executar` grava `falhou` com `Tipo: mensagem` em `ultimo_erro_mensagem`. Passo concluído zera `unidade_atual`. Passo pausado mantém a unidade.
 
-Pendente: o dono aplicar a DDL e o commit junto com as demais tarefas do plano de trilhas.
+A DDL foi aplicada e o commit saiu junto com as demais tarefas do plano de trilhas (7f518e2).
 
 ## 22. Carga histórica em duas trilhas (2026-10-27)
 
@@ -703,3 +703,34 @@ O que foi feito, sem commit:
 - Testes em `tests/test_historico.py`: ordem por trilha, portão, pausa nas duas trilhas, falha cruzada, retomada pelo status e `_Ritmo` concorrente.
 
 Pendente: a verificação com carga real (ver os riscos da seção 10 de [03](03-carga-historica.md)), a DDL de 2026-10-27 aplicada pelo dono e o commit junto com as demais tarefas do plano de trilhas.
+
+## 23. Provedor Anthropic (`claude-haiku-5-5`) como padrão da juíza (2026-10-28)
+
+**O que mudou.** A LLM de fallback padrão da juíza passa de OpenAI `gpt-5.6-luna` para a Anthropic `claude-haiku-5-5`, pelo crédito de US$ 100/mês da conta Anthropic. OpenAI e Gemini continuam como alternativas, escolhidas por `JUIZA_PROVEDOR`. Fluxo e variáveis em [04](04-juiza-e-llm.md), seções 2.3 e 3.
+
+**Arquivos:**
+
+- `src/tcc_scraper/llm/anthropic_client.py` (novo): `AnthropicClient` pela Messages API. Saída JSON estrita com `output_config` (`effort` e `format` `json_schema`). Não envia `thinking`, `temperature`, `top_p`, `top_k`, prefill nem `fallbacks`. Recusa vira texto vazio; `max_tokens` vira `incomplete`. 402, ou 400 com `credit balance`, vira `SemCreditoLLM`. A repetição de 408, 409, 429, 5xx e falha de conexão fica com o SDK (`max_retries`), sem tenacity.
+- `src/tcc_scraper/config.py`: `juiza_provedor` com padrão `anthropic`; `MODELO_PADRAO_JUIZA["anthropic"]`; bloco `ANTHROPIC_*`; `juiza_chave_llm` cobre os três provedores.
+- `src/tcc_scraper/llm/juiza.py`: despacho para o cliente Anthropic. `avisos_config` exige modelo `claude*` com `anthropic`, e recusa `claude*` com `openai` e `gemini`.
+- `src/tcc_scraper/llm/juiza_custo.py`: tabela `anthropic` = US$ 0,10 de entrada, 0,01 de cache e 0,50 de saída por milhão de tokens.
+- `src/tcc_scraper/llm/juiza_prompt.py` e `juiza_schema.py`: o provedor Anthropic usa o nome `juiza_anthropic` e o schema estrito da OpenAI, sem envelope. Os hashes de openai e gemini não mudaram.
+- `pyproject.toml`: `anthropic>=2.3` nas dependências do core.
+- `.env.example`: `JUIZA_PROVEDOR=anthropic`, bloco `ANTHROPIC_*` e OpenAI marcada como alternativa.
+- Testes: `tests/test_anthropic_client.py` (novo, sem rede) e casos em `test_config.py`, `test_juiza_custo.py`, `test_juiza_prompt.py` e `test_juiza.py`.
+
+**Decisões.**
+
+- O padrão muda, mas `JUIZA_PROVEDOR=openai` continua funcionando. Quem já tinha `JUIZA_PROVEDOR=openai` no `.env` não muda de provedor.
+- Os tetos não mudam: US$ 3/mês para a juíza diária e verba de US$ 15 para o backlog. Eles somam o Jev e a LLM, seja qual for.
+- Custo medido com chamada real (300 pares, effort `medium`): US$ 0,000119 por par, todos os itens válidos, 34,7 s por lote de 50. Concordância de entrega com o Gemini: 86,7% (kappa 0,735). Detalhes em [04](04-juiza-e-llm.md), seção 3.6.
+- A primeira chamada real deu 400: a Anthropic recusa `minimum`/`maximum` em campos `number`. O schema `anthropic` passou a sair sem esses limites (`juiza_schema._sem_limites`); a faixa continua validada pelo Pydantic.
+- Sem `cache_control`, o cache do Claude não é usado. O pensamento já está em `output_tokens`, então não é cobrado duas vezes.
+
+**Verificação.** `pytest` sem banco e `ruff check src tests` passam. Os testes do cliente usam um falso injetado e erros montados com `httpx2`, que é a biblioteca de HTTP do SDK 2.3.0.
+
+**Pendências.**
+
+- Colocar `ANTHROPIC_API_KEY` no `.env` do executor (máquina Processamento-Venturo).
+- `docs/01-visao-geral.md`, `02-pipeline-diaria.md` e `08-operacao-e-deploy.md` ainda descrevem a OpenAI como padrão. Ficaram para a próxima revisão de docs.
+- Sem commit: a mudança está no working tree do branch `feat/executor-painel`.

@@ -26,7 +26,7 @@ Ordem de `orquestrador/etapas.py::ETAPAS`. As etapas rodam em sequência. Uma fa
 | 3 | `noticias` | Notícias de `fim_coleta − 2` até `fim_coleta`, em 3 partes: `google_news`, `wordpress` e `processar_wp` | Google News RSS e API WordPress (InfoMoney, Money Times, Exame) | Não |
 | 4 | `ipe` | Fatos relevantes e comunicados do ano corrente | CVM (IPE) | Não |
 | 5 | `enriquecimento` | Corpo dos artigos (só veículos da allowlist) e sentimento FinBERT, local | Páginas dos veículos; FinBERT | Não |
-| 6 | `juiza` | Julga os pares (artigo, ticker) pendentes | Regra local; Jev; OpenAI `gpt-5.6-luna` | Sim (Jev e LLM) |
+| 6 | `juiza` | Julga os pares (artigo, ticker) pendentes | Regra local; Jev; Anthropic `claude-haiku-5-5` | Sim (Jev e LLM) |
 | 7 | `cadastro` | Cadastro das companhias, proventos e ITR/DFP | CVM; B3 | Não |
 | 8 | `entrega` | Monta as 9 tabelas `v1-*` da entrega | Só o banco (tabelas `raw_*` e `staging_*`) | Não |
 | 9 | `analise` | Análise diária por LLM | Gemini (hoje desligada, ver item E) | Sim, quando ligada |
@@ -52,7 +52,7 @@ A juíza percorre os pares pendentes em páginas de `JUIZA_PAGINA` pares. No di�
 
 1. **Regra local** (`llm/juiza_regras.py::regra_barata`). Resolve os casos óbvios. Não custa nada e não conta no teto de itens.
 2. **Jev** (só com `JEV_ENABLED=true` e `JEV_API_KEY`). Lotes de `JEV_LOTE` (50) pares, com trecho de `JEV_TRECHO` (1.500 caracteres). Com `JUIZA_JEV_MODO=entrega` (padrão), o Jev decide sozinho quando P(entra) ou P(não entra) passa de `JUIZA_JEV_LIMIAR_ENTREGA` (0,9) e concorda com a regra de entrega (`llm/juiza.py::_aceita_jev`). O que ele não decide segue para a LLM.
-3. **LLM de fallback.** Com `JUIZA_PROVEDOR=openai` (padrão), usa `gpt-5.6-luna`, com `OPENAI_REASONING_EFFORT=none`. Lotes de `JUIZA_LOTE` (50) pares, com trecho de 300 caracteres (`_TRECHO`). Não há busca na web. Com `JUIZA_PROVEDOR=gemini`, o provedor é o Gemini.
+3. **LLM de fallback.** Com `JUIZA_PROVEDOR=anthropic` (padrão), usa `claude-haiku-5-5`, com `ANTHROPIC_EFFORT=medium`. Com `JUIZA_PROVEDOR=openai`, usa `gpt-5.6-luna`, com `OPENAI_REASONING_EFFORT=none`. Lotes de `JUIZA_LOTE` (50) pares, com trecho de 300 caracteres (`_TRECHO`). Não há busca na web. Com `JUIZA_PROVEDOR=gemini`, o provedor é o Gemini.
 
 **Gravação.** Julgamento aceito vai para `v1-staging_noticias_julgamento`. Cada chamada paga (Jev ou LLM) vira uma linha em `v1-raw_llm_juiza_runs`, inclusive as que falharam. Par que a LLM não aceita ganha uma tentativa em `v1-staging_juiza_tentativas`. Ao chegar a `JUIZA_MAX_TENTATIVAS` (3), o par deixa de ser pendente.
 
@@ -68,13 +68,13 @@ A juíza percorre os pares pendentes em páginas de `JUIZA_PAGINA` pares. No di�
 | (nenhuma) | Não há mais pendentes, ou a execução acabou sem parada | `concluida` |
 | `jev_sem_chave` | `JEV_ENABLED=true` sem `JEV_API_KEY`, com pares que a regra não resolveu | `falhou` (a LLM fica bloqueada) |
 | `erro_jev` | Dois lotes seguidos do Jev com erro, ou erro 401, 402 ou 403 em todos os itens | `falhou` (a LLM não é chamada) |
-| `sem_credito` | OpenAI com `insufficient_quota`, ou Gemini com 402. Não há retry | `falhou` |
+| `sem_credito` | Anthropic sem crédito, OpenAI com `insufficient_quota`, ou Gemini com 402. Não há retry | `falhou` |
 | `erro_api` | Dois lotes seguidos da LLM com erro de API | `concluida`, com os pares pendentes |
 | `orcamento_usd` | Atingido o teto em US$ | `concluida`, com os pares pendentes |
 | `teto_itens` | Atingido `JUIZA_MAX_ITENS_DIA` | `concluida`, com os pares pendentes |
 | `cancelado` | Cancelamento, ou o fim do `DAILY_ORCAMENTO_MIN` no meio da etapa | `falhou` (interrompida) |
 
-Sem a chave da LLM (`OPENAI_API_KEY`, ou `GEMINI_API_KEY` com `JUIZA_PROVEDOR=gemini`), a juíza registra o aviso `<provedor>_sem_chave`. A etapa sai `concluida` com a regra e o Jev aplicados, e os pares restantes ficam pendentes. Se `JUIZA_MODELO` for de outro provedor (por exemplo, `gemini-...` com `openai`), a juíza levanta `ValueError`, e a etapa sai `falhou` com essa mensagem.
+Sem a chave da LLM (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` com `JUIZA_PROVEDOR=openai`, ou `GEMINI_API_KEY` com `JUIZA_PROVEDOR=gemini`), a juíza registra o aviso `<provedor>_sem_chave`. A etapa sai `concluida` com a regra e o Jev aplicados, e os pares restantes ficam pendentes. Se `JUIZA_MODELO` for de outro provedor (por exemplo, `gemini-...` com `openai` ou `anthropic`), a juíza levanta `ValueError`, e a etapa sai `falhou` com essa mensagem.
 
 Fórmulas, tetos e custos: [04](04-juiza-e-llm.md), seções 2 e 3.
 
@@ -102,7 +102,8 @@ flowchart LR
   cvm -.-> e7
   veic["Páginas dos veículos"] -.-> e5
   jev["Jev (pago)"] -.-> e6
-  oai["OpenAI gpt-5.6-luna (pago)"] -.-> e6
+  cla["Claude claude-haiku-5-5 (pago, padrão)"] -.-> e6
+  oai["OpenAI gpt-5.6-luna (pago, alternativa)"] -.-> e6
   gem["Gemini (pago, desligado)"] -.-> e9
   e3 --> t1[("raw_articles, staging_article_tickers, v1-raw_wp_posts, v1-staging_historias")]
   e6 --> t2[("v1-staging_noticias_julgamento, v1-raw_llm_juiza_runs")]
@@ -112,19 +113,20 @@ flowchart LR
 
 ### G. O que é pago e quanto
 
-Medido em 2026-10-26:
+Medido em 2026-10-26. O `gpt-5.6-luna` era o provedor da LLM de fallback até 2026-10-28. O `claude-haiku-5-5` é o padrão desde então, e a linha dele é estimativa, ainda não medida:
 
 | Item | Custo | Base da medição |
 |---|---|---|
 | Jev (`jev-1.13.0`) | ~US$ 0,000049 por par | ~1.155 tokens de entrada, 4 perguntas |
-| `gpt-5.6-luna` (OpenAI) | ~US$ 0,00009 por par (~US$ 0,00007 com cache) | Só recebe o que o Jev não decide |
+| `gpt-5.6-luna` (OpenAI, provedor anterior) | ~US$ 0,00009 por par (~US$ 0,00007 com cache) | Só recebe o que o Jev não decide |
+| `claude-haiku-5-5` (Anthropic, padrão desde 2026-10-28) | US$ 0,000119 por par (medido em 2026-10-28, 300 pares, effort `medium`) | Só recebe o que o Jev não decide |
 | Gemini, juíza antiga | ~US$ 0,00017 por par | Não é mais usado pela juíza |
 
 Concordância em 500 pares: no limiar 0,9, o Jev decide ~69% dos pares, com 95,9% de concordância de entrega com o Gemini. Os ~31% restantes vão ao Luna.
 
 Estimativa para o backlog de 13.144 pares (volume de 24/10):
 
-- **Hoje:** Jev em todos os pares (13.144 × 0,000049 ≈ US$ 0,64), mais o Luna em ~31% (≈ 4.075 × 0,00007 a 0,00009 ≈ US$ 0,29 a 0,37). Total: ~US$ 0,93 a 1,01, com referência de US$ 0,97.
+- **Com o Luna, no provedor anterior (medido em 2026-10-26):** Jev em todos os pares (13.144 × 0,000049 ≈ US$ 0,64), mais o Luna em ~31% (≈ 4.075 × 0,00007 a 0,00009 ≈ US$ 0,29 a 0,37). Total: ~US$ 0,93 a 1,01, com referência de US$ 0,97.
 - **Antes (só Gemini):** ~US$ 2,24.
 
 São estimativas da medição, não fatura. Tetos: juíza diária, US$ 3 por mês. Verba do backlog, US$ 15 (`JUIZA_BACKLOG_VERBA_USD`).
@@ -150,10 +152,10 @@ DAILY_TZ=America/Sao_Paulo
 DATA_FIM_COLETA=                                   # vazio no servidor
 JEV_ENABLED=true
 JEV_API_KEY=<segredo>
-OPENAI_API_KEY=<segredo>
-JUIZA_PROVEDOR=openai
+ANTHROPIC_API_KEY=<segredo>
+JUIZA_PROVEDOR=anthropic
 JUIZA_JEV_MODO=entrega
-# JUIZA_MODELO= fora do .env, ou um modelo da OpenAI (gemini-... com openai recusa a juíza)
+# JUIZA_MODELO= fora do .env, ou um modelo da Anthropic (claude-haiku-5-5 é o padrão; gemini-... com anthropic recusa a juíza)
 ANALISE_ENABLED=false
 ```
 
@@ -165,7 +167,7 @@ Para conferir antes de deixar o executor rodar sozinho:
 python -m tcc_scraper.cli judge-news --status
 ```
 
-O comando mostra pendentes, gasto e verbas, sem julgar. Sem `OPENAI_API_KEY`, a juíza não falha: deixa os pares pendentes. Por isso, confira o status antes de cada dia de publicação.
+O comando mostra pendentes, gasto e verbas, sem julgar. Sem `ANTHROPIC_API_KEY` (ou a chave do provedor escolhido), a juíza não falha: deixa os pares pendentes. Por isso, confira o status antes de cada dia de publicação.
 
 ## 1. O que é o daily
 
@@ -203,7 +205,7 @@ Os ids, nomes e coletores são o contrato com o painel. Não renomear sem combin
 | 3 | `noticias` | Notícias | `google_news`, `wordpress`, `processar_wp` | Google News RSS, sem chave; API WordPress de InfoMoney, Money Times e Exame, sem chave; processamento local | Google: ticker × semana × idioma, na janela da seção 2. WordPress: site × mês | Não |
 | 4 | `ipe` | Fatos relevantes | `cvm_ipe` | CVM, IPE (fatos relevantes e comunicados), arquivo anual | Um arquivo do IPE do ano (`ipe\|<ano>\|<Last-Modified>`) | Sim |
 | 5 | `enriquecimento` | Corpo e sentimento | `finbert` | Página do veículo (só domínios da allowlist) e FinBERT local | Lote de artigos sem corpo; depois, bloco de textos sem sentimento | Não é preciso: só entram os pendentes |
-| 6 | `juiza` | Juíza de qualidade | `juiza` | Regra local, sem API; depois Jev (se ligado; em `JUIZA_JEV_MODO=entrega`, decide por entrega segura); depois LLM de fallback (OpenAI `gpt-5.6-luna` ou Gemini, conforme `JUIZA_PROVEDOR`), sem busca na web | Lote de `JUIZA_LOTE` pares (artigo, ticker) pendentes, até `JUIZA_MAX_ITENS_DIA` por dia e até o teto mensal em US$ (`JUIZA_ORCAMENTO_MENSAL_USD`) | Só entram os pendentes |
+| 6 | `juiza` | Juíza de qualidade | `juiza` | Regra local, sem API; depois Jev (se ligado; em `JUIZA_JEV_MODO=entrega`, decide por entrega segura); depois LLM de fallback (Anthropic `claude-haiku-5-5`, OpenAI `gpt-5.6-luna` ou Gemini, conforme `JUIZA_PROVEDOR`), sem busca na web | Lote de `JUIZA_LOTE` pares (artigo, ticker) pendentes, até `JUIZA_MAX_ITENS_DIA` por dia e até o teto mensal em US$ (`JUIZA_ORCAMENTO_MENSAL_USD`) | Só entram os pendentes |
 | 7 | `cadastro` | Cadastro e eventos | `cvm_b3` | CVM (cadastro das companhias), B3 (`GetDetail` e proventos), CVM (ITR e DFP) | Quatro partes: companhia da CVM (`cad\|<Last-Modified>`), empresa da B3 (`detail\|<cd_cvm>`), empresa de proventos (`prov\|<issuing_company>`), arquivo ITR/DFP (`<tipo>\|<ano>\|<Last-Modified>`) | Só ITR/DFP (`resume=True`) |
 | 8 | `entrega` | Montagem das 8 tabelas (nome do painel; a etapa grava 9) | `build_entrega` | Tabelas `raw_*` e `staging_*` já gravadas | As 9 tabelas da entrega | Refaz as 9 tabelas a cada execução |
 | 9 | `analise` | Análise diária | `gemini` | Gemini, com busca Google e saída em JSON | Uma chamada, para o dia `fim_coleta` | Refaz o dia (apaga e regrava) |
@@ -221,7 +223,7 @@ Só as 30 tabelas criadas pela pipeline nova (fontes novas, painel e entrega) t�
 | `noticias` | `raw_articles`, `staging_article_tickers`, `raw_collection_runs`; com `WP_ENABLED=true`, também `v1-raw_wp_posts`, `v1-staging_historias`, `v1-staging_wp_processamento` e `v1-staging_noticias_julgamento` (julgamento por código) | Foi interrompida, ou as três partes falharam (Google News, WordPress e processamento) | Orçamento esgotado antes de começar, ou cancelamento |
 | `ipe` | `v1-raw_ipe_docs`, `raw_articles`, `staging_article_tickers`, `raw_collection_runs` | Foi interrompida, ou todas as unidades falharam | Orçamento esgotado antes de começar, ou cancelamento |
 | `enriquecimento` | `raw_article_bodies`, `raw_articles` (coluna `resolved_url`), `staging_article_sentiment` | Foi interrompida, ou todas as páginas falharam, ou o FinBERT não está instalado (falta o extra `[sentiment]`). O corpo já gravado fica | Orçamento esgotado antes de começar, ou cancelamento |
-| `juiza` | `v1-staging_noticias_julgamento`, `v1-raw_llm_juiza_runs` | Foi interrompida (orçamento ou cancelamento), ou parou por `jev_sem_chave`, `erro_jev` ou `sem_credito` (ver nota abaixo) | Orçamento esgotado antes de começar, ou cancelamento. Sem a chave da LLM de fallback (`OPENAI_API_KEY`, ou `GEMINI_API_KEY` com `JUIZA_PROVEDOR=gemini`), a etapa sai `concluida` sem julgar pela LLM (ver nota abaixo) |
+| `juiza` | `v1-staging_noticias_julgamento`, `v1-raw_llm_juiza_runs` | Foi interrompida (orçamento ou cancelamento), ou parou por `jev_sem_chave`, `erro_jev` ou `sem_credito` (ver nota abaixo) | Orçamento esgotado antes de começar, ou cancelamento. Sem a chave da LLM de fallback (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` com `JUIZA_PROVEDOR=openai`, ou `GEMINI_API_KEY` com `JUIZA_PROVEDOR=gemini`), a etapa sai `concluida` sem julgar pela LLM (ver nota abaixo) |
 | `cadastro` | `v1-raw_cvm_cadastro`, `v1-raw_b3_cadastro`, `v1-raw_b3_proventos`, `v1-raw_b3_suplemento`, `v1-raw_cvm_balancos`, `v1-raw_cvm_acoes` | Alguma parte foi interrompida, ou as quatro partes falharam | Orçamento esgotado antes de começar, ou cancelamento |
 | `entrega` | As 9 tabelas `v1-noticias` … `v1-indices` e `v1-composicao_ibov` (ver [05](05-entrega.md)) | Alguma das 9 tabelas falhou (a mensagem lista quais), ou nenhuma foi montada | Não é pulada pelo orçamento (ver seção 5) |
 | `analise` | `raw_llm_prompts`, `raw_llm_runs`, `staging_llm_noticias_empresas`, `staging_llm_noticias_macro`, `staging_llm_acoes_sinais`, `staging_llm_mercados` | A chamada de análise não devolveu status `ok` | `ANALISE_ENABLED=false` (desligada hoje, ver a seção "Como a pipeline funciona hoje", item E) ou sem `GEMINI_API_KEY` |
@@ -231,8 +233,8 @@ Regras de falha, valem para todas as etapas:
 - **Unidade com erro não derruba a etapa.** Ela fica contada em `unidades_erro`, e a última falha aparece em `ultimo_erro_unidade` e `ultimo_erro_mensagem`. A etapa só sai `falhou` se nenhuma unidade deu certo, ou se foi interrompida.
 - **Exceção que escapa da etapa** vira `falhou`, com a mensagem `TipoDoErro: texto`. A execução segue para a etapa seguinte.
 - **Etapas com várias partes** (`macro`, `cadastro`, `noticias`): uma parte que levanta exceção não impede as outras. Na `noticias`, a etapa só sai `falhou` se as três partes falharem.
-- **Juíza sem chave.** Sem a chave da LLM de fallback (`OPENAI_API_KEY`, ou `GEMINI_API_KEY` com `JUIZA_PROVEDOR=gemini`), a etapa registra um aviso e sai `concluida`, com a regra local e o Jev aplicados. Os pares que restaram ficam pendentes e entram na próxima execução. A etapa não sai `pulada` nesse caso.
-- **Paradas da juíza.** `jev_sem_chave` (`JEV_ENABLED=true` sem `JEV_API_KEY`: a LLM fica bloqueada), `erro_jev` (lote do Jev falhou 2 vezes seguidas, ou 401, 402 ou 403 em todos os itens: o lote fica pendente e não vai à LLM), `sem_credito` (OpenAI com `insufficient_quota`, ou Gemini com 402; sem retry) e `cancelado` (cancelamento ou fim do orçamento no meio da etapa) deixam a etapa `falhou`. Paradas `erro_api`, `orcamento_usd` e `teto_itens` deixam a etapa `concluida`, com os pares pendentes para a próxima execução. Ver a seção "Como a pipeline funciona hoje", item D, e [04](04-juiza-e-llm.md), seção 2.9.
+- **Juíza sem chave.** Sem a chave da LLM de fallback (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` com `JUIZA_PROVEDOR=openai`, ou `GEMINI_API_KEY` com `JUIZA_PROVEDOR=gemini`), a etapa registra um aviso e sai `concluida`, com a regra local e o Jev aplicados. Os pares que restaram ficam pendentes e entram na próxima execução. A etapa não sai `pulada` nesse caso.
+- **Paradas da juíza.** `jev_sem_chave` (`JEV_ENABLED=true` sem `JEV_API_KEY`: a LLM fica bloqueada), `erro_jev` (lote do Jev falhou 2 vezes seguidas, ou 401, 402 ou 403 em todos os itens: o lote fica pendente e não vai à LLM), `sem_credito` (Anthropic sem crédito, OpenAI com `insufficient_quota`, ou Gemini com 402; sem retry) e `cancelado` (cancelamento ou fim do orçamento no meio da etapa) deixam a etapa `falhou`. Paradas `erro_api`, `orcamento_usd` e `teto_itens` deixam a etapa `concluida`, com os pares pendentes para a próxima execução. Ver a seção "Como a pipeline funciona hoje", item D, e [04](04-juiza-e-llm.md), seção 2.9.
 
 ## 5. Orçamento, prazo e status
 

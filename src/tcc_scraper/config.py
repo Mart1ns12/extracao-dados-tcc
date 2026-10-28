@@ -28,6 +28,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # Modelo da juiza quando JUIZA_MODELO esta vazio, por provedor.
 MODELO_PADRAO_JUIZA: dict[str, str] = {
+    "anthropic": "claude-haiku-5-5",
     "openai": "gpt-5.6-luna",
     "gemini": "gemini-3.1-flash-lite",
 }
@@ -145,13 +146,14 @@ class Settings(BaseSettings):
     throttle_b3: float = 1.0
 
     # Juiza de noticias (LLM). Modelo vazio = padrao do provedor (MODELO_PADRAO_JUIZA).
-    juiza_provedor: Literal["openai", "gemini"] = "openai"
+    juiza_provedor: Literal["anthropic", "openai", "gemini"] = "anthropic"
     juiza_modelo: str = ""
     juiza_max_itens_dia: int = 2000
     juiza_lote: int = 50
     juiza_confianca_minima: float = 0.5
     # Tentativas por par antes de desistir, pagina de pares por ciclo e precos (US$/MTok).
-    # None = tabela do provedor (openai 0.20/0.02/1.20; gemini 0.25/0.25/1.50).
+    # None = tabela do provedor (juiza_custo._PRECOS_PADRAO): anthropic 0.10/0.01/0.50,
+    # openai 0.20/0.02/1.20, gemini 0.25/0.25/1.50.
     juiza_max_tentativas: int = 3
     juiza_pagina: int = 5000
     juiza_preco_entrada_usd_mtok: float | None = None
@@ -179,7 +181,14 @@ class Settings(BaseSettings):
     # Caracteres do corpo do artigo enviados ao Jev.
     jev_trecho: int = Field(1500, ge=300, le=8000)
 
-    # OpenAI: provedor de fallback da juiza (gpt-5.6-luna, effort none por padrao).
+    # Anthropic: provedor de fallback padrao da juiza (claude-haiku-5-5, effort medium).
+    anthropic_api_key: str = ""
+    anthropic_timeout_s: float = 120.0
+    anthropic_max_attempts: int = 3
+    anthropic_effort: str = "medium"
+    anthropic_max_output_tokens: int = 16000
+
+    # OpenAI: alternativa da juiza (gpt-5.6-luna, effort none por padrao).
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     openai_timeout_s: float = 120.0
@@ -232,7 +241,11 @@ class Settings(BaseSettings):
     @property
     def juiza_chave_llm(self) -> str:
         """Chave da API do provedor escolhido em juiza_provedor."""
-        return self.openai_api_key if self.juiza_provedor == "openai" else self.gemini_api_key
+        if self.juiza_provedor == "anthropic":
+            return self.anthropic_api_key
+        if self.juiza_provedor == "openai":
+            return self.openai_api_key
+        return self.gemini_api_key
 
     @property
     def effective_url(self) -> str:

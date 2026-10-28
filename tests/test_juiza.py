@@ -978,6 +978,31 @@ def test_avisos_config_combinacoes() -> None:
         "jev_desligado", "modelo_incompativel"]
 
 
+def test_avisos_config_anthropic() -> None:
+    def cfg(**campos):
+        base = {"jev_enabled": False, "jev_api_key": "", "juiza_provedor": "anthropic",
+                "juiza_chave_llm": "chave", "juiza_modelo_efetivo": "claude-haiku-5-5"}
+        return SimpleNamespace(**{**base, **campos})
+
+    assert juiza.avisos_config(cfg()) == ["jev_desligado"]
+    assert juiza.avisos_config(cfg(juiza_chave_llm="")) == [
+        "jev_desligado", "anthropic_sem_chave"]
+    # anthropic exige modelo claude*: gpt* e gemini* sao modelo_incompativel
+    assert juiza.avisos_config(cfg(juiza_modelo_efetivo="gpt-5.6-luna")) == [
+        "jev_desligado", "modelo_incompativel"]
+    assert juiza.avisos_config(cfg(juiza_modelo_efetivo="gemini-3.1-flash-lite")) == [
+        "jev_desligado", "modelo_incompativel"]
+
+
+def test_openai_e_gemini_recusam_modelo_claude() -> None:
+    def cfg(provedor):
+        return SimpleNamespace(jev_enabled=False, jev_api_key="", juiza_provedor=provedor,
+                               juiza_chave_llm="chave", juiza_modelo_efetivo="claude-haiku-5-5")
+
+    assert juiza.avisos_config(cfg("openai")) == ["jev_desligado", "modelo_incompativel"]
+    assert juiza.avisos_config(cfg("gemini")) == ["jev_desligado", "modelo_incompativel"]
+
+
 # --------------------------------------------------------------------------------------
 # Com banco (MySQL do .env; opt-in via TCC_TESTES_COM_BANCO=1, ver conftest.py)
 # --------------------------------------------------------------------------------------

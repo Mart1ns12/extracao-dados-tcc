@@ -34,8 +34,8 @@ pregões — sem isso, os 20 primeiros dias do dataset sairiam sem `retorno_20d`
 **O dataset é materializado em `features_dataset_v1`** pelo `build-dataset`, além de
 exportado em Parquet/CSV. Upsert por `(data, ticker)`: remontar sobrescreve, não duplica.
 
-**Restrição dominante do projeto: custo zero, exceto o Gemini da análise diária (teto US$ 5/mês), a OpenAI como LLM de fallback da juíza e o Jev.**
-As dependências pagas são a análise diária por LLM (Gemini), a juíza de notícias e o Jev (TypeSafe AI), aprovado em 2026-10-23, a US$ 0,042 por milhão de tokens de entrada. A juíza usa o Jev e, para o que ele não decide, uma LLM de fallback: OpenAI `gpt-5.6-luna` por padrão (`JUIZA_PROVEDOR=openai`, decisão de 2026-10-26), ou Gemini. Os tetos não mudaram: a análise diária tem US$ 5/mês no Gemini; a juíza tem teto próprio de US$ 3/mês e verba única de US$ 15 para o backlog, que valem para o Jev e a LLM de fallback somados. O custo do Jev e da LLM entra nas somas da juíza.
+**Restrição dominante do projeto: custo zero, exceto o Gemini da análise diária (teto US$ 5/mês), a API do Claude como LLM de fallback da juíza e o Jev.**
+As dependências pagas são a análise diária por LLM (Gemini), a juíza de notícias e o Jev (TypeSafe AI), aprovado em 2026-10-23, a US$ 0,042 por milhão de tokens de entrada. A juíza usa o Jev e, para o que ele não decide, uma LLM de fallback: Claude Haiku 5.5 (`claude-haiku-5-5`, effort `medium`) por padrão (`JUIZA_PROVEDOR=anthropic`, decisão de 2026-10-28, paga pelo crédito de US$ 100/mês da Anthropic e escolhida por ser a opção mais econômica), ou, como alternativas, OpenAI `gpt-5.6-luna` e Gemini. Os tetos não mudaram: a análise diária tem US$ 5/mês no Gemini; a juíza tem teto próprio de US$ 3/mês e verba única de US$ 15 para o backlog, que valem para o Jev e a LLM de fallback somados. O custo do Jev e da LLM entra nas somas da juíza.
 Qualquer outra proposta que exija API paga, cartão de crédito ou plano pago deve ser rejeitada.
 
 ---
@@ -60,7 +60,7 @@ uma fonte rejeitada sem antes provar, com uma chamada real, que a limitação mu
 
 **API WordPress, medida em 2026-03.** O Google News era lento para cobrir esses 3 veículos (throttle de 2,0 s, sequencial, ~9.010 consultas/ano, mais de 30 h para 5 anos). O WordPress entregou 11.306 posts no mês em 122 requisições, sem erro. A API cobre 862 de 865 (99,7%) do que o Google trouxe desses sites (faltaram 2 de conteúdo de marca e 1 renomeado), e a normalização de URL acertou 100%. Republicação entre veículos (106 pares/mês) conta como 1 notícia, a "história", com o representante no `date_gmt` mais antigo (decisão do dono). Posts por ano nos 3 sites: 89,5 mil (2021), 93,8 mil (2022), 83,6 mil (2023), 84,6 mil (2024) e 106,1 mil (2025).
 
-**Classificação por código.** A maior parte da classificação de notícias do WordPress é decidida por código (`llm/juiza_codigo.py`); a juíza só recebe o resíduo. Medido contra 28.279 julgamentos do Gemini, a camada K3 (ticker no título, matéria com corpo) acerta 91,5% no dev, 91,9% no teste e 92,4% em 2026-10. Com só o título (pares do Google) acerta ~78%, por isso o código não decide esses pares. A juíza fica com ~26% dos pares do WordPress, a ~US$ 0,000077 por par (Jev + Luna): ~US$ 0,11/mês, ~US$ 5,5 no histórico. A regra de entrega não muda: só `reportagem` com papel `protagonista` ou `citada_com_fato` entra.
+**Classificação por código.** A maior parte da classificação de notícias do WordPress é decidida por código (`llm/juiza_codigo.py`); a juíza só recebe o resíduo. Medido contra 28.279 julgamentos do Gemini, a camada K3 (ticker no título, matéria com corpo) acerta 91,5% no dev, 91,9% no teste e 92,4% em 2026-10. Com só o título (pares do Google) acerta ~78%, por isso o código não decide esses pares. A juíza fica com ~26% dos pares do WordPress, a ~US$ 0,000077 por par (Jev + Luna, medido; com o Haiku 5.5 a estimativa é parecida ou menor): ~US$ 0,11/mês, ~US$ 5,5 no histórico. A regra de entrega não muda: só `reportagem` com papel `protagonista` ou `citada_com_fato` entra.
 
 ### Rejeitadas — e o motivo
 
@@ -296,7 +296,7 @@ JSON schema **na mesma chamada** (só Gemini 3+ aceita os dois juntos). Modelo e
 (substituídas por dia). O `features_dataset_v1` **fica intacto**.
 
 **Exceção aprovada à regra de custo:** é a dependência paga principal do projeto, com teto de
-US$ 5/mês (~30 chamadas). A juíza não usa mais o Gemini por padrão: ela usa o Jev e a OpenAI `gpt-5.6-luna` como fallback, com tetos próprios de US$ 3/mês e verba de US$ 15 para o backlog (ver [docs/04-juiza-e-llm.md](docs/04-juiza-e-llm.md), seção 3.6). O Gemini só julga na juíza se `JUIZA_PROVEDOR=gemini`. Está **desligada** por `ANALISE_ENABLED=false` desde 2026-10-26, até migrar para a OpenAI. Quando ligada, roda como etapa `analise` do daily, agendada pelo executor às 08:00 de Brasília (ver [docs/07-executor-e-painel.md](docs/07-executor-e-painel.md)).
+US$ 5/mês (~30 chamadas). A juíza não usa mais o Gemini por padrão: ela usa o Jev e o Claude Haiku 5.5 como fallback (`JUIZA_PROVEDOR=anthropic`), com tetos próprios de US$ 3/mês e verba de US$ 15 para o backlog (ver [docs/04-juiza-e-llm.md](docs/04-juiza-e-llm.md), seção 3.6). O Gemini só julga na juíza se `JUIZA_PROVEDOR=gemini`. Está **desligada** por `ANALISE_ENABLED=false` desde 2026-10-26, até migrar para a OpenAI. Quando ligada, roda como etapa `analise` do daily, agendada pelo executor às 08:00 de Brasília (ver [docs/07-executor-e-painel.md](docs/07-executor-e-painel.md)).
 
 **Citações:** o prompt exige `fonte` e `url` dentro de cada item do JSON. As anotações
 `url_citation` da API vão para `citacoes_json` só como auditoria, nunca como fonte de dados.

@@ -117,11 +117,11 @@ Fontes oficiais e juíza (migration 0005).
 | `v1-raw_b3_cadastro` | `collectors/b3_cadastro.py` (GetDetail por código CVM) | `cd_cvm` | 0005 | - |
 | `v1-raw_b3_proventos` | `collectors/b3_proventos.py` | `registro_hash` | 0005 | - |
 | `v1-raw_b3_suplemento` | `collectors/b3_proventos.py` (suplemento de proventos) | `registro_hash` | 0005 | - |
-| `v1-raw_llm_juiza_runs` | `llm/juiza.py`: cada chamada paga (Jev ou LLM de fallback, OpenAI ou Gemini) e a run-resumo da concordância, inclusive as com falha | `id` | 0005; `custo_usd` e `finalidade` em 2026-10-23 | - |
+| `v1-raw_llm_juiza_runs` | `llm/juiza.py`: cada chamada paga (Jev ou LLM de fallback: Anthropic, OpenAI ou Gemini) e a run-resumo da concordância, inclusive as com falha | `id` | 0005; `custo_usd` e `finalidade` em 2026-10-23 | - |
 | `v1-staging_juiza_tentativas` | `llm/juiza.py`: tentativas por par que a LLM de fallback não aceitou | `article_id`, `ticker`, `prompt_versao` | 2026-10-23 (`sql/alteracoes/2026-10-23_juiza_custo_tentativas.mysql.sql`) | - |
 | `v1-staging_noticias_julgamento` | `llm/juiza.py` (julgamento por artigo e ticker) | `article_id`, `ticker`, `prompt_versao` | 0005 | - |
 
-Na juíza, cada chamada paga (Jev ou LLM de fallback) gera uma run. O campo `modelo` das tabelas da juíza vale `regra` (regra barata), `jev-1.13.0/q1/t1500` (Jev; `t1500` é o `JEV_TRECHO` usado), `gpt-5.6-luna` (OpenAI), o nome do modelo do Gemini ou `codigo/r1/<camada>` (julgamento por código das notícias WordPress, sem run; ver [04](04-juiza-e-llm.md)). Os prompts ficam em `raw_llm_prompts`: `juiza` (Gemini) e `juiza_openai` (OpenAI), ambos na versão 1. Ver [04](04-juiza-e-llm.md), seções 2.3 e 2.6.
+Na juíza, cada chamada paga (Jev ou LLM de fallback) gera uma run. O campo `modelo` das tabelas da juíza vale `regra` (regra barata), `jev-1.13.0/q1/t1500` (Jev; `t1500` é o `JEV_TRECHO` usado), `claude-haiku-5-5` (Anthropic, padrão desde 2026-10-28), `gpt-5.6-luna` (OpenAI), o nome do modelo do Gemini ou `codigo/r1/<camada>` (julgamento por código das notícias WordPress, sem run; ver [04](04-juiza-e-llm.md)). Os prompts ficam em `raw_llm_prompts`: `juiza` (Gemini), `juiza_openai` (OpenAI) e `juiza_anthropic` (Anthropic), todos na versão 1. Ver [04](04-juiza-e-llm.md), seções 2.3 e 2.6.
 
 Coleta WordPress (alteração de 2026-10-27, `sql/alteracoes/2026-10-27_wordpress_historias.mysql.sql`, aplicada em 2026-10-27):
 

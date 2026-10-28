@@ -121,7 +121,7 @@ Status da carga: `em_andamento`, `pausando`, `pausada`, `cancelando`, `cancelada
 |---|---|---|
 | Google News | 6 a 9 horas por ano de notícias | Spec de entrega, seção 9.2. A ADR registra 6 a 9 horas para as 9.010 janelas da v1 |
 | CVM, B3, BCB e Yahoo | Minutos para cinco anos | Spec de entrega, seção 9.2 |
-| Juíza (Jev e OpenAI) e análise (Gemini) | Juíza do backlog: verba de US$ 15, cumulativa, somando Jev e LLM de fallback. Análise diária: teto de US$ 5/mês no Gemini | [04](04-juiza-e-llm.md), seção 2.5. A juíza diária tem teto próprio de US$ 3/mês |
+| Juíza (Jev e Claude Haiku 5.5) e análise (Gemini) | Juíza do backlog: verba de US$ 15, cumulativa, somando Jev e LLM de fallback. Análise diária: teto de US$ 5/mês no Gemini | [04](04-juiza-e-llm.md), seção 2.5. A juíza diária tem teto próprio de US$ 3/mês |
 | WordPress (InfoMoney, Money Times, Exame) | Medido em 2026-03: 11.306 posts de um mês em 122 requisições, sem erro, com throttle de 1,0 s. Por ano, 83,6 a 106,1 mil posts nos 3 sites | Teste real da API, em [09](09-historico-de-mudancas.md) e no [ADR](ADR.md) |
 | Carga completa | Não medida neste código | Não há medição de uma carga multi-ano |
 

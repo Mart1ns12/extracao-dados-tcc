@@ -2,8 +2,9 @@
 
 Ordem por par pendente: regra barata (sem custo) -> Jev (opcional, `jev_enabled`, no modo
 `jev_modo_efetivo`: triagem, decide ou entrega; ver `_aceita_jev`) -> LLM (`juiza_provedor`:
-openai, padrao, ou gemini), so no que sobrou. Grava em `v1-raw_llm_juiza_runs` cada chamada
-paga (LLM ou Jev), inclusive as que falharam (com `custo_usd` e `finalidade`), e em
+anthropic, padrao, openai ou gemini), so no que sobrou. Grava em
+`v1-raw_llm_juiza_runs` cada chamada paga (LLM ou Jev), inclusive as que falharam (com
+`custo_usd` e `finalidade`), e em
 `v1-staging_noticias_julgamento` so o julgamento aceito. Cada par nao aceito pela LLM ganha
 uma tentativa em `v1-staging_juiza_tentativas`; ao esgotar `juiza_max_tentativas` deixa de
 ser pendente. Retomavel: par sem julgamento para a versao do prompt volta como pendente na
@@ -43,6 +44,7 @@ from tcc_scraper.db.session import session_scope
 from tcc_scraper.db.upsert import bulk_upsert
 from tcc_scraper.enrich import casador
 from tcc_scraper.entrega.filtros import Julgamento, aprovado_para_entrega
+from tcc_scraper.llm.anthropic_client import AnthropicClient
 from tcc_scraper.llm.jev_client import (
     JevFalhaLote,
     decisao_entrega,
@@ -59,6 +61,9 @@ from tcc_scraper.llm.openai_client import OpenAIClient, SemCreditoLLM
 logger = logging.getLogger(__name__)
 
 _TRECHO = 300
+# Prefixos de modelo de OUTROS provedores: openai e gemini recusam modelos claude* (e cada
+# um recusa o do outro). O anthropic exige claude* (ver avisos_config).
+_PREFIXOS_ALHEIOS = {"openai": ("gemini", "claude"), "gemini": ("gpt", "claude")}
 _CERCA = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$")
 _CHAVE_STAGING = ["article_id", "ticker", "prompt_versao"]
 _CHAVE_TENTATIVAS = ["article_id", "ticker", "prompt_versao"]
@@ -246,8 +251,10 @@ def avisos_config(settings: Any) -> list[str]:
     if not settings.juiza_chave_llm:
         avisos.append(f"{settings.juiza_provedor}_sem_chave")
     provedor, modelo = settings.juiza_provedor, settings.juiza_modelo_efetivo
-    incompativel = ((provedor == "openai" and modelo.startswith("gemini"))
-                    or (provedor == "gemini" and modelo.startswith("gpt")))
+    if provedor == "anthropic":
+        incompativel = not modelo.startswith("claude")
+    else:
+        incompativel = modelo.startswith(_PREFIXOS_ALHEIOS.get(provedor, ()))
     if incompativel:
         avisos.append("modelo_incompativel")
     return avisos
@@ -477,6 +484,13 @@ def _deve_parar(observador: Any) -> bool:
 
 def _criar_cliente_llm(settings: Any) -> Any:
     """Cliente da LLM do `juiza_provedor`. O Gemini so e importado quando e usado (extra llm)."""
+    if settings.juiza_provedor == "anthropic":
+        return AnthropicClient(
+            settings.anthropic_api_key, settings.juiza_modelo_efetivo,
+            settings.anthropic_timeout_s, settings.anthropic_max_attempts,
+            effort=settings.anthropic_effort,
+            max_output_tokens=settings.anthropic_max_output_tokens,
+        )
     if settings.juiza_provedor == "openai":
         return OpenAIClient(
             settings.openai_api_key, settings.juiza_modelo_efetivo, settings.openai_timeout_s,

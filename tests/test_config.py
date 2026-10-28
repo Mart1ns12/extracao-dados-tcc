@@ -146,6 +146,7 @@ VARS_JUIZA = (
     "JUIZA_PROVEDOR",
     "JUIZA_JEV_LIMIAR_ENTREGA",
     "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
     "GEMINI_API_KEY",
 )
 
@@ -186,11 +187,27 @@ def test_modelo_explicito_prevalece_sobre_o_padrao(ambiente_juiza_limpo):
 
 
 def test_chave_llm_segue_o_provedor(ambiente_juiza_limpo):
-    kwargs = {"openai_api_key": "sk-1", "gemini_api_key": "g-1"}
+    kwargs = {"openai_api_key": "sk-1", "gemini_api_key": "g-1", "anthropic_api_key": "a-1"}
     openai = Settings(_env_file=None, juiza_provedor="openai", **kwargs)
     gemini = Settings(_env_file=None, juiza_provedor="gemini", **kwargs)
+    anthropic = Settings(_env_file=None, juiza_provedor="anthropic", **kwargs)
     assert openai.juiza_chave_llm == "sk-1"
     assert gemini.juiza_chave_llm == "g-1"
+    assert anthropic.juiza_chave_llm == "a-1"
+
+
+def test_provedor_padrao_da_juiza_e_anthropic(ambiente_juiza_limpo):
+    s = Settings(_env_file=None)
+    assert s.juiza_provedor == "anthropic"
+    assert s.juiza_modelo_efetivo == "claude-haiku-5-5"
+
+
+def test_anthropic_tem_os_parametros_padrao(ambiente_juiza_limpo):
+    s = Settings(_env_file=None)
+    assert s.anthropic_timeout_s == 120.0
+    assert s.anthropic_max_attempts == 3
+    assert s.anthropic_effort == "medium"
+    assert s.anthropic_max_output_tokens == 16000
 
 
 def test_limiar_entrega_fora_da_faixa_e_rejeitado(ambiente_juiza_limpo):

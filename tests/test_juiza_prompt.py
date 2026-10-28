@@ -8,7 +8,12 @@ import pytest
 from pydantic import ValidationError
 
 from tcc_scraper.config import universo_coleta
-from tcc_scraper.llm.juiza_prompt import NOME_OPENAI, VERSAO, renderizar_prompt_juiza
+from tcc_scraper.llm.juiza_prompt import (
+    NOME_ANTHROPIC,
+    NOME_OPENAI,
+    VERSAO,
+    renderizar_prompt_juiza,
+)
 from tcc_scraper.llm.juiza_schema import JulgamentoItem, schema_juiza
 
 # Hashes capturados ANTES da inclusao do provedor openai: provam que o prompt e o schema
@@ -128,6 +133,27 @@ def test_schema_openai_estrito():
         if isinstance(no, dict):
             assert "default" not in no
             assert "title" not in no
+
+
+def test_prompt_anthropic_nome_proprio_e_schema_estrito_da_openai():
+    gemini = renderizar_prompt_juiza(ITENS_A)
+    anthropic_ = renderizar_prompt_juiza(ITENS_A, provedor="anthropic")
+    assert anthropic_.nome == NOME_ANTHROPIC == "juiza_anthropic"
+    assert anthropic_.versao == VERSAO
+    assert anthropic_.template == gemini.template
+    # JSON Schema estrito da OpenAI, sem envelope (name/strict) e sem limites numericos
+    assert anthropic_.schema == schema_juiza("anthropic")
+    assert "name" not in anthropic_.schema and "strict" not in anthropic_.schema
+    assert anthropic_.schema != gemini.schema
+
+
+def test_schema_anthropic_sem_minimum_maximum():
+    """A Anthropic recusa minimum/maximum em number (400); o resto e o schema da OpenAI."""
+    openai = json.dumps(schema_juiza("openai"))
+    anthropic_ = json.dumps(schema_juiza("anthropic"))
+    assert '"minimum"' in openai and '"maximum"' in openai
+    assert '"minimum"' not in anthropic_ and '"maximum"' not in anthropic_
+    assert '"additionalProperties": false' in anthropic_
 
 
 def test_prompt_openai_nome_versao_e_schema_proprio():

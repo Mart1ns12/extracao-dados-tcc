@@ -22,7 +22,7 @@ das tabelas.
 três empresas que saíram do índice (CRFB3, STBP3 e SRNA3), num total de 88. Além das ações, a
 entrega de preços traz IBOV, USDBRL, BRENT e IVVB11.
 
-**Restrição de custo:** zero, exceto o Gemini da análise diária, a OpenAI como LLM de fallback da juíza e o Jev. O Gemini tem teto de US$ 5 por mês, que cobre só a análise diária. A juíza tem teto próprio de US$ 3 por mês, e o backlog tem verba única de US$ 15; esses tetos valem para o Jev e a LLM de fallback. O Jev é a segunda exceção paga, aprovada em 2026-10-23.
+**Restrição de custo:** zero, exceto o Gemini da análise diária, a LLM de fallback da juíza e o Jev. O Gemini tem teto de US$ 5 por mês, que cobre só a análise diária. A LLM de fallback é o Claude Haiku 5.5 por padrão (desde 2026-10-28), paga pelo crédito de US$ 100 por mês da Anthropic; OpenAI e Gemini são alternativas. A juíza tem teto próprio de US$ 3 por mês, e o backlog tem verba única de US$ 15; esses tetos valem para o Jev e a LLM de fallback. O Jev é a segunda exceção paga, aprovada em 2026-10-23.
 
 ## 2. As duas pipelines
 
@@ -74,7 +74,8 @@ flowchart LR
         CVM[CVM dados abertos]
         B3[B3 listedCompaniesProxy]
         GEM[Gemini: análise diária]
-        OAI[OpenAI: fallback da juíza]
+        CLA[Claude Haiku 5.5: fallback da juíza]
+        OAI[OpenAI: alternativa da juíza]
         FB[FinBERT local]
     end
     subgraph Raw
@@ -97,6 +98,7 @@ flowchart LR
     R --> FB
     FB --> S
     GEM --> S
+    CLA --> S
     OAI --> S
     R --> F
     S --> F
@@ -136,7 +138,8 @@ repositório. A API nunca chama o scraper: ela só grava o comando na fila. Deta
 | CVM dados abertos | Fatos relevantes e comunicados (IPE); cadastro das companhias; balanços ITR e DFP; ações emitidas | Não | Arquivos anuais em zip. Intervalo de 1 s | `collectors/cvm_ipe.py`, `cvm_cadastro.py`, `cvm_demonstracoes.py` |
 | B3 listedCompaniesProxy | Setor, subsetor, tipo de ação (ON, PN ou UNIT) e composição das units (GetDetail por código CVM); proventos | Não | Intervalo de 1 s | `collectors/b3_cadastro.py`, `collectors/b3_proventos.py` |
 | Gemini (Google) | Análise diária. Na juíza, só se `JUIZA_PROVEDOR=gemini` | Sim: `GEMINI_API_KEY` | Teto de US$ 5 por mês, para a análise diária. A juíza, quando usa o Gemini, conta nos tetos da juíza: teto mensal de US$ 3 (`JUIZA_ORCAMENTO_MENSAL_USD`), verba de US$ 15 para o backlog e limite diário de itens (`JUIZA_MAX_ITENS_DIA`) | `llm/gemini_client.py`, `llm/juiza.py`, `llm/job.py` |
-| OpenAI | LLM de fallback da juíza (`gpt-5.6-luna`, padrão), para o que o Jev não decide | Sim: `OPENAI_API_KEY` | Mesmos tetos da juíza (US$ 3 por mês e verba de US$ 15 para o backlog), somados ao Jev | `llm/openai_client.py`, `llm/juiza.py` |
+| Anthropic | LLM de fallback da juíza (`claude-haiku-5-5`, padrão desde 2026-10-28), para o que o Jev não decide | Sim: `ANTHROPIC_API_KEY` | Mesmos tetos da juíza (US$ 3 por mês e verba de US$ 15 para o backlog), somados ao Jev. Paga pelo crédito de US$ 100 por mês da Anthropic | `llm/anthropic_client.py`, `llm/juiza.py` |
+| OpenAI | LLM de fallback alternativa da juíza (`gpt-5.6-luna`, com `JUIZA_PROVEDOR=openai`), para o que o Jev não decide | Sim: `OPENAI_API_KEY` | Mesmos tetos da juíza (US$ 3 por mês e verba de US$ 15 para o backlog), somados ao Jev | `llm/openai_client.py`, `llm/juiza.py` |
 | JEV | Julgador da juíza (TypeSafe AI), aprovado como exceção paga em 2026-10-23. Decide por entrega segura (`JUIZA_JEV_MODO=entrega`) | Sim | Desligado por padrão (`JEV_ENABLED=false`). A qualidade é medida por concordância com a referência antes de ligar (`judge-news --concordancia`) | `llm/jev_client.py` |
 | FinBERT (Hugging Face) | Sentimento: probabilidades de positivo, neutro e negativo, em pt e en | Não | Modelo local. Precisa do extra `sentiment` (torch) | `sentiment/finbert.py`, `sentiment/scoring.py` |
 
@@ -153,7 +156,7 @@ Os intervalos de cada fonte vêm de `config.py` (`throttle_*`). Toda requisiçã
 | IPE | Informações periódicas e eventuais que a companhia envia à CVM. Inclui os fatos relevantes, que entram como notícias na entrega. |
 | ITR e DFP | Balanços trimestral (ITR) e anual (DFP) entregues à CVM. |
 | FinBERT | Modelo que classifica o tom de um texto em positivo, neutro ou negativo. Há versões para português e inglês, escolhidas pelo idioma do artigo. Roda localmente, sem API. |
-| Juíza | Etapa que decide se cada par (notícia, ticker) é matéria real sobre a empresa. Aplica regras baratas primeiro; o que sobra vai ao Jev e, depois, à LLM de fallback (OpenAI ou Gemini). Notícias reprovadas saem da entrega. |
+| Juíza | Etapa que decide se cada par (notícia, ticker) é matéria real sobre a empresa. Aplica regras baratas primeiro; o que sobra vai ao Jev e, depois, à LLM de fallback (Anthropic, OpenAI ou Gemini). Notícias reprovadas saem da entrega. |
 | Jev | Julgador da juíza (TypeSafe AI), desligado por padrão. Decide por entrega segura e é medido por concordância com a referência. |
 | Daily | Execução das 9 etapas de um dia, na ordem do catálogo. Roda às 08:00 (Brasília) ou sob demanda. |
 | Etapa | Uma das 9 partes do daily (`precos`, `noticias`, `entrega` e outras). O id é fixo, porque o painel usa esse nome. |
