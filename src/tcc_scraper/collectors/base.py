@@ -8,6 +8,7 @@ qualquer queda obriga a recomecar do zero.
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -51,12 +52,20 @@ class DomainThrottle:
     _last: dict[str, float] = {}  # dominio -> proximo horario reservado (monotonic)
     _lock = threading.Lock()
 
-    def __init__(self, default_delay: float = 1.0) -> None:
+    def __init__(self, default_delay: float = 1.0, *, rng: random.Random | None = None) -> None:
         self._default = default_delay
         self._delays: dict[str, float] = {}
+        self._jitters: dict[str, float] = {}
+        # Sorteio do jitter. Injetavel: os testes passam um Random semeado.
+        self._rng = rng if rng is not None else random.Random()
 
-    def configure(self, domain: str, delay: float) -> None:
+    def configure(self, domain: str, delay: float, jitter: float = 0.0) -> None:
+        """Intervalo do dominio. Com jitter > 0, cada espera soma um sorteio em [0, jitter].
+
+        Padrao 0: dominios sem jitter mantem o intervalo exato.
+        """
         self._delays[domain] = delay
+        self._jitters[domain] = jitter
 
     def set_default(self, delay: float) -> None:
         """Ajusta o intervalo dos dominios sem configuracao propria.
@@ -67,9 +76,17 @@ class DomainThrottle:
         """
         self._default = delay
 
+    def _atraso_de(self, domain: str) -> float:
+        """Intervalo a aplicar nesta espera: o configurado, mais o jitter sorteado."""
+        delay = self._delays.get(domain, self._default)
+        jitter = self._jitters.get(domain, 0.0)
+        if jitter > 0:
+            delay += self._rng.uniform(0.0, jitter)
+        return delay
+
     def wait(self, url: str) -> None:
         domain = urlsplit(url).netloc.lower()
-        delay = self._delays.get(domain, self._default)
+        delay = self._atraso_de(domain)
         with DomainThrottle._lock:
             agora = time.monotonic()
             slot = max(agora, DomainThrottle._last.get(domain, 0.0) + delay)
@@ -84,6 +101,31 @@ class AbortarColeta(RuntimeError):
     `run` grava a unidade como erro e PROPAGA: o passo termina em falha em vez de gastar
     horas marcando erro unidade por unidade.
     """
+
+
+class FalhaBusca(RuntimeError):
+    """`fetch` esgotou as tentativas. `motivo` e curto para log: 'HTTP 503' ou 'ReadTimeout'."""
+
+    def __init__(self, mensagem: str, motivo: str) -> None:
+        super().__init__(mensagem)
+        self.motivo = motivo
+
+
+class ParadaSolicitada(Exception):
+    """O observador pediu parada no meio de uma unidade (ex.: durante uma pausa).
+
+    `run` trata como a parada normal entre unidades: encerra sem levantar erro e NAO grava
+    a unidade, que continua pendente para a proxima execucao.
+    """
+
+
+def _motivo_de_rede(exc: Exception | None) -> str:
+    """Causa curta da falha de rede: 'HTTP 503' para status, senao o nome da excecao."""
+    if exc is None:
+        return "desconhecido"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    return type(exc).__name__
 
 
 def retry_after_segundos(cabecalhos, agora: datetime | None = None) -> float | None:
@@ -195,7 +237,8 @@ class Collector(ABC):
                     self.name, attempt, self.max_attempts, exc, espera,
                 )
                 time.sleep(espera)
-        raise RuntimeError(f"{self.name}: falha ao buscar {url}") from last_exc
+        motivo = _motivo_de_rede(last_exc)
+        raise FalhaBusca(f"{self.name}: falha ao buscar {url} ({motivo})", motivo) from last_exc
 
     def _espera_retry(self, exc: Exception, attempt: int) -> float:
         """Retry-After do servidor quando houver; senao 2**tentativa. Sempre limitado pelo teto."""
@@ -310,6 +353,15 @@ class Collector(ABC):
                 inicio(unit.key)
             try:
                 result = self.process(unit)
+            except ParadaSolicitada:
+                # Parada pedida no meio da unidade (ex.: durante a pausa do Google News).
+                # Sai como a parada acima, sem gravar a unidade: ela segue pendente.
+                stats["interrompido"] = 1
+                logger.warning(
+                    "%s: parada solicitada; %d unidades nao executadas",
+                    self.name, len(units) - indice,
+                )
+                break
             except AbortarColeta as exc:
                 logger.error("%s: unidade %s abortou a coleta: %s", self.name, unit.key, exc)
                 erro = str(exc)[:500]

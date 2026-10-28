@@ -68,7 +68,7 @@ python -m tcc_scraper.cli validate-cadastro
 | `collect-prices` | `--resume` / `--no-resume` (padrão: resume); `--limit N` | Preços do Yahoo: ações, Ibovespa, Brent e dólar. Grava `raw_prices`. `--limit N` coleta só os N primeiros, para testar |
 | `gerar-correcao-precos` | - | Baixa o COTAHIST da B3 dos anos da janela de `CORRECOES_PRECO_B3` (hoje só AZUL3) e grava `data/correcoes_precos/<TICKER>.csv`. Lê o suplemento no banco e não grava no banco. Rode de novo só se a lista mudar |
 | `collect-macro` | `--resume` / `--no-resume` | Selic (SGS 432) e dólar PTAX do Banco Central. Grava `raw_macro` |
-| `collect-news` | `--resume` / `--no-resume`; `--limit N` (janelas); `--ticker T`; `--desde AAAA-MM-DD` e `--ate AAAA-MM-DD` (fim exclusivo) | Notícias históricas pelo Google News RSS. Dura 6 a 9 h na carga completa e é retomável. `--desde` e `--ate` devem ser usados juntos. Com `WP_ENABLED=true`, InfoMoney, Money Times e Exame saem daqui (ver `collect-wp`) |
+| `collect-news` | `--resume` / `--no-resume`; `--limit N` (janelas); `--ticker T`; `--desde AAAA-MM-DD` e `--ate AAAA-MM-DD` (fim exclusivo) | Notícias históricas pelo Google News RSS. Na carga completa, dura cerca de 7,5 h por ano de notícias (só pt-BR, a ~6 s por unidade; ver [03](03-carga-historica.md), seção 9) e é retomável. `--desde` e `--ate` devem ser usados juntos. Com `WP_ENABLED=true`, InfoMoney, Money Times e Exame saem daqui (ver `collect-wp`) |
 | `collect-wp` | `--resume` / `--no-resume`; `--desde AAAA-MM-DD` e `--ate AAAA-MM-DD` (fim exclusivo) | Posts de InfoMoney, Money Times e Exame pela API do WordPress, só os candidatos a ticker. Grava `v1-raw_wp_posts`. Throttle de `THROTTLE_WORDPRESS` (1,0 s). Se o total de um mês fechado divergir, a unidade falha |
 | `processar-wp` | `--desde AAAA-MM-DD` e `--ate AAAA-MM-DD` (fim exclusivo); `--refazer` | Sem rede. Casa os tickers, agrupa as histórias e classifica por código (`llm/juiza_codigo.py`). Grava `raw_articles` (origem `wordpress`), `staging_article_tickers`, `v1-staging_noticias_julgamento`, `v1-staging_historias` e `v1-staging_wp_processamento`. É idempotente |
 | `enrich` | `--limit N` (lotes) | Resolve o link de cada artigo e extrai o corpo dos artigos da allowlist. Grava `raw_article_bodies` e `raw_articles.resolved_url` |
@@ -149,6 +149,13 @@ python -m tcc_scraper.cli daily --etapa noticias --origem manual
 python -m tcc_scraper.cli historico --anos 2026 --anos 2025 --modo pendentes
 ```
 
+**Google News e bloqueio por IP (2026-10-28).** O Google News pode responder HTTP 503 ("tráfego incomum") a todas as consultas do IP do executor, sem `Retry-After`. Na ocasião, o bloqueio durou 40 min ou mais. É o IP: desta máquina, a mesma URL respondia 200. Por isso:
+
+- O ritmo padrão é de 5 s por consulta, mais até 2 s de acréscimo aleatório (`THROTTLE_GOOGLE_NEWS` e `THROTTLE_GOOGLE_NEWS_JITTER_S`). Não reduza sem medir bloqueios.
+- Só pt-BR (`GOOGLE_NEWS_IDIOMAS=pt`). O en-US ficou desligado.
+- Ao bater 10 falhas seguidas (`GOOGLE_NEWS_MAX_FALHAS_SEGUIDAS`), a coleta pausa 30, 60 e 120 min (`GOOGLE_NEWS_PAUSAS_MIN`) em vez de abortar. No painel, a pausa aparece como log `aviso` e como unidade atual, `pausa por bloqueio ate HH:MM UTC (1/3)`. Só depois das 3 pausas sem sucesso a trilha Google para. Ver [03](03-carga-historica.md), seção 3.1.
+- Se a carga terminar `falhou` com erro `trilha google: ...`, a trilha principal já terminou. Rode `historico` de novo em `--modo pendentes`, com os mesmos anos.
+
 ## 3. Variáveis de ambiente
 
 Cada variável é o nome do campo de `Settings` em `src/tcc_scraper/config.py`, em maiúsculas. Vazia ou ausente
@@ -208,6 +215,11 @@ ali. Os caminhos de `EXPORT_DIR`, `ENTREGA_CSV_DIR` e `HF_CACHE_DIR` são padrõ
 | `DAILY_TZ` | `America/Sao_Paulo` | sim | Fuso do daily |
 | `DAILY_ORCAMENTO_MIN` | `90` | sim | Orçamento das etapas de coleta, em minutos |
 | `DAILY_PRAZO_HORA` | `20` | sim | Hora limite para publicar o dia, no `DAILY_TZ` |
+| `THROTTLE_GOOGLE_NEWS` | `5.0` | sim | Segundos entre consultas ao Google News. Era 2,0 até 2026-10-28; com 2,0 s o IP levou HTTP 503 |
+| `THROTTLE_GOOGLE_NEWS_JITTER_S` | `2.0` | sim | Acréscimo aleatório, de 0 a este valor, somado a cada espera do Google News. `0` desliga |
+| `GOOGLE_NEWS_IDIOMAS` | `pt` | sim | Idiomas do Google News: `pt`, `en` ou `pt,en`. O en-US era 50% das consultas e 12% das notícias |
+| `GOOGLE_NEWS_MAX_FALHAS_SEGUIDAS` | `10` | sim | Unidades seguidas com falha do Google News que disparam uma pausa. `0` desliga. Antes, disparava aborto |
+| `GOOGLE_NEWS_PAUSAS_MIN` | `30,60,120` | sim | Pausas, em minutos, na ordem, ao atingir o limite acima. Depois da última, sem sucesso entre elas, a trilha Google para |
 
 ### 3.6 Caminhos e outras
 
@@ -327,6 +339,8 @@ Checklist para a implantação da nova juíza. Vale na máquina do executor (ou 
 | Daily virou `falhou` após reinício | O executor caiu com o daily em andamento | Dispare de novo pelo painel. A carga histórica, ao contrário, retoma sozinha |
 | Coleta continua com a API do painel fora do ar | Ele não depende do painel para coletar | Esperado. Comandos e heartbeat voltam quando a API voltar |
 | Google News devolve 100 itens em uma janela | O limite da consulta é de 100 itens | O coletor subdivide a janela sozinho. Para repetir um recorte, use `collect-news --desde ... --ate ...` |
+| Google News responde 503 ("tráfego incomum") a todas as consultas | Bloqueio do IP, por ritmo ou volume. O 503 não traz `Retry-After` | A coleta pausa sozinha (seção 2.6). Espere; não reduza `THROTTLE_GOOGLE_NEWS` sem medir |
+| Carga termina `falhou` com erro `trilha google: ...` | A trilha Google parou (pausas esgotadas, ou outra falha). A principal terminou | Veja o `aviso` e a unidade atual no painel. Rode `historico` de novo em `--modo pendentes`. Ver [03](03-carga-historica.md), seção 3.1 |
 | `NATU3` com série curta no Yahoo | O código novo tem histórico a partir de 2025-06 | Esperado. `items_found` denuncia a série curta |
 | `CRFB3` sem código CVM e sem CNPJ | Companhia fechou capital e saiu da B3 | Esperado. Fica no universo só para preço e notícia. `validate-cadastro` trata como aviso |
 | `historico --anos 2026 2025` não funciona | Opções repetíveis no Typer | Use `--anos 2026 --anos 2025` |

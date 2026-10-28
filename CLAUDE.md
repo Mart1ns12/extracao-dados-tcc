@@ -83,6 +83,11 @@ uma fonte rejeitada sem antes provar, com uma chamada real, que a limitação mu
 3. **Nunca** coletar sem throttle. Toda requisição externa passa por `collectors/base.py`
    — inclusive o `resolve()`, que antes chamava o cliente HTTP cru e martelava o
    `news.google.com` sem limite (passava despercebido com 60 artigos; com 11 mil, não).
+   **O Google bloqueia o IP com HTTP 503** ("tráfego incomum", sem Retry-After) depois de
+   ~180 consultas a 1 a cada 2 s. O bloqueio dura 40 min ou mais (log do executor,
+   2026-10-28). Por isso o throttle do Google é 5 s + 0 a 2 s aleatórios, a coleta é só
+   pt-BR (`GOOGLE_NEWS_IDIOMAS=pt`: o en-US era 50% das consultas e 12% das notícias) e o
+   disjuntor pausa 30, 60 e 120 min antes de abortar. Não baixe o throttle sem medir.
 4. **Carteira do IBOV validada** contra o Yahoo: 88/88 tickers. 15 códigos estavam
    desatualizados por reestruturação societária e já foram corrigidos em `config.py`
    (ex.: Embraer `EMBR3→EMBJ3`, Eletrobras `ELET3→AXIA3`). Ao mexer na lista, rode
@@ -208,7 +213,7 @@ python -m tcc_scraper.cli validate-cadastro    # ticker -> codigo CVM -> B3
 python -m tcc_scraper.cli collect-prices       # Yahoo: acoes, Ibovespa, Brent, dolar
 python -m tcc_scraper.cli collect-macro        # Selic e PTAX (BCB)
 python -m tcc_scraper.cli gerar-correcao-precos  # COTAHIST da B3 -> data/correcoes_precos/*.csv (so quando CORRECOES_PRECO_B3 mudar)
-python -m tcc_scraper.cli collect-news         # Google News (retomavel; 6-9 h na carga completa; sem os 3 dominios WordPress se WP_ENABLED=true)
+python -m tcc_scraper.cli collect-news         # Google News (retomavel; ~7,5 h por ano, so pt-BR; sem os 3 dominios WordPress se WP_ENABLED=true)
 python -m tcc_scraper.cli collect-wp           # API WordPress: InfoMoney, Money Times e Exame, so candidatos a ticker (--desde/--ate)
 python -m tcc_scraper.cli processar-wp         # casa tickers, agrupa historias e classifica por codigo (sem rede; --desde/--ate/--refazer)
 python -m tcc_scraper.cli enrich               # corpo dos artigos (resolve o link)
@@ -230,7 +235,8 @@ pytest                                          # testes (sem rede, usam fixture
 TCC_TESTES_COM_BANCO=1 pytest                   # testes com banco: gravam no MySQL do .env (opt-in)
 ```
 
-A coleta de notícias leva **6–9 h** na primeira execução (9.010 janelas + subdivisões).
+A coleta do Google News leva **~7,5 h por ano** de notícias (~4.500 janelas só em pt-BR a ~6 s,
+mais subdivisões e eventuais pausas por bloqueio).
 É **retomável**: se interromper, rodar o mesmo comando continua de onde parou.
 
 Para rodar tudo em sequência no servidor: `./scripts/coleta-completa.sh` (ver

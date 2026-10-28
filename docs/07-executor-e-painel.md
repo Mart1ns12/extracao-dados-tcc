@@ -249,7 +249,7 @@ Os status são strings, sem `ENUM` no banco. Os valores de ponto flutuante são 
 - **Um processo só.** O estado do daily e o da carga histórica ficam em memória. Não rode mais de um executor contra o mesmo banco.
 - **Reinício no meio de um daily.** A execução `em_andamento` vira `falhou`, com o motivo `interrompida por reinício do executor`. As etapas que ainda não começaram ficam `pendente`. O daily não é retomado: dispare de novo pelo painel. A carga histórica, ao contrário, é retomada sozinha (ver [03](03-carga-historica.md), seção 6).
 - **Sem cancelamento do daily** pelo painel.
-- **Sem cancelamento do coletar** pelo painel. `cancelar` é da carga histórica. Um `google_news` sem recorte (de 6 a 9 h) só para com o reinício do executor.
+- **Sem cancelamento do coletar** pelo painel. `cancelar` é da carga histórica. Um `google_news` sem recorte (~7,5 h por ano de notícias, só pt-BR, mais eventuais pausas por bloqueio) só para com o reinício do executor.
 - **Plano do coletar só em memória.** Não há coluna de parâmetros em `v1-painel_execucoes`. No reinício, um coletar `em_andamento` vira `falhou`. Um coletar `agendada` também vira `falhou`, com `plano do coletar perdido no reinício do executor; reenvie o comando`.
 - **Carga histórica com daily ou coletar rodando.** `Historico.disparar` não consulta o daily, então hoje é possível iniciar uma carga enquanto um daily ou um coletar roda. A lacuna é anterior ao comando `coletar` e não foi corrigida aqui.
 - **Recusa reenviada sai como sucesso.** Ver seção 5.

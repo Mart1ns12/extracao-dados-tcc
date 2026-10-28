@@ -44,7 +44,7 @@ A trilha Google começa junto com os passos globais. Os passos marcados como "es
 | Principal | `b3_cadastro` | Mais recente | Cadastro da B3 | Sim |
 | Principal | `b3_proventos` | Mais recente | Proventos da B3 | Não (`resume=False`): refaz tudo |
 | Principal | `cvm_itr_dfp` | Mais recente | ITR e DFP de todos os anos pedidos | Sim |
-| Google | `google_news` | Cada segmento | Do início do segmento até o fim (exclusivo). Com `WP_ENABLED=true`, sem os 3 domínios WordPress | Sim |
+| Google | `google_news` | Cada segmento | Do início do segmento até o fim (exclusivo). Com `WP_ENABLED=true`, sem os 3 domínios WordPress. Só os idiomas de `GOOGLE_NEWS_IDIOMAS` (padrão `pt`) | Sim |
 | Google | `enriquecimento` | Cada segmento | Corpo dos artigos | Não (`resume=False`); só entram os pendentes |
 | Principal | `wordpress` | Cada segmento | Só com `WP_ENABLED=true`. Posts de InfoMoney, Money Times e Exame: `desde` é o início do segmento menos 31 dias (aquecimento do boilerplate) e `ate` é o fim do segmento | Sim (por site e mês) |
 | Principal | `processar_wp` | Cada segmento | Só com `WP_ENABLED=true`. Processa do início ao fim do segmento, sem rede | Não se aplica (função) |
@@ -56,12 +56,30 @@ A trilha Google começa junto com os passos globais. Os passos marcados como "es
 
 A carga não segue a ordem do daily. Os coletores são os mesmos do daily (ver [02](02-pipeline-diaria.md), seção 3), exceto a carteira do IBOV (`b3_carteira_ibov`), que a carga não roda: ela existe só no daily e no `coletar`. A análise diária (`analise`) também não entra na carga.
 
-- **Por que duas trilhas.** O Google News é o passo mais lento (6 a 9 horas por ano). O WordPress e a IPE não dependem do corpo dos artigos do Google. Em sequência, a fila inteira esperava o Google.
+- **Por que duas trilhas.** O Google News é o passo mais lento (cerca de 7,5 horas por ano de notícias, só pt-BR; ver seção 9). O WordPress e a IPE não dependem do corpo dos artigos do Google. Em sequência, a fila inteira esperava o Google.
 - **Por que o portão.** FinBERT e juíza pontuam e julgam pelo texto que já existe no banco. Se rodassem antes do `enriquecimento` do ano, pontuariam pela manchete os artigos cujo corpo ainda não foi processado. Por isso o FinBERT também recebe `anos`: pontua só o ano que chegou, e não o backlog inteiro.
 - **Por que a juíza de WordPress e IPE não espera.** Essas origens não dependem do corpo do Google, então podem ser julgadas enquanto o Google coleta o ano. Com `WP_ENABLED=false`, ela fica só com a IPE.
-- **Falha.** Se um passo falha em uma trilha, a outra para na unidade em curso e a carga vai a `falhou` (seção 8). Uma nova carga refaz o plano, e o checkpoint dos coletores evita refazer o que já está pronto.
+- **Falha da principal.** Se um passo da trilha principal falha, a trilha Google para na unidade em curso e a carga vai a `falhou` (seção 8).
+- **Falha da Google.** Se a trilha Google falha (inclusive quando as pausas do bloqueio acabam, seção 3.1), só ela para. A principal segue até o fim. Os passos com portão dos anos que o Google não concluiu não rodam e ficam como estão no painel; o log mostra um `aviso` para cada um. A carga vai a `falhou`, com erro `trilha google: ...` (seção 8).
+
+Uma nova carga refaz o plano, e o checkpoint dos coletores evita refazer o que já está pronto.
 
 A unidade de progresso é o par (ano, id no painel). `v1-painel_historico_progresso` guarda uma linha por par. O id no painel é o nome do coletor, exceto a juíza de WordPress e IPE, que é `juiza_wp`.
+
+### 3.1 Bloqueio do Google News
+
+O Google News bloqueia por IP e por ritmo. O sinal é HTTP 503 ("tráfego incomum") em todas as consultas, ou timeouts seguidos, sem `Retry-After`. Em 2026-10-28, a carga caiu assim: 181 consultas boas em 6 minutos, a 1 a cada 2 s, e depois 10 falhas seguidas. Na mesma manhã, o IP do executor já levava 503 desde a primeira consulta, por pelo menos 40 min. Desta máquina, a mesma URL respondia 200.
+
+Quando `GOOGLE_NEWS_MAX_FALHAS_SEGUIDAS` (padrão 10) unidades seguidas falham, a trilha Google pausa em vez de abortar:
+
+- A pausa dura `GOOGLE_NEWS_PAUSAS_MIN` minutos (padrão `30,60,120`). A pausa é a k-ésima da lista, em que k é o número de pausas seguidas sem sucesso: a 1ª dura 30 min, a 2ª 60 e a 3ª 120. Um sucesso zera a contagem.
+- O painel mostra a pausa de duas formas: um log `aviso` e a unidade atual, `pausa por bloqueio ate HH:MM UTC (1/3)`. A pausa para com pausa ou cancelamento da carga em até 5 s.
+- Depois da última pausa, sem nenhum sucesso entre elas, a coleta aborta com `... apos 3 pausas`. A trilha Google para, como em qualquer falha dela (seção 3).
+- As unidades que falharam ficam com erro no checkpoint. Elas não são refeitas na mesma execução.
+
+Com os valores padrão, uma falha que não passa leva 3,5 horas de pausas (30 + 60 + 120 min) antes de abortar, além do tempo das tentativas.
+
+**Como retomar.** Dispare a carga de novo com `--modo pendentes` (padrão) e os mesmos anos. Os coletores com checkpoint pulam as unidades `ok` e refazem as que falharam. No painel, é o mesmo disparo de `historico`.
 
 ## 4. Modos
 
@@ -80,7 +98,7 @@ Os três comandos chegam pelo painel (`POST /historico/pausar`, `/retomar`, `/ca
 | `retomar` | `pausada` | `em_andamento` | Continua no mesmo passo e na mesma unidade |
 | `cancelar` | `em_andamento`, `pausando` ou `pausada` | `cancelando`, depois `cancelada`. Vai direto a `cancelada` se a thread não estiver ativa | A unidade em curso termina e a carga para |
 
-- **Ponto de parada.** A pausa e o cancelamento são checados entre unidades (coletores), entre blocos (`finbert`) e entre lotes (`juiza`). Nunca interrompem uma requisição no meio. A espera do portão de um ano também para com pausa e cancelamento. Uma falha em uma trilha aborta a outra no mesmo ponto (seção 3).
+- **Ponto de parada.** A pausa e o cancelamento são checados entre unidades (coletores), entre blocos (`finbert`) e entre lotes (`juiza`). Nunca interrompem uma requisição no meio. A espera do portão de um ano também para com pausa e cancelamento. A pausa do Google News (seção 3.1) também para com pausa e cancelamento, em até 5 s. As esperas (do portão e da pausa) são laços com timeout, sem espera infinita. Uma falha da trilha principal aborta a outra no mesmo ponto; uma falha da Google só para a própria trilha (seção 3).
 - **Transição inválida** é recusada. O executor confirma o comando com `ok: false` e uma mensagem, por exemplo `pausar exige carga em_andamento (atual: pausada)`.
 - **Passo pausado no meio.** Ao pausar, o passo fica `pausado` em `status_segmento`. Ao retomar, o passo roda de novo: coletores com checkpoint continuam de onde pararam, e os com `resume=False` começam do zero.
 - **Contadores.** Um mesmo objeto acompanha o passo inteiro, inclusive as retomadas. Os contadores não zeram quando a carga é pausada e retomada (ver seção 10 sobre um caso de contagem).
@@ -113,13 +131,13 @@ Enquanto a carga está `em_andamento` ou `pausando`, um daily ou uma etapa que c
 - **`itens_por_min`** é uma média móvel dos últimos 10 minutos.
 - **Logs.** Saem com `origem = 'historico'`. Na coluna `etapa` fica o nome do coletor.
 
-Status da carga: `em_andamento`, `pausando`, `pausada`, `cancelando`, `cancelada`, `concluida`, `falhou`. Uma exceção fora de unidade (por exemplo, o banco fora do ar), ou a falha de um passo em qualquer trilha, leva a carga a `falhou`, com a mensagem em `erro`.
+Status da carga: `em_andamento`, `pausando`, `pausada`, `cancelando`, `cancelada`, `concluida`, `falhou`. Uma exceção fora de unidade (por exemplo, o banco fora do ar), ou a falha de um passo da trilha principal, leva a carga a `falhou`, com a mensagem em `erro`. A falha da trilha Google (seção 3) também leva a `falhou`, com o erro começando por `trilha google: `.
 
 ## 9. Tempos e custos esperados
 
 | Item | Estimativa | Origem |
 |---|---|---|
-| Google News | 6 a 9 horas por ano de notícias | Spec de entrega, seção 9.2. A ADR registra 6 a 9 horas para as 9.010 janelas da v1 |
+| Google News | Cerca de 7,5 horas por ano de notícias, só pt-BR: ~4.500 unidades por ano a ~6 s cada (5 s de throttle e média de 1 s de jitter), sem contar as subdivisões | Conta de 2026-10-28. A estimativa antiga (6 a 9 horas, da spec de entrega, seção 9.2, e da ADR) era de pt-BR e en-US, a 2 s, e não vale mais. Não há carga real neste ritmo |
 | CVM, B3, BCB e Yahoo | Minutos para cinco anos | Spec de entrega, seção 9.2 |
 | Juíza (Jev e Claude Haiku 5.5) e análise (Gemini) | Juíza do backlog: verba de US$ 15, cumulativa, somando Jev e LLM de fallback. Análise diária: teto de US$ 5/mês no Gemini | [04](04-juiza-e-llm.md), seção 2.5. A juíza diária tem teto próprio de US$ 3/mês |
 | WordPress (InfoMoney, Money Times, Exame) | Medido em 2026-03: 11.306 posts de um mês em 122 requisições, sem erro, com throttle de 1,0 s. Por ano, 83,6 a 106,1 mil posts nos 3 sites | Teste real da API, em [09](09-historico-de-mudancas.md) e no [ADR](ADR.md) |

@@ -325,6 +325,10 @@ class Historico:
         self._vivas = 0  # trilhas ainda rodando
         self._paradas = 0  # trilhas estacionadas em _aguardar
         self._falha: str | None = None
+        # Falha da trilha Google: so ela para (a principal segue); a carga termina `falhou`.
+        self._falha_google: str | None = None
+        # A trilha Google encerrou (falha, cancelamento ou fim): portao que nao abriu nao abre.
+        self._google_encerrada = False
 
     @property
     def ocupado(self) -> bool:
@@ -470,6 +474,7 @@ class Historico:
         self._cancelar = threading.Event()
         self._abortar = threading.Event()
         self._vivas, self._paradas, self._falha = 0, 0, None
+        self._falha_google, self._google_encerrada = None, False
         self._thread = threading.Thread(
             target=self._rodar, args=(hist_id, anos, modo), name=f"historico-{hist_id}", daemon=True
         )
@@ -510,18 +515,22 @@ class Historico:
             for t in threads:
                 t.start()
             for t in threads:
-                t.join()
+                while t.is_alive():
+                    t.join(timeout=1.0)
         except Exception as exc:
             # Excecao fora de unidade (ex.: banco fora): a carga para aqui e o erro vai ao painel.
             logger.exception("carga histórica %s falhou", hist_id)
             with self._lock:
                 self._falha = self._falha or f"{type(exc).__name__}: {exc}"[:4000]
-        if self._falha is not None:
+        # Falha da Google (so a trilha) e falha geral: a carga fica incompleta e termina `falhou`.
+        falhas = [f for f in (self._falha, self._falha_google) if f is not None]
+        if falhas:
+            erro = "; ".join(falhas)[:4000]
             agora = self._agora()
             self._repo.atualizar_historico(
-                hist_id, status="falhou", erro=self._falha, finalizada_em=agora, atualizada_em=agora
+                hist_id, status="falhou", erro=erro, finalizada_em=agora, atualizada_em=agora
             )
-            mensagem = f"carga {hist_id} falhou: {self._falha}"
+            mensagem = f"carga {hist_id} falhou: {erro}"
             self._repo.log("historico", "erro", None, mensagem, hist_id)
         elif self._cancelar.is_set():
             self._encerrar(hist_id, "cancelada")
@@ -543,12 +552,27 @@ class Historico:
 
     def _rodar_trilha(self, hist_id, trilha, passos, modo, ritmo, feitos, portoes) -> None:
         """Passos de uma trilha, em ordem. A Google libera o ano (portao) ao terminar o ultimo
-        passo dele; a principal espera o portao antes dos passos `depende_google`."""
+        passo dele; a principal espera o portao antes dos passos `depende_google`.
+
+        Falha da Google para so a propria trilha: a principal segue e os passos com portao
+        daquele ano ficam pendentes (nao rodam). Falha da principal aborta as duas.
+        """
         ultimo_do_ano = {p.ano: p for p in passos}
         try:
             for passo in passos:
-                if passo.depende_google and not self._esperar_portao(hist_id, portoes[passo.ano]):
-                    return
+                if passo.depende_google:
+                    if not self._esperar_portao(hist_id, portoes[passo.ano]):
+                        return
+                    if not portoes[passo.ano].is_set():
+                        # A Google nao concluiu o ano: o passo nao roda e fica como esta.
+                        if (passo.ano, passo.id_painel) not in feitos:
+                            self._repo.log(
+                                "historico", "aviso", passo.id_painel,
+                                f"{passo.id_painel} de {passo.ano} não rodou: a trilha google "
+                                "não concluiu o ano",
+                                hist_id,
+                            )
+                        continue
                 if (passo.ano, passo.id_painel) not in feitos and not self._executar_passo(
                     hist_id, passo, modo, ritmo
                 ):
@@ -556,26 +580,39 @@ class Historico:
                 if trilha == TRILHA_GOOGLE and ultimo_do_ano[passo.ano] is passo:
                     portoes[passo.ano].set()
         except Exception as exc:
-            logger.exception("carga histórica %s: trilha %s falhou", hist_id, trilha)
-            with self._lock:
-                if self._falha is None:
-                    self._falha = f"{type(exc).__name__}: {exc}"[:4000]
-                self._abortar.set()
-                self._acordar()
+            if trilha == TRILHA_GOOGLE:
+                # So a Google para: sem _abortar, a principal segue ate o fim.
+                logger.exception("carga histórica %s: trilha google falhou", hist_id)
+                with self._lock:
+                    self._falha_google = f"trilha google: {type(exc).__name__}: {exc}"[:4000]
+            else:
+                logger.exception("carga histórica %s: trilha %s falhou", hist_id, trilha)
+                with self._lock:
+                    if self._falha is None:
+                        self._falha = f"{type(exc).__name__}: {exc}"[:4000]
+                    self._abortar.set()
+                    self._acordar()
         finally:
             with self._lock:
+                if trilha == TRILHA_GOOGLE:
+                    self._google_encerrada = True
                 self._vivas -= 1
                 if not (self._cancelar.is_set() or self._abortar.is_set()):
                     self._marcar_pausada_se_todas(hist_id)
 
     def _esperar_portao(self, hist_id: str, portao: threading.Event) -> bool:
         """Espera a trilha Google liberar o ano. Pausa no meio: estaciona como as demais.
-        Devolve False se a carga foi cancelada ou abortada."""
-        while not portao.wait(timeout=0.5):
+        Devolve False se a carga foi cancelada ou abortada. Se a Google encerrar sem liberar o
+        ano (falha), devolve True com o portao fechado: quem chama confere `portao.is_set()`.
+        Sem acordar por `_acordar` aqui: acordar uma trilha pausada faria ela rodar pausada."""
+        while not portao.is_set():
             if self._abortar.is_set() or self._cancelar.is_set():
                 return False
+            if self._google_encerrada:
+                return True
             if self._pausar.is_set() and not self._aguardar(hist_id):
                 return False
+            portao.wait(timeout=0.5)
         return True
 
     def _executar_passo(self, hist_id: str, passo: Passo, modo: str, ritmo: _Ritmo) -> bool:
@@ -647,8 +684,9 @@ class Historico:
             geracao = self._geracao
             self._paradas += 1
             self._marcar_pausada_se_todas(hist_id)
+            # Espera com timeout: reavalia a condicao mesmo que um acordar se perca.
             while self._geracao == geracao:
-                self._cond.wait()
+                self._cond.wait(timeout=1.0)
             self._paradas -= 1
             return not (self._cancelar.is_set() or self._abortar.is_set())
 

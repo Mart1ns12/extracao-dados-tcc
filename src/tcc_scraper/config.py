@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
@@ -55,9 +55,12 @@ class Settings(BaseSettings):
 
     user_agent: str = "TCC-Scraper/1.0 (pesquisa academica)"
 
-    # Segundos entre requisicoes ao mesmo dominio. O valor do Google News foi
-    # escolhido por medicao: abaixo disso o risco de bloqueio cresce.
-    throttle_google_news: float = 2.0
+    # Segundos entre requisicoes ao mesmo dominio. Google News: 5,0 s desde 2026-10-28.
+    # Com 2,0 s, o IP do executor levou HTTP 503 ("trafego incomum") apos ~180 consultas e o
+    # bloqueio durou 40 min ou mais. A cada espera soma-se um acrescimo aleatorio de 0 a
+    # throttle_google_news_jitter_s, para o ritmo nao virar batida regular.
+    throttle_google_news: float = 5.0
+    throttle_google_news_jitter_s: float = Field(2.0, ge=0.0)
     throttle_yahoo: float = 1.0
     throttle_bcb: float = 0.5
     throttle_article_fetch: float = 1.5
@@ -82,9 +85,14 @@ class Settings(BaseSettings):
     http_timeout_s: float = 30.0
     http_max_tentativas: int = 4
     http_espera_max_s: float = 120.0
-    # Google News: unidades SEGUIDAS com falha (resposta sem RSS, rede) que abortam a coleta.
-    # E sinal de bloqueio: seguir so marcaria erro em milhares de unidades. 0 desliga.
+    # Google News: unidades SEGUIDAS com falha (resposta sem RSS, rede) sao sinal de bloqueio.
+    # Ao atingir o limite, a coleta PAUSA (google_news_pausas_min, em minutos, na ordem) em vez de
+    # abortar. Depois da ultima pausa, sem nenhum sucesso entre elas, aborta. 0 desliga o disjuntor.
     google_news_max_falhas_seguidas: int = 10
+    google_news_pausas_min: str = "30,60,120"
+    # Idiomas do Google News: pt, en ou os dois, separados por virgula. en-US era 50% das
+    # consultas e 12% das noticias; o bloqueio por IP veio junto. Catalogo: GOOGLE_NEWS_LOCALES.
+    google_news_idiomas: str = "pt"
 
     # Workers do enriquecimento. O ganho vem de uma assimetria: todo artigo passa
     # pelo news.google.com (que o throttle por dominio serializa), mas o download
@@ -203,6 +211,29 @@ class Settings(BaseSettings):
     # Painel: dias de retencao dos logs do executor.
     painel_logs_dias: int = 7
 
+
+    @field_validator("google_news_idiomas")
+    @classmethod
+    def valida_idiomas(cls, valor: str) -> str:
+        parse_idiomas(valor)  # levanta ValueError com a mensagem do erro
+        return valor
+
+    @field_validator("google_news_pausas_min")
+    @classmethod
+    def valida_pausas(cls, valor: str) -> str:
+        parse_pausas(valor)  # levanta ValueError com a mensagem do erro
+        return valor
+
+    @property
+    def google_news_locales_ativos(self) -> tuple[dict[str, str], ...]:
+        """Locales do Google News usados na coleta, na ordem do catalogo GOOGLE_NEWS_LOCALES."""
+        idiomas = parse_idiomas(self.google_news_idiomas)
+        return tuple(loc for loc in GOOGLE_NEWS_LOCALES if loc["lang"] in idiomas)
+
+    @property
+    def google_news_pausas(self) -> tuple[float, ...]:
+        """Pausas do disjuntor do Google News, em minutos, na ordem de uso."""
+        return parse_pausas(self.google_news_pausas_min)
 
     @property
     def fim_coleta(self) -> date:
@@ -562,6 +593,50 @@ GOOGLE_NEWS_LOCALES: tuple[dict[str, str], ...] = (
     {"lang": "pt", "hl": "pt-BR", "gl": "BR", "ceid": "BR:pt-419"},
     {"lang": "en", "hl": "en-US", "gl": "US", "ceid": "US:en"},
 )
+
+
+def parse_idiomas(valor: str) -> tuple[str, ...]:
+    """Idiomas de GOOGLE_NEWS_IDIOMAS (ex.: "pt" ou "pt,en"), na ordem do catalogo.
+
+    Lista vazia ou idioma fora do catalogo levantam ValueError com a mensagem a mostrar.
+    """
+    validos = [loc["lang"] for loc in GOOGLE_NEWS_LOCALES]
+    pedidos = [parte.strip().lower() for parte in valor.split(",") if parte.strip()]
+    if not pedidos:
+        raise ValueError(
+            f"GOOGLE_NEWS_IDIOMAS vazio: informe ao menos um de {', '.join(validos)}"
+        )
+    invalidos = [parte for parte in pedidos if parte not in validos]
+    if invalidos:
+        raise ValueError(
+            f"GOOGLE_NEWS_IDIOMAS invalido: {', '.join(invalidos)} "
+            f"(validos: {', '.join(validos)})"
+        )
+    return tuple(lang for lang in validos if lang in pedidos)
+
+
+def parse_pausas(valor: str) -> tuple[float, ...]:
+    """Pausas do disjuntor do Google News em minutos (GOOGLE_NEWS_PAUSAS_MIN, ex.: "30,60,120").
+
+    Vazia, nao numerica ou com valor <= 0 levanta ValueError.
+    """
+    partes = [parte.strip() for parte in valor.split(",") if parte.strip()]
+    if not partes:
+        raise ValueError(
+            "GOOGLE_NEWS_PAUSAS_MIN vazio: informe ao menos uma pausa em minutos, ex.: 30,60,120"
+        )
+    try:
+        pausas = tuple(float(parte) for parte in partes)
+    except ValueError as exc:
+        raise ValueError(
+            f"GOOGLE_NEWS_PAUSAS_MIN invalido: {valor!r} "
+            "(minutos separados por virgula, ex.: 30,60,120)"
+        ) from exc
+    if any(not 0 < pausa < float("inf") for pausa in pausas):
+        raise ValueError(
+            f"GOOGLE_NEWS_PAUSAS_MIN invalido: cada pausa deve ser maior que zero ({valor!r})"
+        )
+    return pausas
 
 # Teto duro de itens que o Google News RSS devolve por consulta. Confirmado por
 # medicao: janela mensal satura em 100, semanal devolve ~52. Ao bater esse valor

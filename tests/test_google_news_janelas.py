@@ -22,6 +22,7 @@ from tcc_scraper.config import (
     GOOGLE_NEWS_LOCALES,
     IVVB11,
     Settings,
+    get_settings,
 )
 from tcc_scraper.enrich.article_fetcher import ArticleBodyCollector
 
@@ -60,7 +61,8 @@ def test_recorte_curto_gera_uma_janela_por_idioma() -> None:
     with GoogleNewsCollector(tickers={"PETR4": "Petrobras"}, desde=desde, ate=ate) as coletor:
         unidades = list(coletor.work_units())
 
-    assert len(unidades) == len(GOOGLE_NEWS_LOCALES)
+    # Uma unidade por idioma ATIVO (GOOGLE_NEWS_IDIOMAS), nao por todo o catalogo.
+    assert len(unidades) == len(get_settings().google_news_locales_ativos)
     assert {(u.payload["start"], u.payload["end"]) for u in unidades} == {(desde, ate)}
 
 

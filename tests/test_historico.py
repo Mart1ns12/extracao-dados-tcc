@@ -13,6 +13,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from tcc_scraper.collectors.base import AbortarColeta
 from tcc_scraper.config import Settings
 from tcc_scraper.orquestrador import historico as H
 from tcc_scraper.orquestrador.historico import (
@@ -698,3 +699,145 @@ def test_ritmo_aguenta_duas_trilhas_registrando_ao_mesmo_tempo():
     assert erros == []
     # Todas as amostras caem no mesmo instante: 2000 itens em 1 minuto (piso de 1 min).
     assert ritmo.media(AGORA) == 2000.0
+
+
+# -- falha da trilha Google: so ela para, e o portao do ano nao trava -------------------------
+def _google_bloqueada(falso: Falso) -> None:
+    """O Google bloqueia (503) logo na primeira unidade do google_news."""
+
+    def hook(coletor, key):
+        if coletor == "google_news":
+            raise AbortarColeta("bloqueado pelo Google (503)")
+
+    falso.hook = hook
+
+
+def test_falha_da_google_nao_derruba_a_principal(monkeypatch):
+    repo, hist, falso = _montar(monkeypatch)
+    _google_bloqueada(falso)
+    hist.disparar([2026, 2025])
+    hist.join(10)
+
+    assert hist.ocupado is False
+    # A principal foi ate o fim: globais e, em cada ano, as etapas que nao dependem da Google.
+    for coletor in ORDEM_PREVIA:
+        assert _linha_progresso(repo, 2026, coletor)["status_segmento"] == "concluido"
+    for ano in (2026, 2025):
+        for coletor in ("wordpress", "processar_wp", "cvm_ipe", "juiza_wp"):
+            assert _linha_progresso(repo, ano, coletor)["status_segmento"] == "concluido"
+    # O passo que falhou fica `falhou`; a carga termina `falhou` com a mensagem da Google.
+    assert _linha_progresso(repo, 2026, "google_news")["status_segmento"] == "falhou"
+    atual = repo.historico_atual()
+    assert atual["status"] == "falhou"
+    assert atual["erro"].startswith("trilha google: AbortarColeta")
+
+
+def test_portao_sem_google_nao_roda_e_nao_trava(monkeypatch):
+    repo, hist, falso = _montar(monkeypatch)
+    original = H._resolver
+
+    # Google conclui 2026 e bloqueia no segmento de 2025 (o primeiro passo dele).
+    def resolver_com_bloqueio(alvo: str):
+        fabrica = original(alvo)
+        if alvo.split(":")[1] != "GoogleNewsCollector":
+            return fabrica
+
+        def com_bloqueio(**kwargs):
+            if kwargs["desde"].year == 2025:
+                raise AbortarColeta("bloqueado pelo Google (503)")
+            return fabrica(**kwargs)
+
+        return com_bloqueio
+
+    monkeypatch.setattr(H, "_resolver", resolver_com_bloqueio)
+    hist.disparar([2026, 2025])
+    hist.join(10)
+
+    # Nao travou: a thread terminou (sem o join com timeout ela ficaria viva).
+    assert hist.ocupado is False
+    assert repo.historico_atual()["status"] == "falhou"
+    # O portao de 2026 abriu: finbert, juiza e entrega de 2026 rodaram.
+    for coletor in ("finbert", "juiza", "build_entrega"):
+        assert _linha_progresso(repo, 2026, coletor)["status_segmento"] == "concluido"
+    # O portao de 2025 nunca abriu: esses passos nao rodaram e ficam pendentes.
+    for coletor in ("finbert", "juiza", "build_entrega"):
+        assert _linha_progresso(repo, 2025, coletor)["status_segmento"] == "pendente"
+    assert [c for c, _ in falso.chamadas].count("finbert") == 1
+    # A principal seguiu para o segmento de 2025 e concluiu o que nao depende da Google.
+    assert _linha_progresso(repo, 2025, "wordpress")["status_segmento"] == "concluido"
+    assert _linha_progresso(repo, 2025, "juiza_wp")["status_segmento"] == "concluido"
+
+
+def test_falha_da_principal_ainda_derruba_a_google(monkeypatch):
+    repo, hist, falso = _montar(monkeypatch)
+
+    def hook(coletor, key):
+        if coletor == "google_news":
+            # A Google so para no ponto de parada: espera a principal cair antes de seguir.
+            _esperar(lambda: hist._abortar.is_set())
+        if coletor == "cvm_ipe":
+            raise RuntimeError("x")
+
+    falso.hook = hook
+    hist.disparar([2026, 2025])
+    hist.join(10)
+
+    atual = repo.historico_atual()
+    assert atual["status"] == "falhou"
+    assert "RuntimeError" in atual["erro"]
+    assert "trilha google" not in atual["erro"]
+    assert hist.ocupado is False
+    # A Google parou no meio: o resto do 2026 e o 2025 nao rodaram.
+    assert _linha_progresso(repo, 2026, "enriquecimento")["status_segmento"] == "pendente"
+    assert _linha_progresso(repo, 2025, "google_news")["status_segmento"] == "pendente"
+
+
+def test_pausa_e_retomada_funcionam_com_a_google_ja_falhada(monkeypatch):
+    repo, hist, falso = _montar(monkeypatch)
+    pausou: list[bool] = []
+
+    def hook(coletor, key):
+        if coletor == "google_news":
+            raise AbortarColeta("bloqueado pelo Google (503)")
+        if coletor == "wordpress" and not pausou:
+            pausou.append(True)
+            # So pausa depois que a Google ja encerrou: o teste nao depende da ordem das threads.
+            _esperar(lambda: hist._google_encerrada)
+            hist.controlar("pausar")
+
+    falso.hook = hook
+    hist.disparar([2026])
+    # Com a Google morta, a principal sozinha estaciona e a carga vira `pausada`.
+    _esperar(lambda: repo.historico_atual()["status"] == "pausada")
+    assert hist.controlar("retomar") == "em_andamento"
+    hist.join(10)
+
+    assert hist.ocupado is False
+    assert _linha_progresso(repo, 2026, "cvm_ipe")["status_segmento"] == "concluido"
+    atual = repo.historico_atual()
+    assert atual["status"] == "falhou"
+    assert atual["erro"].startswith("trilha google")
+
+
+def test_cancelar_com_a_google_ja_falhada_encerra_a_carga(monkeypatch):
+    repo, hist, falso = _montar(monkeypatch)
+    cancelou: list[bool] = []
+
+    def hook(coletor, key):
+        if coletor == "google_news":
+            raise AbortarColeta("bloqueado pelo Google (503)")
+        if coletor == "wordpress" and not cancelou:
+            cancelou.append(True)
+            _esperar(lambda: hist._google_encerrada)
+            hist.controlar("cancelar")
+
+    falso.hook = hook
+    hist.disparar([2026])
+    hist.join(10)
+
+    assert hist.ocupado is False
+    # Falha da Google prevalece sobre o cancelamento (mesma precedencia da falha da principal).
+    atual = repo.historico_atual()
+    assert atual["status"] == "falhou"
+    assert atual["erro"].startswith("trilha google")
+    assert _linha_progresso(repo, 2026, "cvm_ipe")["status_segmento"] == "pendente"

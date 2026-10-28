@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import re
+import time
 import urllib.parse
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -22,11 +23,17 @@ from zoneinfo import ZoneInfo
 from lxml import etree
 from sqlalchemy import select
 
-from tcc_scraper.collectors.base import AbortarColeta, Collector, UnitResult, WorkUnit
+from tcc_scraper.collectors.base import (
+    AbortarColeta,
+    Collector,
+    FalhaBusca,
+    ParadaSolicitada,
+    UnitResult,
+    WorkUnit,
+)
 from tcc_scraper.config import (
     DOMINIOS_WP,
     GOOGLE_NEWS_ITEM_CAP,
-    GOOGLE_NEWS_LOCALES,
     IBOV_TICKERS,
     SEARCH_QUALIFIERS,
     get_settings,
@@ -38,6 +45,9 @@ from tcc_scraper.db.upsert import bulk_upsert
 logger = logging.getLogger(__name__)
 
 RSS_ENDPOINT = "https://news.google.com/rss/search"
+
+# Passo do sono na pausa: a parada pedida pelo painel e atendida em ate este intervalo.
+PASSO_PAUSA_S = 5.0
 
 # O pubDate do RSS so tem a data. A hora que vem junto e 00:00 do fuso do Pacifico
 # (o servidor do Google fica la), convertido para UTC. Ver data_de_meia_noite_pacifica.
@@ -90,6 +100,16 @@ def data_de_meia_noite_pacifica(publicado: dt.datetime) -> dt.date | None:
 def inicio_do_dia_brasil(data: dt.date) -> dt.datetime:
     """00:00 de Sao Paulo da data, em UTC (mesma convencao de cvm_ipe.artigo_de_ipe)."""
     return dt.datetime.combine(data, dt.time.min, tzinfo=FUSO_BRASIL).astimezone(dt.UTC)
+
+
+def _motivo(exc: BaseException) -> str:
+    """Causa curta para log: 'HTTP 503' ou 'ReadTimeout', seguindo a cadeia de causas."""
+    atual: BaseException | None = exc
+    while atual is not None:
+        if isinstance(atual, FalhaBusca):
+            return atual.motivo
+        atual = atual.__cause__
+    return type(exc).__name__
 
 
 def _clean_title(title: str, source_name: str | None) -> str:
@@ -230,18 +250,31 @@ class GoogleNewsCollector(Collector):
         self.desde = desde
         self.ate = ate
         self.default_delay = self.settings.throttle_google_news
-        self.throttle.configure("news.google.com", self.settings.throttle_google_news)
+        self.throttle.configure(
+            "news.google.com",
+            self.settings.throttle_google_news,
+            jitter=self.settings.throttle_google_news_jitter_s,
+        )
         # Disjuntor: unidades seguidas com falha (ver process). Zera a cada sucesso.
         self._falhas_seguidas = 0
+        # Pausas usadas sem nenhum sucesso entre elas (a proxima e a de indice igual a este).
+        self._pausas_seguidas = 0
+        # Observador da execucao corrente (ver run): a pausa consulta deve_parar por ele.
+        self._observador = None
+        # Injetaveis: os testes trocam relogio e sono por fakes, sem esperar 30 min reais.
+        self._relogio = time.monotonic
+        self._dormir = time.sleep
+        self._agora = lambda: dt.datetime.now(dt.UTC)
 
     def work_units(self) -> Iterable[WorkUnit]:
         settings = get_settings()
         recorte = self.desde is not None and self.ate is not None
         inicio = self.desde if recorte else settings.data_start
         fim = self.ate if recorte else settings.fim_coleta
+        locales = settings.google_news_locales_ativos
         for ticker, company in self.tickers.items():
             for start, end in iter_weeks(inicio, fim):
-                for locale in GOOGLE_NEWS_LOCALES:
+                for locale in locales:
                     # Com recorte, a chave ganha o fim da janela: nao colide com a
                     # serie historica de 3 partes.
                     if recorte:
@@ -271,21 +304,81 @@ class GoogleNewsCollector(Collector):
         url = f"{RSS_ENDPOINT}?{urllib.parse.urlencode(params)}"
         return parse_rss(self.fetch(url).content, estrito=True)
 
+    def run(self, *, observador=None, **kwargs) -> dict[str, int]:
+        """Guarda o observador da execucao: a pausa do disjuntor consulta `deve_parar` por ele."""
+        self._observador = observador
+        try:
+            return super().run(observador=observador, **kwargs)
+        finally:
+            self._observador = None
+
     def process(self, unit: WorkUnit) -> UnitResult:
-        """Executa a janela e conta falhas seguidas (ver google_news_max_falhas_seguidas)."""
+        """Executa a janela e conta falhas seguidas (ver google_news_max_falhas_seguidas).
+
+        Ao atingir o limite, pausa (google_news_pausas_min) em vez de abortar. Aborta so quando
+        as pausas acabam sem nenhum sucesso entre elas.
+        """
         try:
             resultado = self._processar(unit)
         except Exception as exc:
             self._falhas_seguidas += 1
             limite = self.settings.google_news_max_falhas_seguidas
             if limite and self._falhas_seguidas >= limite:
-                raise AbortarColeta(
-                    f"google_news: {self._falhas_seguidas} unidades seguidas falharam "
-                    f"(provavel bloqueio); ultima: {exc}"
-                ) from exc
+                self._pausar_por_bloqueio(exc)
+            # A unidade que falhou segue como erro no checkpoint; a pausa vale para as proximas.
             raise
         self._falhas_seguidas = 0
+        self._pausas_seguidas = 0
         return resultado
+
+    def _pausar_por_bloqueio(self, exc: Exception) -> None:
+        """Pausa a k-esima vez (k = pausas seguidas sem sucesso + 1); volta ao fim da pausa.
+
+        Levanta AbortarColeta quando as pausas acabam, e ParadaSolicitada se o observador
+        pedir parada durante a pausa.
+        """
+        pausas = self.settings.google_news_pausas
+        if self._pausas_seguidas >= len(pausas):
+            termo = "pausa" if len(pausas) == 1 else "pausas"
+            raise AbortarColeta(
+                f"google_news: {self._falhas_seguidas} unidades seguidas falharam "
+                f"(provavel bloqueio); ultima: {exc}; apos {len(pausas)} {termo}"
+            ) from exc
+        self._pausas_seguidas += 1
+        minutos = pausas[self._pausas_seguidas - 1]
+        ate = self._agora() + dt.timedelta(minutes=minutos)
+        mensagem = (
+            f"google_news: provavel bloqueio ({self._falhas_seguidas} unidades seguidas "
+            f"falharam; ultima causa: {_motivo(exc)}); pausa de {minutos:g} min ate "
+            f"{ate:%H:%M} UTC (pausa {self._pausas_seguidas}/{len(pausas)})"
+        )
+        logger.warning(mensagem)
+        # O painel so ve o que passa pelo observador: o log da pausa e a "unidade atual" (sem
+        # isso a coleta parece travada por ate 2 h). Os dois sao opcionais no Protocol.
+        if (registrar := getattr(self._observador, "log", None)) is not None:
+            registrar("aviso", mensagem)
+        if (inicio := getattr(self._observador, "inicio_unidade", None)) is not None:
+            inicio(f"pausa por bloqueio ate {ate:%H:%M} UTC "
+                   f"({self._pausas_seguidas}/{len(pausas)})")
+        interrompida = self._dormir_pausa(minutos * 60)
+        self._falhas_seguidas = 0
+        if interrompida:
+            raise ParadaSolicitada(f"{self.name}: parada solicitada durante a pausa")
+
+    def _dormir_pausa(self, segundos: float) -> bool:
+        """Dorme a pausa em passos de PASSO_PAUSA_S. True se o observador pediu parada.
+
+        A condicao e a mesma do laco de `Collector.run` (`observador.deve_parar()`, em
+        collectors/base.py). Sem ela, uma pausa de 2 h tornaria o cancelamento do painel inoperante.
+        """
+        fim = self._relogio() + segundos
+        while True:
+            if self._observador is not None and self._observador.deve_parar():
+                return True
+            restante = fim - self._relogio()
+            if restante <= 0:
+                return False
+            self._dormir(min(PASSO_PAUSA_S, restante))
 
     def _processar(self, unit: WorkUnit) -> UnitResult:
         ticker = unit.payload["ticker"]

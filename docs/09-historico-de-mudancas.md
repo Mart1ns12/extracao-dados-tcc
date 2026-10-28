@@ -734,3 +734,32 @@ Pendente: a verificação com carga real (ver os riscos da seção 10 de [03](03
 - Colocar `ANTHROPIC_API_KEY` no `.env` do executor (máquina Processamento-Venturo).
 - `docs/01-visao-geral.md`, `02-pipeline-diaria.md` e `08-operacao-e-deploy.md` ainda descrevem a OpenAI como padrão. Ficaram para a próxima revisão de docs.
 - Sem commit: a mudança está no working tree do branch `feat/executor-painel`.
+
+## 24. Google News: bloqueio por IP (503), ritmo de 5 s, só pt-BR, pausa progressiva; trilha Google não derruba a principal (2026-10-28)
+
+**Diagnóstico.** A carga `hist-20261028-192314` falhou. O Google News respondeu HTTP 503 ("tráfego incomum") a todas as consultas do IP do executor. No log do executor, foram 181 consultas boas em 6 minutos, a 1 a cada 2 s. Depois vieram 10 falhas seguidas. Na mesma manhã, o IP já levava 503 desde a primeira consulta, por pelo menos 40 min. O código antigo perdeu 54 unidades sem avisar. Desta máquina, a mesma URL respondia 200. Conclusão: bloqueio por IP e por ritmo. O 503 não traz `Retry-After`, então não há espera indicada pelo servidor.
+
+**Decisões do dono.**
+
+- Ritmo mais lento, com pausa em vez de só aborto: `THROTTLE_GOOGLE_NEWS` de 2,0 para 5,0 s, mais `THROTTLE_GOOGLE_NEWS_JITTER_S=2.0` (sorteio de 0 a 2 s a cada espera, média ~6 s). O jitter evita um ritmo regular, que o Google reconhece.
+- en-US desligado: `GOOGLE_NEWS_IDIOMAS=pt`. Medido em `raw_collection_runs`: o en-US era 50% das consultas e 12% das notícias (46.781 contra 334.417 do pt-BR). A carga tem metade das unidades, ~4.500 por ano.
+- Pausa progressiva no lugar do aborto: ao atingir `GOOGLE_NEWS_MAX_FALHAS_SEGUIDAS` (10), a coleta pausa `GOOGLE_NEWS_PAUSAS_MIN=30,60,120` minutos. Só aborta depois das 3 pausas sem sucesso.
+- Trilha Google não derruba a principal: falha da Google para só a trilha Google. A carga termina `falhou`, mas o restante da principal roda até o fim.
+
+**Mudanças.** Código e testes no working tree; detalhes de comportamento em [03](03-carga-historica.md), seção 3.1.
+
+- `src/tcc_scraper/config.py`: `throttle_google_news` = 5,0; `throttle_google_news_jitter_s`; `google_news_idiomas` (`pt`); `google_news_pausas_min` (`30,60,120`), com validadores e as funções `parse_idiomas` e `parse_pausas`.
+- `src/tcc_scraper/collectors/base.py`: `DomainThrottle` aceita jitter em `configure`, com padrão 0 (os outros domínios não mudam). `FalhaBusca` guarda o `motivo` (`HTTP 503` ou o nome da exceção), que vai à mensagem. `ParadaSolicitada`: a unidade interrompida pela parada não é gravada e segue pendente.
+- `src/tcc_scraper/collectors/google_news.py`: `process` chama `_pausar_por_bloqueio` ao atingir o limite. `_dormir_pausa` dorme em passos de 5 s e consulta `deve_parar`. A pausa aparece no painel como log `aviso` e como unidade atual. Os locales vêm de `google_news_locales_ativos`.
+- `src/tcc_scraper/orquestrador/historico.py`: `_falha_google` e `_google_encerrada`. A falha da trilha Google só para ela. Passos com portão de ano que a Google não concluiu são pulados, com `aviso`. A carga termina `falhou` com erro `trilha google: ...`. As esperas (`join`, `_esperar_portao`, `_aguardar`) viraram laços com timeout.
+- `.env.example`: os valores novos e os comentários.
+- Testes: `tests/test_historico.py` (+143 linhas), `tests/test_google_news_robusto.py` e `tests/test_google_news_janelas.py` (ajustes). Novos: `tests/test_collector_motivo_jitter.py`, `tests/test_google_news_idiomas.py`, `tests/test_google_news_pausa.py` e `tests/relogio_falso.py` (relógio e sono falsos, para não esperar 30 min reais).
+- Docs: `docs/03-carga-historica.md`, `docs/08-operacao-e-deploy.md` e esta seção.
+
+**Verificação.** `pytest`: 1066 passed. `ruff check`: ok.
+
+**Pendências.**
+
+- Medir uma carga real no ritmo novo e confirmar que o bloqueio não volta.
+- Sem commit: a mudança está no working tree do branch `feat/executor-painel`.
+- `CLAUDE.md` (seção 6, "6–9 h") e `docs/ADR.md` ainda citam os números antigos de tempo e de idiomas. A revisão fica com o dono.

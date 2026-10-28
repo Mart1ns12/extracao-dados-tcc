@@ -19,6 +19,7 @@ from tcc_scraper.collectors.google_news import (
     parse_rss,
 )
 from tcc_scraper.config import GOOGLE_NEWS_ITEM_CAP, GOOGLE_NEWS_LOCALES, Settings
+from tests.relogio_falso import RelogioFalso
 
 FIXTURES = Path(__file__).parent / "fixtures"
 INICIO = dt.date(2026, 7, 1)
@@ -64,9 +65,14 @@ def _sequencia(respostas: list):
     return falso, chamadas
 
 
-def _coletor(monkeypatch, **config) -> GoogleNewsCollector:
+def _coletor(monkeypatch, *, relogio: RelogioFalso | None = None, **config) -> GoogleNewsCollector:
+    """Coletor com config injetada. Relogio e sono sao falsos: a pausa do disjuntor nao espera."""
     coletor = GoogleNewsCollector(tickers={"PETR4": "Petrobras"}, desde=INICIO, ate=FIM)
     monkeypatch.setattr(coletor, "settings", Settings(gemini_api_key="", **config))
+    if relogio is None:
+        relogio = RelogioFalso()
+    monkeypatch.setattr(coletor, "_relogio", relogio)
+    monkeypatch.setattr(coletor, "_dormir", relogio.dormir)
     return coletor
 
 
@@ -139,19 +145,24 @@ def test_subdivisao_que_falha_no_meio_grava_o_parcial_e_levanta(monkeypatch) -> 
 # -- disjuntor -------------------------------------------------------------------------
 
 
-def test_disjuntor_aborta_na_terceira_unidade_seguida_com_falha(monkeypatch) -> None:
-    falso, chamadas = _sequencia([RespostaNaoRss("captcha")] * 3)
-    coletor = _coletor(monkeypatch, google_news_max_falhas_seguidas=3)
+def test_disjuntor_pausa_no_limite_e_aborta_quando_as_pausas_acabam(monkeypatch) -> None:
+    # Limite 3, pausas de 1 e 2 min: a 3a falha pausa (1 min), a 6a pausa (2 min) e a 9a aborta.
+    falso, chamadas = _sequencia([RespostaNaoRss("captcha")] * 9)
+    relogio = RelogioFalso()
+    coletor = _coletor(
+        monkeypatch, relogio=relogio,
+        google_news_max_falhas_seguidas=3, google_news_pausas_min="1,2",
+    )
     monkeypatch.setattr(coletor, "_fetch_window", falso)
 
-    with pytest.raises(RespostaNaoRss):
-        coletor.process(_unidade())
-    with pytest.raises(RespostaNaoRss):
-        coletor.process(_unidade())
-    with pytest.raises(AbortarColeta, match="unidades seguidas falharam"):
+    for _ in range(8):
+        with pytest.raises(RespostaNaoRss):
+            coletor.process(_unidade())
+    with pytest.raises(AbortarColeta, match="unidades seguidas falharam.*apos 2 pausas"):
         coletor.process(_unidade())
 
-    assert len(chamadas) == 3
+    assert len(chamadas) == 9
+    assert sum(relogio.dormidas) == 180  # 60 s + 120 s
 
 
 def test_sucesso_zera_o_contador_do_disjuntor(monkeypatch) -> None:
