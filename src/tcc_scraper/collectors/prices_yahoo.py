@@ -12,6 +12,7 @@ import logging
 import urllib.parse
 from collections.abc import Iterable
 from dataclasses import dataclass
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from tcc_scraper.collectors.base import Collector, UnitResult, WorkUnit
 from tcc_scraper.config import (
@@ -60,6 +61,7 @@ def parse_chart(payload: dict, ticker: str) -> list[PriceRow]:
         return []
 
     adj = result.get("indicators", {}).get("adjclose", [{}])[0].get("adjclose")
+    fuso = _fuso_pregao(result.get("meta", {}))
 
     rows: list[PriceRow] = []
     for i, ts in enumerate(timestamps):
@@ -70,9 +72,10 @@ def parse_chart(payload: dict, ticker: str) -> list[PriceRow]:
         rows.append(
             PriceRow(
                 ticker=ticker,
-                # utcfromtimestamp: o timestamp do Yahoo marca a abertura do pregao;
-                # so a data importa para o join diario.
-                date=dt.datetime.fromtimestamp(ts, tz=dt.UTC).date(),
+                # O timestamp marca a abertura do pregao; a data sai no fuso da bolsa.
+                # Em UTC, o cambio (Europe/London, barra as 00:00 locais) caia na vespera
+                # durante o horario de verao britanico: domingo no lugar de sexta.
+                date=dt.datetime.fromtimestamp(ts, tz=fuso).date(),
                 open=_at(quote.get("open"), i),
                 high=_at(quote.get("high"), i),
                 low=_at(quote.get("low"), i),
@@ -85,6 +88,21 @@ def parse_chart(payload: dict, ticker: str) -> list[PriceRow]:
         )
     rows.sort(key=lambda r: r.date)
     return rows
+
+
+def _fuso_pregao(meta: dict) -> dt.tzinfo:
+    """Fuso da bolsa (`exchangeTimezoneName`); UTC se ausente ou desconhecido.
+
+    Nao usa `gmtoffset`: e o deslocamento de hoje, nao o de cada data do historico.
+    """
+    nome = meta.get("exchangeTimezoneName")
+    if not nome:
+        return dt.UTC
+    try:
+        return ZoneInfo(nome)
+    except (ZoneInfoNotFoundError, ValueError):
+        logger.warning("fuso desconhecido do Yahoo: %s; usando UTC", nome)
+        return dt.UTC
 
 
 def _at(seq: list | None, index: int) -> float | None:

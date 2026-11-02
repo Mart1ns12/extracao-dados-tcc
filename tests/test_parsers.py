@@ -108,6 +108,18 @@ def test_parse_chart_indice_sem_adjclose_usa_close() -> None:
     assert all(r.adj_close == r.close for r in rows)
 
 
+def test_parse_chart_cambio_usa_data_do_fuso_da_bolsa() -> None:
+    """USDBRL=X (Europe/London) tem barra as 23:00 UTC da vespera no horario de verao.
+    Em UTC, a sexta virava quinta e a segunda virava domingo. Fixture capturada em
+    2026-10-30, cobrindo o fim de setembro de 2026 (horario de verao britanico)."""
+    raw = json.loads((FIXTURES / "yahoo_chart_usdbrl.json").read_text(encoding="utf-8"))
+    rows = parse_chart(raw, ticker="USDBRL=X")
+
+    assert rows
+    assert all(r.date.weekday() < 5 for r in rows), "cambio nao tem pregao no fim de semana"
+    assert dt.date(2026, 9, 25) in {r.date for r in rows}
+
+
 # --------------------------------------------------------------------------------------
 # Banco Central
 # --------------------------------------------------------------------------------------
