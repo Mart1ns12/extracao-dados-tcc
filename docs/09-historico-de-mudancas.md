@@ -813,11 +813,11 @@ Pendente: a verificação com carga real (ver os riscos da seção 10 de [03](03
 - SQL: `sql/alteracoes/2026-11-03_emissores_ticker.mysql.sql` (novo) e `sql/alteracoes/2026-11-03_balancos_situacao.mysql.sql` (novo). Aplicação no banco é do dono.
 - Documentação: `docs/spec-entrega-etapa-seguinte.md` (adendo de 2026-11-03, sem alterar o texto anterior); `docs/05-entrega.md` (11 tabelas, seção 12 nova para `v1-emissores_ticker`, seções seguintes renumeradas para 13 e 14, balanços, proventos, ações, IPE e preço); `docs/06-banco-de-dados.md`; `docs/08-operacao-e-deploy.md`; `docs/01`, `docs/02`, `docs/03`, `docs/README.md` (contagens); `docs/ADR.md` (duas decisões novas); `CLAUDE.md` (seções 2 e 5).
 
-**Verificação.** Esta entrada cobre o código e a documentação. Não verificado nesta entrada: rodar `build-entrega` e conferir os casos de JBSS32 (2025-06-09), NATU3 (2T25), HAPV3 (1T25 a 2T26), JBS N.V. (1T25 reapresentado) e as 7 notas da Natura; rodar `fix-news-times --dry-run` antes da fase (a); aplicar as duas DDLs (com aprovação do dono).
+**Verificação (2026-11-03, banco real).** DDLs aplicadas; recoletados cadastro, proventos, IPE 2021-2025, ITR/DFP 2020-2026 e preços; `gerar-correcao-precos`, `build-dataset` e `build-entrega --csv` rodados. JBSS32: retorno de 2025-06-09 = +0,18% (era +100%); na data ex de 2024-08-20 o fechamento cai 5,3% e o `adj_close` 0,08%. NATU3: preços reais de NTCO3 de 2019-12-30 a 2025-07-01, sem o R$ 36,86. HAPV3: 1T25 = R$ 7,80 bi e 2T25 = R$ 7,96 bi (12 linhas `ajuste_ifrs17`). JBS 1T25 = R$ 114,1 bi, pelo ITR da JBS S.A. (o da N.V. entregue antes da listagem não entra; nenhuma linha `reapresentado`). JBS S.A.: 31 balanços (1T20 a 1T25); proventos do JBSS32 de 2020 a 2025 pelo Yahoo. Natura &Co: 31 balanços e 3 proventos (B3 sob "GRUPO NATURA"). `fix-news-times` fase (a): 131.659 matérias remarcadas para `date`.
 
 **Pendências.**
 
-- A B3 pode não devolver o histórico de NTCO3 (cancelada). Sem ele, a emenda de NATU3 em `v1-precos` não sai.
+- A B3 não devolve proventos da JBS S.A. depois de 2019 nem os da Natura &Co sob "NATURA &CO": o primeiro vem do Yahoo (item D) e o segundo, de "GRUPO NATURA".
 - `volume_relativo` do JBSS32 tem quebra de regime: o BDR negocia cerca de 1% do volume da JBSS3.
 - SAUD3: salto de escopo sem correção.
 - Fase (b) do `fix-news-times` (hora pela página, ~15.900 páginas): opcional.
