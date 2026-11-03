@@ -737,3 +737,25 @@ ALTER TABLE `v1-painel_historico_progresso`
     ADD COLUMN ultimo_erro_unidade VARCHAR(128) NULL AFTER unidade_atual,
     ADD COLUMN ultimo_erro_mensagem TEXT NULL AFTER ultimo_erro_unidade;
 
+-- Etapa 0013: quantidade na base atual e eventos em ações (ver sql/alteracoes/2026-11-02_acoes_base_atual_eventos.mysql.sql)
+
+ALTER TABLE `v1-acoes_emitidas`
+    ADD COLUMN data_entrega DATE NULL AFTER qtd_pn,
+    ADD COLUMN qtd_on_base_atual BIGINT NULL AFTER data_entrega,
+    ADD COLUMN qtd_pn_base_atual BIGINT NULL AFTER qtd_on_base_atual,
+    ADD COLUMN situacao VARCHAR(16) NOT NULL DEFAULT 'ok' AFTER qtd_pn_base_atual;
+
+CREATE TABLE `v1-eventos_acoes` (
+    ticker VARCHAR(12) NOT NULL,
+    data_com DATE NOT NULL,
+    tipo VARCHAR(16) NOT NULL,
+    fator DOUBLE NOT NULL,
+    isin VARCHAR(12) NOT NULL,
+    isin_emitido VARCHAR(12) NOT NULL,
+    cnpj VARCHAR(14) NULL,
+    data_aprovacao DATE NULL,
+    CONSTRAINT pk_eventos_acoes PRIMARY KEY (ticker, data_com, tipo, isin_emitido)
+);
+
+CREATE INDEX ix_eventos_acoes_cnpj ON `v1-eventos_acoes` (cnpj);
+

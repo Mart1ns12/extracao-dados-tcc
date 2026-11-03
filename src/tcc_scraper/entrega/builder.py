@@ -1,4 +1,4 @@
-"""Montagem das 9 tabelas da entrega a partir das fontes raw/staging.
+"""Montagem das 10 tabelas da entrega a partir das fontes raw/staging.
 
 Cada `montar_*` e pura: recebe listas de dicts (linhas das fontes) e devolve `list[dict]` com
 as chaves de `COLUNAS`. `build_entrega` carrega as fontes, monta cada tabela, grava por upsert
@@ -26,6 +26,7 @@ from sqlalchemy import delete, select, tuple_
 from tcc_scraper.collectors.b3_base import data_b3, decimal_b3
 from tcc_scraper.collectors.b3_cadastro import classificacao_b3
 from tcc_scraper.config import (
+    ACOES_CVM_ANULADAS,
     BENCHMARK_TICKER,
     CD_CVM_BANCOS_SEGURADORAS,
     CONTAS_CVM,
@@ -46,6 +47,7 @@ from tcc_scraper.db.models_entrega import (
     Balanco,
     Cadastro,
     ComposicaoIbov,
+    EventoAcao,
     Indice,
     MudancaTicker,
     Noticia,
@@ -113,6 +115,11 @@ TOLERANCIA_TAXA = 1e-6
 # Escala das acoes na CVM: janela do giro (pregoes) e minimo de pregoes com volume para ter giro.
 JANELA_GIRO_PREGOES = 60
 MIN_PREGOES_GIRO = 20
+# Erro de digito (10x/100x) em valor isolado: tolerancia da razao e vizinhos que concordam.
+TOLERANCIA_DIGITO = 0.03
+VIZINHOS_CONCORDAM = 1.05
+# Evento de acoes ja refletido na quantidade da CVM: razao com a linha anterior dentro de 5%.
+TOLERANCIA_EVENTO_REFLETIDO = 0.05
 _SUFIXO_NUMERICO = re.compile(r"(\d+)$")
 
 CHAVES: dict[str, list[str]] = {
@@ -122,6 +129,7 @@ CHAVES: dict[str, list[str]] = {
     "mudancas_ticker": ["ticker_antigo"],
     "balancos": ["cnpj", "tipo_documento", "data_inicio_periodo", "data_fim_periodo"],
     "acoes_emitidas": ["cnpj", "data_referencia"],
+    "eventos_acoes": ["ticker", "data_com", "tipo", "isin_emitido"],
     "proventos": ["ticker", "tipo", "data_com"],
     "indices": ["data", "indice"],
     "composicao_ibov": ["ticker", "vigencia_inicio"],
@@ -133,6 +141,7 @@ MODELOS = {
     "mudancas_ticker": MudancaTicker,
     "balancos": Balanco,
     "acoes_emitidas": AcoesEmitida,
+    "eventos_acoes": EventoAcao,
     "proventos": Provento,
     "indices": Indice,
     "composicao_ibov": ComposicaoIbov,
@@ -751,7 +760,7 @@ def _herdar_escala(decisoes: list[bool | None]) -> list[bool]:
 
 def _alertar_isolados(cnpj: str, serie: list[dict]) -> None:
     """Valor que sai de dois vizinhos que concordam (menos de 2x entre si) sem ser troca de
-    1000x. Nao corrige, so avisa."""
+    1000x. Nao corrige, so avisa e marca 'suspeito' a linha que ainda estava 'ok'."""
     for i in range(1, len(serie) - 1):
         ant, atual, prox = (_total_acoes(serie[k]) for k in (i - 1, i, i + 1))
         if not (ant and atual and prox):
@@ -765,6 +774,65 @@ def _alertar_isolados(cnpj: str, serie: list[dict]) -> None:
                 "nao corrigido",
                 cnpj, serie[i]["dt_refer"], atual,
             )
+            if serie[i]["situacao"] == "ok":
+                serie[i]["situacao"] = "suspeito"
+
+
+def _potencia_de_10(razao: float) -> int | None:
+    """Potencia de 10 (-2, -1, 1 ou 2) que a razao entre dois valores reproduz, dentro de
+    TOLERANCIA_DIGITO. None se nao e erro de digito. A troca de 1000x fica em
+    _corrigir_escala_acoes."""
+    if razao <= 0:
+        return None
+    k = round(math.log10(razao))
+    if k in (-2, -1, 1, 2) and abs(razao / 10**k - 1) <= TOLERANCIA_DIGITO:
+        return k
+    return None
+
+
+def _corrigir_digito(serie: list[dict]) -> None:
+    """Valor 10x ou 100x entre dois vizinhos que concordam volta pela potencia de 10
+    (situacao 'corrigido_digito'). Na ultima linha com valor, o mesmo padrao so vira 'suspeito'.
+    Recebe a serie de um CNPJ em ordem de data e altera as linhas no lugar."""
+    for coluna in ("qt_on", "qt_pn"):
+        idx = [i for i, r in enumerate(serie) if r[coluna] not in (None, 0)]
+        for p in range(1, len(idx)):
+            i = idx[p]
+            atual = serie[i][coluna]
+            ant = serie[idx[p - 1]][coluna]
+            if p == len(idx) - 1:
+                if serie[i]["situacao"] == "ok" and _potencia_de_10(atual / ant) is not None:
+                    serie[i]["situacao"] = "suspeito"
+                continue
+            prox = serie[idx[p + 1]][coluna]
+            if max(ant, prox) / min(ant, prox) > VIZINHOS_CONCORDAM:
+                continue
+            k = _potencia_de_10(atual / ant)
+            if k is None or k != _potencia_de_10(atual / prox):
+                continue
+            corrigido = round(atual / 10**k)
+            logger.warning(
+                "entrega: acoes_emitidas: %s em %s: %s de %s para %s (erro de digito, "
+                "vizinhos concordam)",
+                serie[i]["cnpj"], serie[i]["dt_refer"], coluna, atual, corrigido,
+            )
+            serie[i][coluna] = corrigido
+            serie[i]["situacao"] = "corrigido_digito"
+
+
+def _anular(linhas: list[dict], anuladas: dict[tuple[str, dt.date], str]) -> None:
+    """Linha listada em `anuladas` vira qtd NULL e situacao 'anulado'. O motivo vai para o log."""
+    for r in linhas:
+        chave = (r["cnpj"], r["dt_refer"])
+        if chave not in anuladas:
+            continue
+        r["qt_on"] = None
+        r["qt_pn"] = None
+        r["situacao"] = "anulado"
+        logger.info(
+            "entrega: acoes_emitidas: %s em %s anulado (%s)",
+            r["cnpj"], r["dt_refer"], anuladas[chave],
+        )
 
 
 def _x1000(valor: int | None) -> int | None:
@@ -781,7 +849,6 @@ def _corrigir_escala_acoes(
         por_cnpj[r["cnpj"]].append(dict(r))
     multiplicadas = 0
     for cnpj, serie in por_cnpj.items():
-        _alertar_isolados(cnpj, serie)
         segmentos = _segmentar(serie)
         decisoes = _herdar_escala(
             [_em_milhares(seg, volumes.get(cnpj, {})) for seg in segmentos]
@@ -793,6 +860,8 @@ def _corrigir_escala_acoes(
             for r in seg:
                 r["qt_on"] = _x1000(r["qt_on"])
                 r["qt_pn"] = _x1000(r["qt_pn"])
+                if r["situacao"] == "ok":
+                    r["situacao"] = "corrigido_escala"
     if multiplicadas:
         logger.info(
             "entrega: acoes_emitidas: %d linhas em milhares multiplicadas por 1000", multiplicadas
@@ -800,13 +869,93 @@ def _corrigir_escala_acoes(
     return [r for serie in por_cnpj.values() for r in serie]
 
 
+def _eventos_da_classe(eventos_cnpj: list[dict]) -> tuple[list[dict], list[dict] | None]:
+    """Eventos (ON, PN) que mudam a quantidade da propria classe: so os com isin_emitido == isin
+    (bonificacao de outra classe fica de fora). A classe vem do sufixo numerico do ticker: 3 = ON;
+    4, 5 e 6 = PN. Units (11) e BDR ficam de fora. Deduplica por (data_com, tipo, fator), porque
+    ON e PN podem vir de mais de um ticker. PN vira None se a mesma (data_com, tipo) tiver fatores
+    diferentes entre as classes PN: nao da para saber qual vale."""
+    on: dict[tuple, dict] = {}
+    pn: dict[tuple, dict] = {}
+    for e in eventos_cnpj:
+        if e["isin_emitido"] != e["isin"]:
+            continue
+        casamento = _SUFIXO_NUMERICO.search(e["ticker"])
+        sufixo = casamento.group(1) if casamento else None
+        if sufixo == "3":
+            destino = on
+        elif sufixo in ("4", "5", "6"):
+            destino = pn
+        else:
+            continue
+        destino.setdefault((e["data_com"], e["tipo"], e["fator"]), e)
+    fatores_pn: dict[tuple, set[float]] = defaultdict(set)
+    for data_com, tipo, fator in pn:
+        fatores_pn[(data_com, tipo)].add(fator)
+    conflitos = sorted(chave for chave, fatores in fatores_pn.items() if len(fatores) > 1)
+    if conflitos:
+        logger.warning(
+            "entrega: acoes_emitidas: %s com eventos de PN de fatores distintos na mesma data-com "
+            "%s; base atual de PN nao calculada",
+            eventos_cnpj[0]["cnpj"], conflitos,
+        )
+        return list(on.values()), None
+    return list(on.values()), list(pn.values())
+
+
+def _fator_pendente(
+    linha: dict, col: str, eventos_classe: list[dict], anterior: float | None
+) -> float:
+    """Produto dos fatores dos eventos da classe com data-com >= dt_refer, isto e, os que ainda
+    nao estao na quantidade da linha. Evento com data-com antes de dt_receb pode ja estar na
+    quantidade que a CVM publicou depois dele: se a razao com a linha anterior bate com o fator,
+    o evento sai da conta (caso IRBR3)."""
+    pend = [e for e in eventos_classe if e["data_com"] >= linha["dt_refer"]]
+    dt_receb = linha.get("dt_receb")
+    cand = [e for e in pend if dt_receb is not None and e["data_com"] < dt_receb]
+    if cand and anterior:
+        razao = linha[col] / anterior
+        esperado = math.prod((e["fator"] for e in cand), start=1.0)
+        if abs(razao / esperado - 1) <= TOLERANCIA_EVENTO_REFLETIDO:
+            pend = [e for e in pend if e not in cand]
+    return math.prod((e["fator"] for e in pend), start=1.0)
+
+
+def _base_atual(serie: list[dict], eventos_cnpj: list[dict] | None) -> None:
+    """Preenche base_on e base_pn: a quantidade na base atual do preco ajustado (a do Yahoo).
+    Recebe a serie de um CNPJ em ordem de data e so acrescenta as chaves. Sem eventos (None),
+    a base e a propria quantidade."""
+    if eventos_cnpj is None:
+        for r in serie:
+            r["base_on"], r["base_pn"] = r["qt_on"], r["qt_pn"]
+        return
+    eventos_on, eventos_pn = _eventos_da_classe(eventos_cnpj)
+    classes = (("qt_on", "base_on", eventos_on), ("qt_pn", "base_pn", eventos_pn))
+    for coluna, base, eventos_classe in classes:
+        anterior = None
+        for r in serie:
+            qtd = r[coluna]
+            if qtd is None or eventos_classe is None:
+                r[base] = None
+            else:
+                r[base] = round(qtd * _fator_pendente(r, coluna, eventos_classe, anterior))
+            if qtd:
+                anterior = qtd
+
+
 def montar_acoes_emitidas(
-    raw_cvm_acoes: list[dict], volumes: dict[str, dict[dt.date, float]] | None = None
+    raw_cvm_acoes: list[dict],
+    volumes: dict[str, dict[dt.date, float]] | None = None,
+    eventos: list[dict] | None = None,
+    anuladas: dict[tuple[str, dt.date], str] | None = None,
 ) -> list[dict]:
     """Maior versao por (cnpj, dt_refer); na mesma data, a DFP vence o ITR.
 
     Com `volumes` (ver `volumes_por_cnpj`), corrige a escala: a CVM mistura unidades e
-    milhares. Sem ele, sai como a CVM publica.
+    milhares. Sem ele, sai como a CVM publica. Sempre: anula as linhas de `anuladas` (padrao
+    ACOES_CVM_ANULADAS), corrige erro de digito 10x/100x entre vizinhos que concordam e marca
+    valor isolado como 'suspeito'. Com `eventos` (ver `montar_eventos_acoes`), converte a
+    quantidade para a base atual (`qtd_*_base_atual`); sem ele, a base atual e a propria quantidade.
     """
     melhor: dict[tuple, tuple[tuple, dict]] = {}
     for r in raw_cvm_acoes:
@@ -815,16 +964,33 @@ def montar_acoes_emitidas(
         if chave not in melhor or ranking > melhor[chave][0]:
             melhor[chave] = (ranking, r)
     escolhidas = [
-        r for _, r in sorted(melhor.values(), key=lambda par: (par[1]["cnpj"], par[1]["dt_refer"]))
+        dict(r, situacao="ok")
+        for _, r in sorted(melhor.values(), key=lambda par: (par[1]["cnpj"], par[1]["dt_refer"]))
     ]
+    _anular(escolhidas, ACOES_CVM_ANULADAS if anuladas is None else anuladas)
     if volumes is not None:
         escolhidas = _corrigir_escala_acoes(escolhidas, volumes)
+    por_cnpj: dict[str, list[dict]] = defaultdict(list)
+    for r in escolhidas:
+        por_cnpj[r["cnpj"]].append(r)
+    eventos_por_cnpj: dict[str, list[dict]] = defaultdict(list)
+    for e in eventos or []:
+        eventos_por_cnpj[e["cnpj"]].append(e)
+    for cnpj, serie in por_cnpj.items():
+        _corrigir_digito(serie)
+        _alertar_isolados(cnpj, serie)
+        _base_atual(serie, None if eventos is None else eventos_por_cnpj.get(cnpj, []))
+    escolhidas = [r for serie in por_cnpj.values() for r in serie]
     return [
         {
             "cnpj": r["cnpj"],
             "data_referencia": r["dt_refer"],
             "qtd_on": r["qt_on"],
             "qtd_pn": r["qt_pn"],
+            "data_entrega": r.get("dt_receb"),
+            "qtd_on_base_atual": r["base_on"],
+            "qtd_pn_base_atual": r["base_pn"],
+            "situacao": r.get("situacao", "ok"),
         }
         for r in escolhidas
     ]
@@ -905,6 +1071,79 @@ def _ic_da_unidade(unidade: str, cadastro_b3: list[dict]) -> str:
         if unidade in (linha.get("other_codes") or []):
             return linha["issuing_company"]
     return unidade[:-2]
+
+
+def fator_quantidade(evento: dict) -> float:
+    """Acoes depois do evento por acao antes: 2.0 no desdobramento 1:2, 0,0333 no grupamento 30:1.
+
+    E o inverso de `fator_ajuste` (que leva o valor por acao antes para a base nova).
+    """
+    return 1 / fator_ajuste(evento)
+
+
+def montar_eventos_acoes(raw_b3_suplemento: list[dict], cadastro_b3: list[dict]) -> list[dict]:
+    """Eventos que mudam a quantidade de acoes (desdobramento, bonificacao, grupamento).
+
+    Uma linha por (ticker, data_com, tipo, isin_emitido). Duplicatas identicas viram uma linha;
+    fatores distintos na mesma chave se multiplicam, com aviso.
+    """
+    mapa = _mapa_isin(cadastro_b3)
+    cnpj_por_ic = {
+        linha["issuing_company"]: re.sub(r"\D", "", linha["cnpj"])
+        for linha in cadastro_b3
+        if linha.get("cnpj")
+    }
+    eventos: dict[tuple[str, dt.date, str, str], dict] = {}
+    fatores: dict[tuple[str, dt.date, str, str], set[float]] = defaultdict(set)
+    for s in raw_b3_suplemento:
+        if s["tipo"] != "stock" or s["payload"].get("label") not in ROTULOS_AJUSTE:
+            continue
+        p = s["payload"]
+        ic = s["issuing_company"]
+        rotulo = p["label"]
+        ticker = _ticker_do_evento(p, ic, mapa)
+        data_com = data_b3(p.get("lastDatePrior"))
+        isin = p.get("isinCode")
+        if not ticker or data_com is None or not isin:
+            logger.warning("entrega: eventos_acoes: %s de %s sem ticker, data ou ISIN; pulado",
+                           rotulo, ic)
+            continue
+        try:
+            fator = fator_quantidade(p)
+        except (KeyError, ValueError):
+            logger.warning("entrega: eventos_acoes: %s de %s com fator %r invalido; pulado",
+                           rotulo, ic, p.get("factor"))
+            continue
+        isin_emitido = p.get("assetIssued") or isin
+        chave = (ticker, data_com, rotulo, isin_emitido)
+        fatores[chave].add(fator)
+        registro = eventos.setdefault(chave, {
+            "isin": isin, "cnpj": cnpj_por_ic.get(ic) or None, "data_aprovacao": None,
+        })
+        registro["data_aprovacao"] = registro["data_aprovacao"] or data_b3(p.get("approvedOn"))
+
+    saida = []
+    for chave in sorted(eventos):
+        ticker, data_com, rotulo, isin_emitido = chave
+        distintos = sorted(fatores[chave])
+        if len(distintos) > 1:
+            logger.warning("entrega: eventos_acoes: %s de %s em %s com fatores %s; multiplicados",
+                           rotulo, ticker, data_com, distintos)
+        fator = 1.0
+        for valor in distintos:
+            fator *= valor
+        registro = eventos[chave]
+        saida.append({
+            "ticker": ticker,
+            "data_com": data_com,
+            "tipo": rotulo,
+            "fator": fator,
+            "isin": registro["isin"],
+            "isin_emitido": isin_emitido,
+            "cnpj": registro["cnpj"],
+            "data_aprovacao": registro["data_aprovacao"],
+        })
+    return saida
 
 
 def montar_proventos(
@@ -1106,7 +1345,7 @@ class _Fontes:
         return _consulta(
             select(
                 RawCvmAcoes.cnpj, RawCvmAcoes.tipo_documento, RawCvmAcoes.dt_refer,
-                RawCvmAcoes.versao, RawCvmAcoes.qt_on, RawCvmAcoes.qt_pn,
+                RawCvmAcoes.versao, RawCvmAcoes.qt_on, RawCvmAcoes.qt_pn, RawCvmAcoes.dt_receb,
             )
         )
 
@@ -1151,7 +1390,13 @@ def _montar(tabela: str, f: _Fontes, exigir_juiza: bool, modelos: dict[str, str]
         return montar_balancos(f.balancos)
     if tabela == "acoes_emitidas":
         cadastro = montar_cadastro(f.b3_cadastro, f.cvm_cadastro, universo_coleta())
-        return montar_acoes_emitidas(f.acoes, volumes_por_cnpj(cadastro, f.precos_raw))
+        return montar_acoes_emitidas(
+            f.acoes,
+            volumes_por_cnpj(cadastro, f.precos_raw),
+            eventos=montar_eventos_acoes(f.suplemento, f.b3_cadastro),
+        )
+    if tabela == "eventos_acoes":
+        return montar_eventos_acoes(f.suplemento, f.b3_cadastro)
     if tabela == "proventos":
         return montar_proventos(f.proventos, f.suplemento, f.b3_cadastro)
     if tabela == "indices":

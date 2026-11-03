@@ -35,7 +35,7 @@ saída.
 | Janela | Fixa: `DATA_START` a `DATA_END`, com aquecimento de preços antes do início | Fim rolante: a coleta avança até hoje (`fim_coleta`) |
 | Como roda | Um comando por fase: `collect-prices`, `collect-macro`, `collect-news`, `collect-wp`, `processar-wp`, `enrich`, `score`, `build-dataset` | `daily` com 9 etapas; `executor` como worker; `historico` para anos passados; comandos `collect-*`, `judge-news` e `build-entrega` |
 | Saída | Tabela `features_dataset_v1`, mais Parquet e CSV (`build-dataset`) | Tabelas `v1-noticias` a `v1-indices`, e CSV com `build-entrega --csv` |
-| Juíza e LLM | Não usa a juíza. A análise diária (`analyze-llm`) grava em `staging_llm_*` | A juíza filtra as notícias antes da entrega. A análise diária (etapa `analise`) não entra nas 9 tabelas |
+| Juíza e LLM | Não usa a juíza. A análise diária (`analyze-llm`) grava em `staging_llm_*` | A juíza filtra as notícias antes da entrega. A análise diária (etapa `analise`) não entra nas 10 tabelas |
 | Tabelas | Nomes antigos, sem prefixo: `raw_articles`, `raw_prices`, `raw_macro`, `staging_article_sentiment` e outras | Tabelas novas com prefixo `v1-`, mais as de notícias, preços e macro que ela reaproveita |
 
 A pipeline nova grava em `raw_articles`, `raw_prices` e `raw_macro`, as mesmas tabelas do v1. O v1
@@ -51,7 +51,7 @@ existir.
 |---|---|---|---|
 | Raw | `raw_` e `v1-raw_` | O que veio da rede, sem transformação: artigos, corpos, cotações, macro, balanços CVM, fatos relevantes IPE, cadastro B3, proventos B3 | Imutável e append-only. Reprocessar sempre parte daqui, nunca da rede |
 | Staging | `staging_` e `v1-staging_` | Vínculo notícia-ticker, sentimento, julgamentos da juíza, análise diária por LLM | Substituível. Pode ser recalculada a partir do raw |
-| Features e entrega | `features_dataset_v1`; `v1-noticias` a `v1-indices` | O dataset do v1 e as nove tabelas entregues | Upsert pela chave de cada tabela. Remontar sobrescreve, não duplica |
+| Features e entrega | `features_dataset_v1`; `v1-noticias` a `v1-indices` | O dataset do v1 e as dez tabelas entregues | Upsert pela chave de cada tabela. Remontar sobrescreve, não duplica |
 | Painel | `v1-painel_*` | Estado do executor: comandos, execuções, etapas, heartbeat, carga histórica, logs | Lido pela API do painel. Não entra no dataset |
 
 Duas regras valem para todas as camadas:
@@ -165,7 +165,7 @@ Os intervalos de cada fonte vêm de `config.py` (`throttle_*`). Toda requisiçã
 | Carga histórica | Coleta de anos passados, feita por coletor e por ano. Pode ser pausada, cancelada e retomada. |
 | Fim rolante | Data final da coleta diária, que avança até hoje. É diferente da janela fixa do v1. |
 | Aquecimento | Dias de cotação coletados antes de `DATA_START` (`PRICE_WARMUP_DAYS`, padrão 400). Assim as janelas de 20 pregões já estão cheias no primeiro dia do dataset. |
-| `v1-` | Prefixo das 30 tabelas criadas pela pipeline nova, incluindo as 9 de entrega. As tabelas do dataset v1 mantêm o nome antigo. |
+| `v1-` | Prefixo das 31 tabelas criadas pela pipeline nova, incluindo as 10 de entrega. As tabelas do dataset v1 mantêm o nome antigo. |
 | Upsert | Gravação que cria a linha se a chave não existe e atualiza se ela existe. Uma chave repetida nunca gera linha duplicada. |
 
 ## 7. Limitações conhecidas

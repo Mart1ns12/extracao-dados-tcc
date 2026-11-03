@@ -763,3 +763,32 @@ Pendente: a verificação com carga real (ver os riscos da seção 10 de [03](03
 - Medir uma carga real no ritmo novo e confirmar que o bloqueio não volta.
 - Sem commit: a mudança está no working tree do branch `feat/executor-painel`.
 - `CLAUDE.md` (seção 6, "6–9 h") e `docs/ADR.md` ainda citam os números antigos de tempo e de idiomas. A revisão fica com o dono.
+
+## 25. Escala e base das ações emitidas; eventos de ações na entrega (2026-11-02)
+
+**O problema.** A quantidade de ações da CVM vem em milhares ou em unidades, e não diz qual base de ações é a de hoje. Um grupamento depois da data do documento deixa a série numa base antiga: AZUL3 em 2026-03 tem 54,7 trilhões de ações antes do grupamento 150.000:1 de 2026-04-17, e ~364,9 milhões na base atual, coerente com 2026-06 (368,6 milhões). Por isso AZUL3 não é erro de escala. Há também erros de dígito (CMIN3 em 2025-12, GMAT3 em 2022-06) e documentos anulados por retificação. O caso do IRBR3 mostrou que um DFP entregue depois de um grupamento já vem na base nova, e converter só pelos eventos aplicaria o grupamento duas vezes.
+
+**Decisão.**
+
+1. **Camadas de correção da fonte, só na entrega** (o raw não muda). Escala por giro (`corrigido_escala`, a regra de 2026-10-26); erro de dígito isolado, dividido por 10^k quando os dois vizinhos concordam (`corrigido_digito`, CMIN3 e GMAT3), com a última linha da série só marcada `suspeito`; anulação por lista explícita, `ACOES_CVM_ANULADAS` em `config.py` (`anulado`, quantidade NULL: GMAT3, SRNA3, IGTI11 e AUAU3).
+2. **Base atual.** `qtd_on_base_atual` e `qtd_pn_base_atual` aplicam os eventos da classe com data-com a partir da data de referência, na mesma base do fechamento ajustado e de `valor_por_acao`. Um evento entre a data de referência e a data de entrega só é aplicado se a quantidade ainda não o refletir (comparação com a linha anterior, tolerância de 5%).
+3. **`data_entrega`** (`DT_RECEB`) em `v1-acoes_emitidas`, para mostrar quando o dado chegou.
+4. **Tabela nova `v1-eventos_acoes`**, 10ª tabela da entrega: desdobramentos, bonificações e grupamentos do suplemento da B3. Chave (`ticker`, `data_com`, `tipo`, `isin_emitido`). Fica de fora incorporação, cisão, resgate e redução ou restituição de capital, porque o sentido do fator não foi verificado e eles não mudam a contagem da própria classe. A troca de código continua em `v1-mudancas_ticker`.
+
+**Arquivos alterados (documentação e esquema).**
+
+- `sql/alteracoes/2026-11-02_acoes_base_atual_eventos.mysql.sql` (novo): as 4 colunas em `v1-acoes_emitidas` e a tabela `v1-eventos_acoes`. Aplicado à mão pelo dono.
+- `docs/spec-entrega-etapa-seguinte.md`: adendo de 2026-11-02 no fim, sem alterar o texto original.
+- `docs/05-entrega.md`: 10 tabelas; seção 7 com as camadas, a base atual e a regra do IRBR3; seção 11 nova para `v1-eventos_acoes`; seções seguintes renumeradas (12 e 13).
+- `docs/06-banco-de-dados.md`, `docs/ADR.md` (seção "Escala e base das ações emitidas") e `CLAUDE.md` (contagem de tabelas com prefixo `v1-`).
+- Contagens de tabelas de entrega em `docs/01`, `docs/02`, `docs/03`, `docs/08` e `docs/README.md`.
+- `src/tcc_scraper/db/models_entrega.py`: só a docstring do módulo.
+
+**Verificação.** Esta entrada cobre a documentação. Pendente: rodar `build-entrega` depois da DDL e conferir os casos citados (CMIN3 em 2025-12, GMAT3 em 2022-06, IRBR3 em 2022-12, AZUL3 em 2026-03 e RENT em 2025-12).
+
+**Pendências.**
+
+- Confirmar com a CVM ou com o dono se AUAU3 (2023-12 a 2024-12) e IGTI11 (2021-03 a 2021-09) são anulados ou têm valor real. Hoje é hipótese.
+- A base atual não é point-in-time. A análise que precisar da quantidade da época usa `qtd_on` e `qtd_pn`.
+- CNPJ antigo fora do cadastro atual da B3 não tem eventos; bonificação paga em outra classe não ajusta a quantidade da classe de `isin`; CNPJ com mais de uma classe PN com fatores conflitantes fica com `qtd_pn_base_atual` NULL.
+- O registro no grafo (`manage_adr`) não foi feito nesta entrada; a cópia de referência é `docs/ADR.md`.

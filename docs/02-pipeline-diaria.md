@@ -28,7 +28,7 @@ Ordem de `orquestrador/etapas.py::ETAPAS`. As etapas rodam em sequência. Uma fa
 | 5 | `enriquecimento` | Corpo dos artigos (só veículos da allowlist) e sentimento FinBERT, local | Páginas dos veículos; FinBERT | Não |
 | 6 | `juiza` | Julga os pares (artigo, ticker) pendentes | Regra local; Jev; Anthropic `claude-haiku-5-5` | Sim (Jev e LLM) |
 | 7 | `cadastro` | Cadastro das companhias, proventos e ITR/DFP | CVM; B3 | Não |
-| 8 | `entrega` | Monta as 9 tabelas `v1-*` da entrega | Só o banco (tabelas `raw_*` e `staging_*`) | Não |
+| 8 | `entrega` | Monta as 10 tabelas `v1-*` da entrega | Só o banco (tabelas `raw_*` e `staging_*`) | Não |
 | 9 | `analise` | Análise diária por LLM | Gemini (hoje desligada, ver item E) | Sim, quando ligada |
 
 As tabelas gravadas por etapa, e quando cada uma sai `falhou` ou `pulada`, estão na seção 4 deste documento.
@@ -207,14 +207,14 @@ Os ids, nomes e coletores são o contrato com o painel. Não renomear sem combin
 | 5 | `enriquecimento` | Corpo e sentimento | `finbert` | Página do veículo (só domínios da allowlist) e FinBERT local | Lote de artigos sem corpo; depois, bloco de textos sem sentimento | Não é preciso: só entram os pendentes |
 | 6 | `juiza` | Juíza de qualidade | `juiza` | Regra local, sem API; depois Jev (se ligado; em `JUIZA_JEV_MODO=entrega`, decide por entrega segura); depois LLM de fallback (Anthropic `claude-haiku-5-5`, OpenAI `gpt-5.6-luna` ou Gemini, conforme `JUIZA_PROVEDOR`), sem busca na web | Lote de `JUIZA_LOTE` pares (artigo, ticker) pendentes, até `JUIZA_MAX_ITENS_DIA` por dia e até o teto mensal em US$ (`JUIZA_ORCAMENTO_MENSAL_USD`) | Só entram os pendentes |
 | 7 | `cadastro` | Cadastro e eventos | `cvm_b3` | CVM (cadastro das companhias), B3 (`GetDetail` e proventos), CVM (ITR e DFP) | Quatro partes: companhia da CVM (`cad\|<Last-Modified>`), empresa da B3 (`detail\|<cd_cvm>`), empresa de proventos (`prov\|<issuing_company>`), arquivo ITR/DFP (`<tipo>\|<ano>\|<Last-Modified>`) | Só ITR/DFP (`resume=True`) |
-| 8 | `entrega` | Montagem das 8 tabelas (nome do painel; a etapa grava 9) | `build_entrega` | Tabelas `raw_*` e `staging_*` já gravadas | As 9 tabelas da entrega | Refaz as 9 tabelas a cada execução |
+| 8 | `entrega` | Montagem das 8 tabelas (nome do painel; a etapa grava 10) | `build_entrega` | Tabelas `raw_*` e `staging_*` já gravadas | As 10 tabelas da entrega | Refaz as 10 tabelas a cada execução |
 | 9 | `analise` | Análise diária | `gemini` | Gemini, com busca Google e saída em JSON | Uma chamada, para o dia `fim_coleta` | Refaz o dia (apaga e regrava) |
 
 Ordem de execução: `precos`, `macro`, `noticias`, `ipe`, `enriquecimento`, `juiza`, `cadastro`, `entrega`, `analise`. As etapas `enriquecimento` e `juiza` vêm antes de `entrega`, então a entrega do dia já sai com as notícias julgadas.
 
 ## 4. Tabelas gravadas e regra de falha
 
-Só as 30 tabelas criadas pela pipeline nova (fontes novas, painel e entrega) têm o prefixo `v1-`. As demais mantêm o nome de camada (`raw_prices`, `raw_articles` etc.). Ver [06](06-banco-de-dados.md).
+Só as 31 tabelas criadas pela pipeline nova (fontes novas, painel e entrega) têm o prefixo `v1-`. As demais mantêm o nome de camada (`raw_prices`, `raw_articles` etc.). Ver [06](06-banco-de-dados.md).
 
 | Etapa | Tabelas que grava | Sai `falhou` quando | Sai `pulada` quando |
 |---|---|---|---|
@@ -225,7 +225,7 @@ Só as 30 tabelas criadas pela pipeline nova (fontes novas, painel e entrega) t�
 | `enriquecimento` | `raw_article_bodies`, `raw_articles` (coluna `resolved_url`), `staging_article_sentiment` | Foi interrompida, ou todas as páginas falharam, ou o FinBERT não está instalado (falta o extra `[sentiment]`). O corpo já gravado fica | Orçamento esgotado antes de começar, ou cancelamento |
 | `juiza` | `v1-staging_noticias_julgamento`, `v1-raw_llm_juiza_runs` | Foi interrompida (orçamento ou cancelamento), ou parou por `jev_sem_chave`, `erro_jev` ou `sem_credito` (ver nota abaixo) | Orçamento esgotado antes de começar, ou cancelamento. Sem a chave da LLM de fallback (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` com `JUIZA_PROVEDOR=openai`, ou `GEMINI_API_KEY` com `JUIZA_PROVEDOR=gemini`), a etapa sai `concluida` sem julgar pela LLM (ver nota abaixo) |
 | `cadastro` | `v1-raw_cvm_cadastro`, `v1-raw_b3_cadastro`, `v1-raw_b3_proventos`, `v1-raw_b3_suplemento`, `v1-raw_cvm_balancos`, `v1-raw_cvm_acoes` | Alguma parte foi interrompida, ou as quatro partes falharam | Orçamento esgotado antes de começar, ou cancelamento |
-| `entrega` | As 9 tabelas `v1-noticias` … `v1-indices` e `v1-composicao_ibov` (ver [05](05-entrega.md)) | Alguma das 9 tabelas falhou (a mensagem lista quais), ou nenhuma foi montada | Não é pulada pelo orçamento (ver seção 5) |
+| `entrega` | As 10 tabelas `v1-noticias` … `v1-indices`, `v1-composicao_ibov` e `v1-eventos_acoes` (ver [05](05-entrega.md)) | Alguma das 10 tabelas falhou (a mensagem lista quais), ou nenhuma foi montada | Não é pulada pelo orçamento (ver seção 5) |
 | `analise` | `raw_llm_prompts`, `raw_llm_runs`, `staging_llm_noticias_empresas`, `staging_llm_noticias_macro`, `staging_llm_acoes_sinais`, `staging_llm_mercados` | A chamada de análise não devolveu status `ok` | `ANALISE_ENABLED=false` (desligada hoje, ver a seção "Como a pipeline funciona hoje", item E) ou sem `GEMINI_API_KEY` |
 
 Regras de falha, valem para todas as etapas:

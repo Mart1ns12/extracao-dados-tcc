@@ -52,7 +52,7 @@ A trilha Google começa junto com os passos globais. Os passos marcados como "es
 | Principal | `juiza` (id no painel `juiza_wp`) | Cada segmento | Julga só os pares de WordPress e IPE do ano (`origens`), em modo `backlog`. Não espera o Google | Não se aplica (função) |
 | Principal | `finbert` | Cada segmento | Sentimento dos artigos do ano que ainda não têm score (`anos`). Espera o portão do ano | Não se aplica (função) |
 | Principal | `juiza` | Cada segmento | Julga os pares do ano que faltam, em modo `backlog`: sem teto de itens, limitada pela verba `JUIZA_BACKLOG_VERBA_USD` (US$ 15), cumulativa. Espera o portão do ano | Não se aplica (função) |
-| Principal | `build_entrega` | Cada segmento | Monta as 9 tabelas da entrega. Espera o portão do ano | Não se aplica (função) |
+| Principal | `build_entrega` | Cada segmento | Monta as 10 tabelas da entrega. Espera o portão do ano | Não se aplica (função) |
 
 A carga não segue a ordem do daily. Os coletores são os mesmos do daily (ver [02](02-pipeline-diaria.md), seção 3), exceto a carteira do IBOV (`b3_carteira_ibov`), que a carga não roda: ela existe só no daily e no `coletar`. A análise diária (`analise`) também não entra na carga.
 

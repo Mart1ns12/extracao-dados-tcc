@@ -1,6 +1,6 @@
-# Entrega: as 9 tabelas para a etapa seguinte
+# Entrega: as 10 tabelas para a etapa seguinte
 
-Este documento cobre as 9 tabelas entregues: as 8 da spec (`v1-noticias` a `v1-indices`) e `v1-composicao_ibov`, que não está na spec (seção 10). Para cada uma: a origem de cada coluna, a chave, a regra de atualização e as regras especiais. A especificação do que foi pedido está em [spec-entrega-etapa-seguinte.md](spec-entrega-etapa-seguinte.md), e o desenho detalhado em [superpowers/specs/2026-10-19-entrega-etapa-seguinte-design.md](superpowers/specs/2026-10-19-entrega-etapa-seguinte-design.md). Este texto descreve o código atual.
+Este documento cobre as 10 tabelas entregues: as 8 da spec (`v1-noticias` a `v1-indices`), `v1-composicao_ibov`, que não está na spec (seção 10), e `v1-eventos_acoes`, que entrou pelo adendo de 2026-11-02 da spec (seção 11). Para cada uma: a origem de cada coluna, a chave, a regra de atualização e as regras especiais. A especificação do que foi pedido está em [spec-entrega-etapa-seguinte.md](spec-entrega-etapa-seguinte.md), e o desenho detalhado em [superpowers/specs/2026-10-19-entrega-etapa-seguinte-design.md](superpowers/specs/2026-10-19-entrega-etapa-seguinte-design.md). Este texto descreve o código atual.
 
 ## 1. Visão geral
 
@@ -11,7 +11,8 @@ Este documento cobre as 9 tabelas entregues: as 8 da spec (`v1-noticias` a `v1-i
 | `v1-cadastro` | (`ticker`) | `raw_b3_cadastro`, `raw_cvm_cadastro` |
 | `v1-mudancas_ticker` | (`ticker_antigo`) | `MUDANCAS_TICKER` em `config.py` |
 | `v1-balancos` | (`cnpj`, `tipo_documento`, `data_inicio_periodo`, `data_fim_periodo`) | `raw_cvm_balancos` |
-| `v1-acoes_emitidas` | (`cnpj`, `data_referencia`) | `raw_cvm_acoes` |
+| `v1-acoes_emitidas` | (`cnpj`, `data_referencia`) | `raw_cvm_acoes`, `v1-eventos_acoes` (base atual) |
+| `v1-eventos_acoes` | (`ticker`, `data_com`, `tipo`, `isin_emitido`) | `v1-raw_b3_suplemento` (eventos em ações) |
 | `v1-proventos` | (`ticker`, `tipo`, `data_com`) | `raw_b3_proventos`, `raw_b3_suplemento`, `raw_b3_cadastro` |
 | `v1-indices` | (`data`, `indice`) | `raw_prices` (Yahoo) e `raw_macro` (BCB) |
 | `v1-composicao_ibov` | (`ticker`, `vigencia_inicio`) | Carteiras oficiais em `data/composicao_ibov/`, `REBALANCEAMENTOS_IBOV`, `EVENTOS_IBOV_EXTRAORDINARIOS` e `MUDANCAS_TICKER` em `config.py`, coletor `b3_carteira_ibov` |
@@ -183,11 +184,24 @@ Chave: (`cnpj`, `data_referencia`). Fonte: `raw_cvm_acoes`, da composição do c
 |---|---|
 | `cnpj` | `CNPJ_CIA` |
 | `data_referencia` | `DT_REFER` |
-| `qtd_on`, `qtd_pn` | Quantidades ON e PN do registro, como vêm da CVM |
+| `qtd_on`, `qtd_pn` | Quantidades ON e PN do registro, como vêm da CVM, exceto nas linhas corrigidas pela escala ou por erro de dígito (ver abaixo) |
+| `data_entrega` | `DT_RECEB`, data em que o documento foi recebido pela CVM. Mostra quando o dado chegou |
+| `qtd_on_base_atual`, `qtd_pn_base_atual` | Quantidades convertidas para a base atual (ver abaixo). Vazias quando a linha foi anulada |
+| `situacao` | `ok`, `corrigido_escala`, `corrigido_digito`, `anulado` ou `suspeito` |
 
 Quando há mais de um registro para a mesma data, vence o DFP sobre o ITR; em empate de tipo, vence a maior `VERSAO`.
 
-**Escala.** A CVM não tem coluna de escala: cerca de 30% das linhas vêm em milhares e o resto em unidades. Algumas empresas estão sempre em milhares (VALE3) e outras alternam trimestre a trimestre (PSSA3). A correção é só na entrega, por CNPJ: a série é quebrada onde o total salta ~1000x, e um segmento está em milhares se a mediana do giro passar de 10% ao dia. O giro é a mediana do volume dos últimos 60 pregões (ON, PN e unit somados) dividida pelo total de ações, e é impossível passar de 10% em unidades. Segmento sem giro (ex.: trimestres de antes da listagem) herda pela cadeia: a escala alterna a cada troca de 1000x a partir do segmento decidido pelo giro mais próximo. Valor isolado que não é troca de 1000x (CMIN3 em 2025-12-31, AZUL3 em 2026-03-31) não é corrigido: só gera aviso no log. CNPJ sem nenhum volume não tem como ser decidido e fica como a CVM publica: a STBP3, sem preço no Yahoo, segue em milhares (851.018 a 864.170).
+**Escala e erros da fonte.** A CVM não tem coluna de escala: cerca de 30% das linhas vêm em milhares e o resto em unidades. Algumas empresas estão sempre em milhares (VALE3) e outras alternam trimestre a trimestre (PSSA3). A correção é feita só na entrega, por CNPJ, em três camadas. O raw não muda, e cada linha corrigida ou suspeita sai com `situacao` diferente de `ok`.
+
+1. **Escala (`corrigido_escala`).** A série é quebrada onde o total salta ~1000x, e um segmento está em milhares se a mediana do giro passar de 10% ao dia. O giro é a mediana do volume dos últimos 60 pregões (ON, PN e unit somados) dividida pelo total de ações, e é impossível passar de 10% em unidades. Segmento sem giro (ex.: trimestres de antes da listagem) herda pela cadeia: a escala alterna a cada troca de 1000x a partir do segmento decidido pelo giro mais próximo. CNPJ sem nenhum volume não tem como ser decidido e fica como a CVM publica: a STBP3, sem preço no Yahoo, segue em milhares (851.018 a 864.170).
+2. **Erro de dígito (`corrigido_digito`, automático).** Valor isolado cuja razão com os dois vizinhos é ~10^k (k = ±1 ou ±2, tolerância de 3%), com os vizinhos concordando (até 5%), é dividido por 10^k. Casos: CMIN3 em 2025-12 e GMAT3 em 2022-06. A última linha da série com esse padrão não tem vizinho futuro: só é marcada `suspeito` e não é corrigida. Usar o vizinho futuro é aceito: corrige digitação e não traz informação de retorno. É o mesmo critério da escala dos balanços.
+3. **Anulação (`anulado`, lista explícita).** `ACOES_CVM_ANULADAS`, em `config.py`, lista os documentos anulados, versionada. A quantidade fica NULL. Casos: GMAT3 em 2023-06; SRNA3 em 2021-06 e 2021-09; IGTI11 de 2021-03 a 2021-09; AUAU3 de 2023-12 a 2024-12. Os casos de IGTI11 e AUAU3 são hipótese: a base é anterior à reorganização ou à listagem, e o valor pode ser real.
+
+Valor que não se encaixa em nenhuma camada não é alterado. O caso de AZUL3 em 2026-03-31 não é erro: a data é anterior ao grupamento 150.000:1 de 2026-04-17, e as 54,7 trilhões de ações viram ~364,9 milhões na base atual, coerente com 2026-06 (368,6 milhões).
+
+**Base atual (`qtd_on_base_atual`, `qtd_pn_base_atual`).** É a quantidade na mesma base do fechamento ajustado por eventos (Yahoo) e de `valor_por_acao` dos proventos. Aplicam-se os eventos de `v1-eventos_acoes` da própria classe com data-com maior ou igual à data de referência: a quantidade é multiplicada pelo `fator` de cada um. A conversão **não é point-in-time**: usa os eventos que existem quando a tabela é montada, inclusive os posteriores ao documento. Quem precisar da quantidade como a CVM publicou usa `qtd_on` e `qtd_pn`.
+
+**Eventos já refletidos no documento.** Um documento entregue depois de um evento pode já trazer a quantidade pós-evento. O DFP de IRBR3 de 2022-12, entregue em 2023-03-21 (`data_entrega`), já vem na base do grupamento 30:1 de 2023-01-24. Por isso, um evento com data-com entre a data de referência e a data de entrega só é aplicado se a quantidade ainda não o refletir: compara-se com a linha anterior, e, se a razão já for o fator do evento (tolerância de 5%), o evento não entra de novo. Essa conversão é feita pelo pipeline. Quem recebesse só os eventos aplicaria o grupamento duas vezes.
 
 **Atualização.** Upsert pela chave.
 
@@ -271,10 +285,40 @@ Coletor diário (`collectors/b3_carteira_ibov.py`, etapa `precos`): baixa a cart
 
 Trocas de código intermediárias não estão na tabela (ELET6 → AXIA6, CPLE6 → CPLE5, AZUL4 → AZUL54/AZUL53). O código antigo aparece até a data da troca final.
 
-## 11. Como gerar as tabelas e os CSVs
+## 11. Eventos de ações: `v1-eventos_acoes`
+
+Chave: (`ticker`, `data_com`, `tipo`, `isin_emitido`). Fonte: `v1-raw_b3_suplemento`, os eventos em ações. Tabela criada pela alteração de 2026-11-02 (`sql/alteracoes/2026-11-02_acoes_base_atual_eventos.mysql.sql`). Foi acrescentada à entrega pelo adendo de 2026-11-02 da spec.
+
+| Coluna | Origem e regra |
+|---|---|
+| `ticker` | Ação afetada |
+| `data_com` | Data-com do evento |
+| `tipo` | `DESDOBRAMENTO`, `BONIFICACAO` ou `GRUPAMENTO` |
+| `fator` | Ações depois do evento por ação antes. Desdobramento 1:2 = 2,0; grupamento 30:1 = 0,0333; bonificação de 20% = 1,2 |
+| `isin` | ISIN da ação antes do evento |
+| `isin_emitido` | ISIN da classe que recebe as ações novas. Difere de `isin` quando a bonificação é paga em outra classe (RENT, 2025-12). Nesse caso a quantidade da classe de `isin` não muda |
+| `cnpj` | CNPJ da companhia |
+| `data_aprovacao` | Data de aprovação do evento, como vem no suplemento da B3 |
+
+`fator` multiplica a quantidade anterior. Por isso, a seção 7 multiplica a quantidade de uma data de referência pelos fatores dos eventos da própria classe com data-com maior ou igual à data de referência, para montar `qtd_on_base_atual` e `qtd_pn_base_atual`.
+
+**Fica de fora:**
+
+- **Incorporação** (ex.: JBSS em 2025, NATU em 2019), **cisão** (CIS RED CAP), **resgate** (RESG TOTAL RV) e **redução ou restituição de capital**. O sentido do fator desses eventos não foi verificado, e eles não mudam a contagem da própria classe.
+- **Troca de código** de ação. Aparece em `v1-mudancas_ticker`, não aqui.
+
+**O que se perde:**
+
+- CNPJ antigo que não está no cadastro atual da B3 não tem eventos: a base atual fica igual à original.
+- Bonificação paga em outra classe não ajusta a quantidade da classe de `isin`.
+- CNPJ com mais de uma classe PN com fatores conflitantes fica com `qtd_pn_base_atual` NULL.
+
+**Atualização.** Upsert pela chave.
+
+## 12. Como gerar as tabelas e os CSVs
 
 ```bash
-python -m tcc_scraper.cli build-entrega                             # grava as 9 tabelas no banco
+python -m tcc_scraper.cli build-entrega                             # grava as 10 tabelas no banco
 python -m tcc_scraper.cli build-entrega --csv                       # grava no banco e exporta CSV
 python -m tcc_scraper.cli build-entrega --tabela noticias --csv     # só uma tabela; --tabela é repetível
 ```
@@ -290,7 +334,7 @@ SELECT ticker, data_publicacao, titulo
  LIMIT 10;
 ```
 
-## 12. Lacunas e pendências
+## 13. Lacunas e pendências
 
 - **Composição do IBOV não validada contra a B3.** A reconstrução de set/2024 até hoje dá 84 papéis, e a carteira da API tem 76. As divergências e as contagens citadas em B estão em [09-historico-de-mudancas.md](09-historico-de-mudancas.md), seção 14. A decisão é do dono.
 - **Filtro da juíza desligado por padrão.** Com `ENTREGA_FILTRO_JUIZA=false`, `v1-noticias` leva panoramas e opiniões. O filtro ligado é a regra de qualidade pretendida (spec, seção 5.1), e a decisão de ligá-lo é do dono.

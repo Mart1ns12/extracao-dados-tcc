@@ -738,6 +738,97 @@ def test_unit_e_composta_pelas_acoes_on_e_pn_da_mesma_empresa() -> None:
     assert unit[0]["tipo"] == "DIVIDENDO"
 
 
+# -- eventos em acoes (eventos_acoes) --------------------------------------------------------
+
+def _stock(ic: str, payload: dict) -> dict:
+    return {"issuing_company": ic, "tipo": "stock", "payload": payload}
+
+
+def test_eventos_acoes_petr_desdobramento_grupamento_e_bonificacao() -> None:
+    linhas = B.montar_eventos_acoes(_suplemento_petr(), _cadastro_petr())
+    assert all(list(linha) == COLUNAS["eventos_acoes"] for linha in linhas)
+    por = {(r["ticker"], r["data_com"], r["tipo"]): r for r in linhas}
+    for ticker in ("PETR3", "PETR4"):
+        desdobramento = por[(ticker, dt.date(2008, 4, 25), "DESDOBRAMENTO")]
+        assert desdobramento["fator"] == pytest.approx(2.0)
+        grupamento = por[(ticker, dt.date(2000, 6, 21), "GRUPAMENTO")]
+        assert grupamento["fator"] == pytest.approx(0.01)
+        assert grupamento["cnpj"] == PETROBRAS
+    # 3 eventos em acoes x ON e PN; os 24 pagamentos em dinheiro ficam de fora.
+    assert len(linhas) == 6
+    assert {r["tipo"] for r in linhas} == {"DESDOBRAMENTO", "GRUPAMENTO", "BONIFICACAO"}
+
+
+def test_grupamento_irbr_fator_e_uma_trigesima_por_acao() -> None:
+    evento = _stock("IRBR", {
+        "label": "GRUPAMENTO", "factor": "0,03333333334", "lastDatePrior": "24/01/2023",
+        "isinCode": "BRIRBRACNOR4", "assetIssued": "BRIRBRACNOR4", "approvedOn": "17/01/2023",
+    })
+    (linha,) = B.montar_eventos_acoes([evento], [])
+    assert linha["ticker"] == "IRBR3"
+    assert linha["fator"] == pytest.approx(1 / 30, rel=1e-6)
+    assert linha["data_aprovacao"] == dt.date(2023, 1, 17)
+
+
+def test_mesmo_evento_duas_vezes_gera_uma_linha() -> None:
+    evento = _stock("IRBR", {
+        "label": "GRUPAMENTO", "factor": "0,03333333334", "lastDatePrior": "24/01/2023",
+        "isinCode": "BRIRBRACNOR4", "assetIssued": "BRIRBRACNOR4", "approvedOn": "17/01/2023",
+    })
+    linhas = B.montar_eventos_acoes([evento, dict(evento)], [])
+    assert len(linhas) == 1
+
+
+def test_incorporacao_e_cis_red_cap_ficam_de_fora() -> None:
+    suplemento = [
+        _stock("JBSS", {
+            "label": "INCORPORACAO", "factor": "50,00000000000", "lastDatePrior": "10/03/2023",
+            "isinCode": "BRJBSSACNOR8", "assetIssued": "BRJ8BSARNPR0",
+        }),
+        _stock("CIS", {
+            "label": "CIS RED CAP", "factor": "10,00000000000", "lastDatePrior": "10/03/2023",
+            "isinCode": "BRCISACNOR3", "assetIssued": "BRCISACNOR3",
+        }),
+    ]
+    assert B.montar_eventos_acoes(suplemento, []) == []
+
+
+def test_bonificacao_com_isin_emitido_diferente_do_isin() -> None:
+    evento = _stock("RENT", {
+        "label": "BONIFICACAO", "factor": "3,84609533429", "lastDatePrior": "29/12/2025",
+        "isinCode": "BRRENTACNOR4", "assetIssued": "BRRENTACNPR1", "approvedOn": "19/12/2025",
+    })
+    (linha,) = B.montar_eventos_acoes([evento], [])
+    assert linha["ticker"] == "RENT3"
+    assert linha["isin"] == "BRRENTACNOR4"
+    assert linha["isin_emitido"] == "BRRENTACNPR1"
+    assert linha["fator"] == pytest.approx(1 + 3.84609533429 / 100)
+
+
+def test_fatores_distintos_na_mesma_chave_se_multiplicam_com_aviso(caplog) -> None:
+    base = {
+        "label": "BONIFICACAO", "lastDatePrior": "29/12/2025",
+        "isinCode": "BRRENTACNOR4", "assetIssued": "BRRENTACNOR4",
+    }
+    suplemento = [
+        _stock("RENT", {**base, "factor": "20,00000000000"}),
+        _stock("RENT", {**base, "factor": "30,00000000000"}),
+    ]
+    (linha,) = B.montar_eventos_acoes(suplemento, [])
+    assert linha["fator"] == pytest.approx(1.2 * 1.3)
+    avisos = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("multiplicados" in aviso for aviso in avisos)
+
+
+def test_evento_sem_data_ou_com_fator_invalido_e_pulado() -> None:
+    base = {"label": "BONIFICACAO", "isinCode": "BRRENTACNOR4", "assetIssued": "BRRENTACNOR4"}
+    suplemento = [
+        _stock("RENT", {**base, "factor": "3,00000000000", "lastDatePrior": None}),
+        _stock("RENT", {**base, "factor": "", "lastDatePrior": "29/12/2025"}),
+    ]
+    assert B.montar_eventos_acoes(suplemento, []) == []
+
+
 # -- escala das acoes (CVM mistura unidades e milhares) ----------------------------------------
 
 MARCOS = [dt.date(2025, 3, 31), dt.date(2025, 6, 30), dt.date(2025, 9, 30)]
@@ -803,15 +894,97 @@ def test_sem_volumes_a_escala_nao_e_corrigida() -> None:
     assert [r["qtd_on"] for r in linhas] == [4_255_763] * 3
 
 
-def test_valor_isolado_10x_nao_e_corrigido_e_gera_aviso(caplog) -> None:
+def test_valor_isolado_10x_e_corrigido_pelos_vizinhos_e_avisado(caplog) -> None:
     linhas = B.montar_acoes_emitidas([
         _acao(MARCOS[0], 1_000_000_000),
         _acao(MARCOS[1], 10_000_000_000),
         _acao(MARCOS[2], 1_000_000_000),
-    ], _volumes_diarios(5e7))
-    assert [r["qtd_on"] for r in linhas] == [1_000_000_000, 10_000_000_000, 1_000_000_000]
+    ], _volumes_diarios(5e7), anuladas={})
+    assert [r["qtd_on"] for r in linhas] == [1_000_000_000] * 3
+    assert [r["situacao"] for r in linhas] == ["ok", "corrigido_digito", "ok"]
     avisos = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert any("2025-06-30" in aviso and "10000000000" in aviso for aviso in avisos)
+
+
+CMIN = "08902291000115"
+GMAT = "24990777000109"
+
+
+def _acao_de(cnpj: str, data: dt.date, on: int, pn: int = 0) -> dict:
+    return {**_acao(data, on, pn), "cnpj": cnpj}
+
+
+def test_erro_de_digito_10x_no_meio_da_serie_cmin3_e_corrigido() -> None:
+    linhas = B.montar_acoes_emitidas([
+        _acao_de(CMIN, dt.date(2025, 9, 30), 5_485_338_835),
+        _acao_de(CMIN, dt.date(2025, 12, 31), 54_320_445_380),
+        _acao_de(CMIN, dt.date(2026, 3, 31), 5_432_044_538),
+    ], anuladas={})
+    assert [r["qtd_on"] for r in linhas] == [5_485_338_835, 5_432_044_538, 5_432_044_538]
+    assert [r["situacao"] for r in linhas] == ["ok", "corrigido_digito", "ok"]
+
+
+def test_erro_de_digito_10x_no_meio_da_serie_gmat3_2022_e_corrigido() -> None:
+    linhas = B.montar_acoes_emitidas([
+        _acao_de(GMAT, dt.date(2022, 3, 31), 2_209_346_079),
+        _acao_de(GMAT, dt.date(2022, 6, 30), 22_093_460_790),
+        _acao_de(GMAT, dt.date(2022, 9, 30), 2_209_346_079),
+    ], anuladas={})
+    assert [r["qtd_on"] for r in linhas] == [2_209_346_079] * 3
+    assert [r["situacao"] for r in linhas] == ["ok", "corrigido_digito", "ok"]
+
+
+def test_gmat3_2023_anulada_vira_null_e_sem_anulacao_fica_suspeita() -> None:
+    serie = [
+        _acao_de(GMAT, dt.date(2023, 3, 31), 2_209_346_079),
+        _acao_de(GMAT, dt.date(2023, 6, 30), 463_952_163),
+        _acao_de(GMAT, dt.date(2023, 9, 30), 2_209_346_079),
+    ]
+    anulada = B.montar_acoes_emitidas(serie, anuladas={(GMAT, dt.date(2023, 6, 30)): "teste"})
+    assert [r["qtd_on"] for r in anulada] == [2_209_346_079, None, 2_209_346_079]
+    assert [r["situacao"] for r in anulada] == ["ok", "anulado", "ok"]
+    # Com anuladas={} a linha nao e anulada: fica no valor e so vira suspeita.
+    sem_anulacao = B.montar_acoes_emitidas(serie, anuladas={})
+    assert [r["qtd_on"] for r in sem_anulacao] == [2_209_346_079, 463_952_163, 2_209_346_079]
+    assert [r["situacao"] for r in sem_anulacao] == ["ok", "suspeito", "ok"]
+
+
+def test_mudanca_real_permanente_de_10x_fica_intacta() -> None:
+    linhas = B.montar_acoes_emitidas([
+        _acao(MARCOS[0], 1_000_000_000),
+        _acao(MARCOS[1], 10_000_000_000),
+        _acao(MARCOS[2], 10_000_000_000),
+    ], anuladas={})
+    assert [r["qtd_on"] for r in linhas] == [1_000_000_000, 10_000_000_000, 10_000_000_000]
+    assert [r["situacao"] for r in linhas] == ["ok"] * 3
+
+
+def test_ultima_linha_10x_fica_com_valor_e_vira_suspeita() -> None:
+    linhas = B.montar_acoes_emitidas([
+        _acao(MARCOS[0], 1_000_000_000),
+        _acao(MARCOS[1], 1_000_000_000),
+        _acao(MARCOS[2], 10_000_000_000),
+    ], anuladas={})
+    assert [r["qtd_on"] for r in linhas] == [1_000_000_000, 1_000_000_000, 10_000_000_000]
+    assert [r["situacao"] for r in linhas] == ["ok", "ok", "suspeito"]
+
+
+def test_acoes_cvm_anuladas_tem_as_11_linhas_conferidas_no_banco() -> None:
+    from tcc_scraper.config import ACOES_CVM_ANULADAS
+
+    assert set(ACOES_CVM_ANULADAS) == {
+        ("24990777000109", dt.date(2023, 6, 30)),
+        ("42500384000151", dt.date(2021, 6, 30)),
+        ("42500384000151", dt.date(2021, 9, 30)),
+        ("60543816000193", dt.date(2021, 3, 31)),
+        ("60543816000193", dt.date(2021, 6, 30)),
+        ("60543816000193", dt.date(2021, 9, 30)),
+        ("53153938000108", dt.date(2023, 12, 31)),
+        ("53153938000108", dt.date(2024, 3, 31)),
+        ("53153938000108", dt.date(2024, 6, 30)),
+        ("53153938000108", dt.date(2024, 9, 30)),
+        ("53153938000108", dt.date(2024, 12, 31)),
+    }
 
 
 def test_volumes_por_cnpj_soma_on_e_pn_e_tira_o_sa() -> None:
@@ -829,6 +1002,100 @@ def test_volumes_por_cnpj_soma_on_e_pn_e_tira_o_sa() -> None:
         {"ticker": "^BVSP", "date": dia, "volume": 999},
     ]
     assert B.volumes_por_cnpj(cadastro, precos) == {PETROBRAS: {dia: 150.0}}
+
+
+# -- base atual das acoes (qtd_*_base_atual, a partir de eventos_acoes) --------------------------
+
+AZUL_CNPJ = "09305994000129"
+AZUL_ISIN = "BRAZULACNOR8"
+IRBR_CNPJ = "33376989000191"
+IRBR_ISIN = "BRIRBRACNOR4"
+
+
+def _linha_base(
+    cnpj: str, dt_refer: dt.date, dt_receb: dt.date | None, on: int, pn: int = 0
+) -> dict:
+    return {"cnpj": cnpj, "tipo_documento": "ITR", "dt_refer": dt_refer, "versao": 1,
+            "qt_on": on, "qt_pn": pn, "dt_receb": dt_receb}
+
+
+def _evento_base(ticker: str, cnpj: str, data_com: dt.date, fator: float, isin: str,
+                 tipo: str = "GRUPAMENTO", isin_emitido: str | None = None) -> dict:
+    return {"ticker": ticker, "data_com": data_com, "tipo": tipo, "fator": fator,
+            "isin": isin, "isin_emitido": isin_emitido or isin, "cnpj": cnpj,
+            "data_aprovacao": None}
+
+
+SERIE_AZUL = [
+    _linha_base(AZUL_CNPJ, dt.date(2025, 9, 30), dt.date(2025, 11, 10), 2_128_965_121, 896_039_753),
+    _linha_base(AZUL_CNPJ, dt.date(2025, 12, 31), dt.date(2026, 3, 31), 2_128_965_121, 896_039_753),
+    _linha_base(AZUL_CNPJ, dt.date(2026, 3, 31), dt.date(2026, 5, 7), 54_730_851_778_811, 0),
+    _linha_base(AZUL_CNPJ, dt.date(2026, 6, 30), dt.date(2026, 8, 19), 368_557_924, 0),
+]
+EVENTOS_AZUL = [
+    _evento_base("AZUL3", AZUL_CNPJ, dt.date(2026, 2, 18), 0.01333333334, AZUL_ISIN),
+    _evento_base("AZUL3", AZUL_CNPJ, dt.date(2026, 4, 17), 0.0000066667, AZUL_ISIN),
+]
+SERIE_IRBR = [
+    _linha_base(IRBR_CNPJ, dt.date(2022, 9, 30), dt.date(2022, 11, 10), 2_467_890_331, 1),
+    _linha_base(IRBR_CNPJ, dt.date(2022, 12, 31), dt.date(2023, 3, 21), 82_263_011, 1),
+    _linha_base(IRBR_CNPJ, dt.date(2023, 3, 31), dt.date(2023, 5, 10), 82_263_011, 1),
+]
+EVENTOS_IRBR = [_evento_base("IRBR3", IRBR_CNPJ, dt.date(2023, 1, 24), 0.03333333334, IRBR_ISIN)]
+
+
+def test_base_atual_azul3_grupamento_converte_so_o_que_a_cvm_nao_refletiu() -> None:
+    linhas = B.montar_acoes_emitidas(SERIE_AZUL, eventos=EVENTOS_AZUL, anuladas={})
+    por_data = {r["data_referencia"]: r for r in linhas}
+    # 2026-03: a CVM publicou a quantidade antiga (fora da base nova); o grupamento de abr/26 entra.
+    assert por_data[dt.date(2026, 3, 31)]["qtd_on"] == 54_730_851_778_811
+    assert por_data[dt.date(2026, 3, 31)]["qtd_on_base_atual"] == pytest.approx(
+        364_874_000, rel=1e-3)
+    # 2026-06: quantidade ja na base nova, nenhum evento pendente.
+    assert por_data[dt.date(2026, 6, 30)]["qtd_on_base_atual"] == 368_557_924
+    # 2025-12: os dois grupamentos (fev e abr/26) ainda estao pendentes.
+    assert por_data[dt.date(2025, 12, 31)]["qtd_on_base_atual"] == pytest.approx(189, rel=2e-2)
+
+
+def test_base_atual_pn_sem_eventos_fica_igual_a_quantidade() -> None:
+    linhas = B.montar_acoes_emitidas(SERIE_AZUL, eventos=EVENTOS_AZUL, anuladas={})
+    assert [r["qtd_pn_base_atual"] for r in linhas] == [r["qtd_pn"] for r in linhas]
+
+
+def test_base_atual_irbr3_quantidade_ja_refletida_nao_e_convertida_de_novo() -> None:
+    linhas = B.montar_acoes_emitidas(SERIE_IRBR, eventos=EVENTOS_IRBR, anuladas={})
+    base = {r["data_referencia"]: r["qtd_on_base_atual"] for r in linhas}
+    assert base[dt.date(2022, 9, 30)] == pytest.approx(82_263_011, rel=1e-6)
+    assert base[dt.date(2022, 12, 31)] == 82_263_011
+    assert base[dt.date(2023, 3, 31)] == 82_263_011
+
+
+def test_base_atual_evento_com_data_com_igual_a_dt_refer_entra_e_anterior_nao() -> None:
+    serie = [_linha_base(AZUL_CNPJ, dt.date(2026, 2, 18), None, 1_000_000)]
+    igual = B.montar_acoes_emitidas(serie, eventos=[
+        _evento_base("AZUL3", AZUL_CNPJ, dt.date(2026, 2, 18), 2.0, AZUL_ISIN),
+    ], anuladas={})
+    antes = B.montar_acoes_emitidas(serie, eventos=[
+        _evento_base("AZUL3", AZUL_CNPJ, dt.date(2026, 2, 17), 2.0, AZUL_ISIN),
+    ], anuladas={})
+    assert igual[0]["qtd_on_base_atual"] == 2_000_000
+    assert antes[0]["qtd_on_base_atual"] == 1_000_000
+
+
+def test_base_atual_bonificacao_de_outra_classe_nao_altera_a_base() -> None:
+    serie = [_linha_base(AZUL_CNPJ, dt.date(2026, 1, 31), None, 1_000, 500)]
+    linhas = B.montar_acoes_emitidas(serie, eventos=[
+        _evento_base("AZUL3", AZUL_CNPJ, dt.date(2026, 2, 18), 2.0, AZUL_ISIN,
+                     tipo="BONIFICACAO", isin_emitido="BRAZULACNPR6"),
+    ], anuladas={})
+    assert linhas[0]["qtd_on_base_atual"] == 1_000
+    assert linhas[0]["qtd_pn_base_atual"] == 500
+
+
+def test_base_atual_sem_eventos_e_a_propria_quantidade() -> None:
+    linhas = B.montar_acoes_emitidas(SERIE_AZUL, anuladas={})
+    assert all(r["qtd_on_base_atual"] == r["qtd_on"] for r in linhas)
+    assert all(r["qtd_pn_base_atual"] == r["qtd_pn"] for r in linhas)
 
 
 # -- escala declarada errada nos balancos -------------------------------------------------------

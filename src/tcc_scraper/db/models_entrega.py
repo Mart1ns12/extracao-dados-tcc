@@ -1,4 +1,4 @@
-"""As 9 tabelas de entrega (8 fixas pela spec e a composicao do IBOV), sem prefixo de camada.
+"""As 10 tabelas de entrega (8 fixas pela spec, a composicao do IBOV e os eventos de acoes), sem prefixo de camada.
 
 Colunas na ordem da spec (parte 2, dicionario de colunas). A `noticias` leva, depois das 10
 colunas da spec, as 7 extras da secao 5.1 do desenho. `COLUNAS` e a fonte unica dessa ordem
@@ -47,7 +47,13 @@ COLUNAS: dict[str, list[str]] = {
         "ebit", "depreciacao_amortizacao", "emprestimos_curto_prazo", "emprestimos_longo_prazo",
         "caixa", "aplicacoes_financeiras",
     ],
-    "acoes_emitidas": ["cnpj", "data_referencia", "qtd_on", "qtd_pn"],
+    "acoes_emitidas": [
+        "cnpj", "data_referencia", "qtd_on", "qtd_pn", "data_entrega",
+        "qtd_on_base_atual", "qtd_pn_base_atual", "situacao",
+    ],
+    "eventos_acoes": [
+        "ticker", "data_com", "tipo", "fator", "isin", "isin_emitido", "cnpj", "data_aprovacao",
+    ],
     "proventos": ["ticker", "tipo", "data_com", "valor_por_acao", "data_pagamento"],
     "indices": ["data", "indice", "valor"],
     "composicao_ibov": ["ticker", "vigencia_inicio", "vigencia_fim", "participacao", "fonte"],
@@ -160,6 +166,30 @@ class AcoesEmitida(Base):
     data_referencia: Mapped[dt.date] = mapped_column(Date, primary_key=True)
     qtd_on: Mapped[int | None] = mapped_column(BigInteger)
     qtd_pn: Mapped[int | None] = mapped_column(BigInteger)
+    data_entrega: Mapped[dt.date | None] = mapped_column(Date)
+    qtd_on_base_atual: Mapped[int | None] = mapped_column(BigInteger)
+    qtd_pn_base_atual: Mapped[int | None] = mapped_column(BigInteger)
+    situacao: Mapped[str] = mapped_column(String(16), nullable=False, server_default="ok")
+
+
+class EventoAcao(Base):
+    """Evento societario que muda a quantidade de acoes (desdobramento, grupamento, bonificacao).
+
+    `fator` multiplica a quantidade anterior. PK inclui `isin_emitido`: um mesmo evento pode
+    emitir mais de um ISIN (ON e PN) na mesma data-com.
+    """
+
+    __tablename__ = f"{PREFIXO_TABELA}eventos_acoes"
+    __table_args__ = (Index("ix_eventos_acoes_cnpj", "cnpj"),)
+
+    ticker: Mapped[str] = mapped_column(String(12), primary_key=True)
+    data_com: Mapped[dt.date] = mapped_column(Date, primary_key=True)
+    tipo: Mapped[str] = mapped_column(String(16), primary_key=True)
+    fator: Mapped[float] = mapped_column(Double, nullable=False)
+    isin: Mapped[str] = mapped_column(String(12), nullable=False)
+    isin_emitido: Mapped[str] = mapped_column(String(12), primary_key=True)
+    cnpj: Mapped[str | None] = mapped_column(String(14))
+    data_aprovacao: Mapped[dt.date | None] = mapped_column(Date)
 
 
 class Provento(Base):

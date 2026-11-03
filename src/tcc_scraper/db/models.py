@@ -52,7 +52,7 @@ TABLE_PREFIXES = ("raw_", "staging_", "features_", "painel_")
 # (o prefixo PREFIXO_TABELA continua valendo para elas no banco).
 _ENTREGA_SEM_PREFIXO = (
     "noticias", "precos", "cadastro", "mudancas_ticker",
-    "balancos", "acoes_emitidas", "proventos", "indices", "composicao_ibov",
+    "balancos", "acoes_emitidas", "eventos_acoes", "proventos", "indices", "composicao_ibov",
 )
 ENTREGA_TABLES = tuple(f"{PREFIXO_TABELA}{nome}" for nome in _ENTREGA_SEM_PREFIXO)
 

@@ -571,6 +571,24 @@ CORRECOES_PRECO_B3: dict[str, CorrecaoPrecoB3] = {
 }
 
 
+# Linhas de raw_cvm_acoes que a entrega anula (qtd NULL, situacao 'anulado'). Conferido no
+# banco em 2026-11-02. Chave: (cnpj, dt_refer). Erro de digito 10x/100x NAO entra aqui
+# (correcao automatica).
+ACOES_CVM_ANULADAS: dict[tuple[str, date], str] = {
+    ("24990777000109", date(2023, 6, 30)): "GMAT3: 0,21x dos vizinhos, sem evento",
+    ("42500384000151", date(2021, 6, 30)): "SRNA3: holding pre-reorganizacao (10 acoes)",
+    ("42500384000151", date(2021, 9, 30)): "SRNA3: holding pre-reorganizacao (100 acoes)",
+    ("60543816000193", date(2021, 3, 31)): "IGTI11: base pre-reorganizacao 2021 (hipotese)",
+    ("60543816000193", date(2021, 6, 30)): "IGTI11: base pre-reorganizacao 2021 (hipotese)",
+    ("60543816000193", date(2021, 9, 30)): "IGTI11: base pre-reorganizacao 2021 (hipotese)",
+    ("53153938000108", date(2023, 12, 31)): "AUAU3: pre-listagem (hipotese)",
+    ("53153938000108", date(2024, 3, 31)): "AUAU3: pre-listagem (hipotese)",
+    ("53153938000108", date(2024, 6, 30)): "AUAU3: pre-listagem (hipotese)",
+    ("53153938000108", date(2024, 9, 30)): "AUAU3: pre-listagem (hipotese)",
+    ("53153938000108", date(2024, 12, 31)): "AUAU3: pre-listagem (hipotese)",
+}
+
+
 # --------------------------------------------------------------------------------------
 # Veiculos liberados para extracao do corpo do artigo
 # --------------------------------------------------------------------------------------

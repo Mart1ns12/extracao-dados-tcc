@@ -188,8 +188,8 @@ o que se perdeu com isso.**
 - **Deduplicação por `url_hash`**, nunca pela URL crua (querystrings de tracking variam).
 - **Alteração de schema é manual:** muda o model em `src/tcc_scraper/db/`, atualiza `sql/schema.mysql.sql` e escreve o ALTER em `sql/alteracoes/AAAA-MM-DD_descricao.mysql.sql`. Quem aplica é o dono, com usuário com DDL, após aprovação. Nada de `CREATE TABLE` solto.
 - **Prefixo `v1-` só nas tabelas criadas pela pipeline nova** (`PREFIXO_TABELA` em `db/models.py`):
-  as que nasceram nas antigas migrations 0004–0007 e nas alterações depois delas (30 tabelas: `painel_*`,
-  fontes/juíza, as 9 de entrega, sendo a 9ª `v1-composicao_ibov`, de 2026-10-23, e as 3 da coleta WordPress,
+  as que nasceram nas antigas migrations 0004–0007 e nas alterações depois delas (31 tabelas: `painel_*`,
+  fontes/juíza, as 10 de entrega, sendo a 9ª `v1-composicao_ibov`, de 2026-10-23, e a 10ª `v1-eventos_acoes`, de 2026-11-02, e as 3 da coleta WordPress,
   de 2026-10-27: `v1-raw_wp_posts`, `v1-staging_historias` e `v1-staging_wp_processamento`). O nome real é `v1-painel_logs`, `v1-raw_ipe_docs`, `v1-noticias` … `v1-indices` (o CSV
   continua com o nome da spec). As 14 antigas mantêm o nome, inclusive `raw_articles`, `raw_prices` e
   `raw_llm_runs`; ficam sem prefixo também `features_dataset_v1`. O hífen exige
@@ -226,7 +226,7 @@ python -m tcc_scraper.cli collect-cadastro     # cadastro das companhias (CVM e 
 python -m tcc_scraper.cli collect-proventos    # proventos (B3)
 python -m tcc_scraper.cli collect-indices      # CDI e IPCA (BCB)
 python -m tcc_scraper.cli judge-news [--limite N] [--backlog [--anos A] [--orcamento-usd X]] [--status] [--concordancia N [--semente S] [--referencia MODELO]]   # juiza de noticias
-python -m tcc_scraper.cli build-entrega [--csv] [--tabela X]    # 9 tabelas da entrega
+python -m tcc_scraper.cli build-entrega [--csv] [--tabela X]    # 10 tabelas da entrega
 python -m tcc_scraper.cli executor             # worker do painel (Railway): comandos, daily das 08:00 BRT, carga historica
 python -m tcc_scraper.cli daily [--etapa ID]   # daily de 9 etapas, sem painel (bloqueante)
 python -m tcc_scraper.cli historico --anos 2025 --anos 2026 [--modo pendentes]  # carga historica (bloqueante)

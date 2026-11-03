@@ -168,3 +168,46 @@ Vocabulários fechados que aparecem na spec: `tipo_documento` ∈ {ITR, DFP};
 `tipo_acao` ∈ {ON, PN, UNIT}; `tipo` (proventos) ∈ {DIVIDENDO, JCP};
 `indice` ∈ {CDI, IPCA, IDIV, SMLL, IFIX}. A spec **não** fixa o delimitador do CSV nem o
 nome dos arquivos além dos listados.
+
+---
+
+## Adendo (2026-11-02)
+
+Acrescentado em 2026-11-02, sem alterar o texto acima. Cobre a quantidade de ações na base atual e os eventos societários que mudam essa quantidade. A implementação está em [05-entrega.md](05-entrega.md), seções 7 e 11.
+
+### A. Colunas novas de `acoes_emitidas.csv`
+
+As colunas `cnpj, data_referencia, qtd_on, qtd_pn` continuam como estão. Entram quatro colunas:
+
+| Coluna | Descrição |
+|---|---|
+| data_entrega | Data em que o documento foi recebido pela CVM (`DT_RECEB`). Mostra quando o dado chegou |
+| qtd_on_base_atual | Ações ON na base atual: a quantidade do documento convertida pelos desdobramentos, bonificações e grupamentos com data-com a partir da data de referência. É a mesma base do fechamento ajustado por eventos e de `valor_por_acao` em `proventos.csv`. Não é point-in-time |
+| qtd_pn_base_atual | Idem, para ações PN |
+| situacao | `ok`, `corrigido_escala`, `corrigido_digito`, `anulado` ou `suspeito`. `ok` é o padrão |
+
+`qtd_on` e `qtd_pn` continuam como a CVM publica, exceto nas linhas corrigidas (`corrigido_escala` e `corrigido_digito`) e nas anuladas (`anulado`, em que ficam em branco).
+
+### B. Dicionário de `eventos_acoes.csv`
+
+Chave: (`ticker`, `data_com`, `tipo`, `isin_emitido`). Vocabulário de `tipo`: DESDOBRAMENTO, BONIFICACAO e GRUPAMENTO.
+
+| Coluna | Chave | Descrição | Exemplo |
+|---|---|---|---|
+| ticker | Sim | Ação afetada | IRBR3 |
+| data_com | Sim | Data-com do evento | 2023-01-24 |
+| tipo | Sim | DESDOBRAMENTO, BONIFICACAO ou GRUPAMENTO | GRUPAMENTO |
+| fator | | Ações depois do evento por ação antes. Desdobramento 1:2 = 2,0; grupamento 30:1 = 0,0333; bonificação de 20% = 1,2 | 0.0333 |
+| isin | | ISIN da ação antes do evento | |
+| isin_emitido | Sim | ISIN da classe que recebe as ações novas. Difere de `isin` quando a bonificação é paga em outra classe (ex.: RENT, 2025-12). Nesse caso, a quantidade da classe de `isin` não muda | |
+| cnpj | | CNPJ da companhia, só números | |
+| data_aprovacao | | Data de aprovação do evento, como vem no suplemento da B3 | |
+
+Sentido do fator: `fator` multiplica a quantidade anterior. Para levar a quantidade de uma data de referência à base atual, multiplica-se pelos fatores dos eventos da classe com data-com maior ou igual à data de referência.
+
+### C. O que fica de fora
+
+- Incorporação (ex.: JBSS em 2025, NATU em 2019).
+- Cisão (CIS RED CAP), resgate (RESG TOTAL RV) e redução ou restituição de capital. O sentido do fator desses eventos não foi verificado.
+- Nenhum deles muda a contagem da própria classe.
+- A troca de código de ação não entra aqui: aparece em `mudancas_ticker`.

@@ -53,8 +53,8 @@ As camadas são **prefixo no nome da tabela**, não schema: no MySQL, "schema" e
 | `painel_` | Estado do executor e da carga, lido pelo painel | `painel_logs` |
 | sem prefixo de camada | Tabelas de entrega, com nomes fixos pela spec | `noticias` (com `v1-`) |
 
-O prefixo `v1-` (`PREFIXO_TABELA` em `db/models.py`) marca as **30 tabelas criadas pela pipeline nova**
-(criadas nas antigas migrations 0004 a 0007 e nas alterações posteriores), por pedido do dono: 8 `painel_*`, 13 de fontes, juíza e coleta WordPress e as 9 de entrega (incluindo `v1-composicao_ibov`).
+O prefixo `v1-` (`PREFIXO_TABELA` em `db/models.py`) marca as **31 tabelas criadas pela pipeline nova**
+(criadas nas antigas migrations 0004 a 0007 e nas alterações posteriores), por pedido do dono: 8 `painel_*`, 13 de fontes, juíza e coleta WordPress e as 10 de entrega (incluindo `v1-composicao_ibov` e `v1-eventos_acoes`).
 As 14 tabelas que já existiam (antigas migrations 0001 a 0003) mantêm o nome original. `features_dataset_v1` também não
 recebe o prefixo.
 
@@ -152,12 +152,15 @@ Entrega (migration 0006). Os nomes e as colunas seguem a spec em `spec-entrega-e
 | `v1-mudancas_ticker` | `ticker_antigo` | 10 |
 | `v1-balancos` | `cnpj`, `tipo_documento`, `data_inicio_periodo`, `data_fim_periodo` | 247 |
 | `v1-acoes_emitidas` | `cnpj`, `data_referencia` | 170 |
+| `v1-eventos_acoes` | `ticker`, `data_com`, `tipo`, `isin_emitido` | - |
 | `v1-proventos` | `ticker`, `tipo`, `data_com` | 8.392 |
 | `v1-indices` | `data`, `indice` | 210 |
 | `v1-composicao_ibov` | `ticker`, `vigencia_inicio` | - |
 | `v1-composicao_ibov` | `ticker`, `vigencia_inicio` | ainda não gravada (a reconstrução local dá 133 linhas) |
 
-As regras de origem de cada coluna das 9 tabelas estão em [Entrega](05-entrega.md).
+`v1-acoes_emitidas` ganhou quatro colunas e `v1-eventos_acoes` foi criada pela alteração de 2026-11-02 (`sql/alteracoes/2026-11-02_acoes_base_atual_eventos.mysql.sql`, aplicada à mão pelo dono).
+
+As regras de origem de cada coluna das 10 tabelas estão em [Entrega](05-entrega.md).
 
 ### 3.3 Regra de atualização
 
