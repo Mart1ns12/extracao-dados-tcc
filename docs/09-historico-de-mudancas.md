@@ -820,7 +820,7 @@ Pendente: a verificação com carga real (ver os riscos da seção 10 de [03](03
 - A B3 não devolve proventos da JBS S.A. depois de 2019 nem os da Natura &Co sob "NATURA &CO": o primeiro vem do Yahoo (item D) e o segundo, de "GRUPO NATURA".
 - `volume_relativo` do JBSS32 tem quebra de regime: o BDR negocia cerca de 1% do volume da JBSS3.
 - SAUD3: salto de escopo sem correção.
-- Fase (b) do `fix-news-times` (hora pela página, ~15.900 páginas): opcional.
+- Fase (b) do `fix-news-times` (hora pela página, ~15.900 páginas): rodada em 2026-11-03 (ver entrada 27).
 - A regra de IFRS 17 casa só a HAPV3. Outras companhias com a mesma conta, se aparecerem, exigem revisão.
 - Os ADRs desta entrada foram gravados em `docs/ADR.md`; o registro no grafo (`manage_adr`) não foi feito.
 
@@ -833,7 +833,12 @@ Pendente: a verificação com carga real (ver os riscos da seção 10 de [03](03
 - **Documentação do host.** A máquina de processamento é o host real do executor. A alternativa Railway (`Dockerfile` e `railway.json`) ficou marcada como não usada, com o aviso de que a imagem exclui `data/`. O procedimento de atualização está em [08](08-operacao-e-deploy.md), seção 4.1. Arquivos: `CLAUDE.md` (seção 6), `docs/02`, `docs/03`, `docs/06`, `docs/07` (seção 12), `docs/08` (seções 2.6, 3.5, 3.6, 4, 5, 5.1, 5.2 e 6.1), `docs/README.md`, `docs/ADR.md` (decisão nova) e o comentário de cabeçalho de `scripts/coleta-completa.sh`.
 - **`build_dataset`, novo coletor.** Monta `features_dataset_v1`, igual à CLI `build-dataset`. Na etapa `entrega` do daily, roda antes das 11 tabelas da entrega; se falhar, a entrega roda mesmo assim e a etapa sai `falhou`. Na carga histórica, roda em cada ano logo depois de `build_entrega`, na trilha principal, com o mesmo portão do ano. É aceito no comando `coletar`.
 - **Painel.** Aceita as tabelas `v1-eventos_acoes` e `v1-emissores_ticker` e o coletor `build_dataset`.
-- **Fase (b) do `fix-news-times`.** Grava em lotes de 200 páginas (commit 9e6894f).
+- **Fase (b) do `fix-news-times`.** Grava em lotes de 200 páginas (commit 9e6894f). Rodada no banco real em 2026-11-03, com 15.896 páginas baixadas e 0 falhas:
+  - 15.318 horas corrigidas e gravadas;
+  - 515 com a hora da página fora da janela, que continuam `date`;
+  - 63 páginas sem hora.
+
+  Em seguida, a `v1-noticias` foi remontada (408.605 linhas).
 
 **Pendências.**
 
