@@ -113,6 +113,8 @@ def intercalar_por_dominio(
 # Hora inteira, nao a string '07:00:00': no MySQL, TIME(x) IN ('07:00:00') compara como
 # numero e nao casava nenhuma linha (131.690 artigos ficaram de fora ate 2026-11-03).
 _HORAS_UTC_MEIA_NOITE_PACIFICA = (7, 8)
+# Paginas por lote gravado na fase (b) do fix-news-times.
+LOTE_HORAS_PAGINA = 200
 
 
 @dataclass
@@ -217,10 +219,35 @@ def corrigir_horas_publicacao(limite: int | None = None, dry_run: bool = False) 
     plano = planejar_correcao_hora(buscar_candidatos_hora())
     alvos = plano.paginas[:limite] if limite is not None else plano.paginas
     corrigidas: list[tuple[int, dt.datetime]] = []
-    sem_hora = fora_da_janela = falhas = 0
+    sem_hora = fora_da_janela = falhas = gravadas_pagina = 0
+
+    def gravar_corrigidas() -> None:
+        # Em lotes, durante o laco: a fase (b) leva horas, e uma queda no fim perderia tudo.
+        nonlocal gravadas_pagina
+        if dry_run:
+            return
+        novas = corrigidas[gravadas_pagina:]
+        _gravar_horas(
+            [{"_id": i, "_hora": h, "_precisao": "datetime", "_origem": "pagina"} for i, h in novas]
+        )
+        gravadas_pagina = len(corrigidas)
+
+    if not dry_run:
+        _gravar_horas(
+            [
+                {"_id": i, "_hora": h, "_precisao": "date", "_origem": None}
+                for i, h in plano.remarcar
+            ]
+        )
 
     with ArticleBodyCollector() as coletor:
-        for article_id, url, publicado_em in alvos:
+        for n, (article_id, url, publicado_em) in enumerate(alvos, start=1):
+            if n % LOTE_HORAS_PAGINA == 0:
+                gravar_corrigidas()
+                logger.info(
+                    "fix-news-times: %d de %d paginas, %d horas corrigidas",
+                    n, len(alvos), len(corrigidas),
+                )
             try:
                 html = coletor.fetch(url).text
             except Exception as exc:
@@ -236,20 +263,7 @@ def corrigir_horas_publicacao(limite: int | None = None, dry_run: bool = False) 
                 fora_da_janela += 1
                 continue
             corrigidas.append((article_id, nova))
-
-    if not dry_run:
-        _gravar_horas(
-            [
-                {"_id": i, "_hora": h, "_precisao": "date", "_origem": None}
-                for i, h in plano.remarcar
-            ]
-        )
-        _gravar_horas(
-            [
-                {"_id": i, "_hora": h, "_precisao": "datetime", "_origem": "pagina"}
-                for i, h in corrigidas
-            ]
-        )
+    gravar_corrigidas()
 
     return {
         "remarcados_para_date": len(plano.remarcar),
