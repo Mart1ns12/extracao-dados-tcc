@@ -558,6 +558,8 @@ class CorrecaoPrecoB3:
     issuing_company: str | None = None
     # Acoes do ticker atual por acao do codigo negociado (ver EmissorPeriodo.fator).
     fator_troca: float = 1.0
+    # Simbolo do Yahoo cujos dividendos completam os proventos da B3 na janela da correcao.
+    proventos_yahoo: str | None = None
 
 
 # Papeis em que o Yahoo emenda ativos diferentes e fica corrompido (medido em 2026-10-26).
@@ -579,6 +581,9 @@ CORRECOES_PRECO_B3: dict[str, CorrecaoPrecoB3] = {
         fim=date(2025, 6, 6),
         issuing_company="JBSS",
         fator_troca=0.5,
+        # A B3 nao devolve os proventos da JBS S.A. depois de 2019 (medido em 2026-11-03).
+        # Os dividendos do Yahoo entram como complemento (data/proventos_yahoo/).
+        proventos_yahoo="JBSS32.SA",
     ),
     "NATU3": CorrecaoPrecoB3(
         codigos=("NTCO3",),
@@ -815,7 +820,8 @@ EMISSORES_POR_PERIODO: dict[str, tuple[EmissorPeriodo, ...]] = {
             cd_cvm=24783,
             cnpj="32785497000197",
             issuing_company="NTCO",
-            nomes_pregao=("NATURA &CO", "NATURA & CO", "NATURA &CO HOLDING"),
+            # "GRUPO NATURA" e o tradingName do suplemento da B3 (medido em 2026-11-03).
+            nomes_pregao=("GRUPO NATURA", "NATURA &CO", "NATURA & CO", "NATURA &CO HOLDING"),
             ticker_negociado="NTCO3",
             inicio=date(2019, 12, 18),
             fim=date(2025, 7, 1),

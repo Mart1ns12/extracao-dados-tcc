@@ -25,6 +25,7 @@ from sqlalchemy import delete, select, tuple_
 
 from tcc_scraper.collectors.b3_base import data_b3, decimal_b3
 from tcc_scraper.collectors.b3_cadastro import classificacao_b3
+from tcc_scraper.collectors.b3_cotahist import carregar_proventos_yahoo
 from tcc_scraper.collectors.cvm_demonstracoes import conta_subreceita_dre
 from tcc_scraper.config import (
     ACOES_CVM_ANULADAS,
@@ -1349,14 +1350,33 @@ def montar_eventos_acoes(raw_b3_suplemento: list[dict], cadastro_b3: list[dict])
     return saida
 
 
+def _fator_ajustes_posteriores(
+    ajustes: list[dict], ic: str, ticker: str, data_com: dt.date, mapa: dict[str, str]
+) -> float:
+    """Produto dos grupamentos/desdobramentos do `ticker` com data depois da data-com."""
+    fator = 1.0
+    for evento in ajustes:
+        if _ticker_do_evento(evento, ic, mapa) != ticker:
+            continue
+        data_evento = data_b3(evento.get("lastDatePrior"))
+        if data_evento is None or data_evento <= data_com:
+            continue
+        fator *= fator_ajuste(evento)
+    return fator
+
+
 def montar_proventos(
     raw_b3_proventos: list[dict],
     raw_b3_suplemento: list[dict],
     cadastro_b3: list[dict],
+    proventos_yahoo: list[dict] | None = None,
 ) -> list[dict]:
     """Proventos por ticker (ON/PN) ajustados por desdobramento, mais as units por composicao.
 
     Colisao na chave (ticker, tipo, data_com): os valores somam (dois JCPs na mesma data-com).
+    proventos_yahoo (carregar_proventos_yahoo): dividendos do Yahoo por acao do negociado,
+    que a B3 nao devolve (JBS S.A. depois de 2019). Entram como DIVIDENDO com a mesma conversao
+    e so onde a chave (ticker, tipo, data_com) ainda nao existe.
     """
     mapa = _mapa_isin(cadastro_b3)
     pagamentos_por_ic: dict[str, list[dict]] = defaultdict(list)
@@ -1391,14 +1411,7 @@ def montar_proventos(
             continue
         ticker_atual, fator_atual = atual
         quoted = decimal_b3(r["quoted_per_shares"]) or Decimal(1)
-        fator = 1.0
-        for evento in ajustes_por_ic.get(ic, []):
-            if _ticker_do_evento(evento, ic, mapa) != ticker:
-                continue
-            data_evento = data_b3(evento.get("lastDatePrior"))
-            if data_evento is None or data_evento <= data_com:
-                continue
-            fator *= fator_ajuste(evento)
+        fator = _fator_ajustes_posteriores(ajustes_por_ic.get(ic, []), ic, ticker, data_com, mapa)
         valor = valor_bruto / float(quoted) * fator
         # Por acao do ticker atual: JBSS3 R$ 1 com fator 0,5 vira JBSS32 R$ 2.
         valor = float(Decimal(str(valor)) / Decimal(str(fator_atual)))
@@ -1436,6 +1449,31 @@ def montar_proventos(
                 "valor_por_acao": float(valor),
                 "data_pagamento": data_b3(evento.get("paymentDate")),
             }
+
+    # Dividendos do Yahoo (JBS S.A. 2020-2025, medidos em 2026-11-03): a mesma conversao do
+    # laco de cima (ajustes posteriores, depois o fator de emissor). Sem data de pagamento.
+    for linha in proventos_yahoo or []:
+        negociado = linha["ticker_negociado"]
+        data_com = linha["data_com"]
+        atual = ticker_atual_do_negociado(negociado, data_com)
+        if atual is None:
+            continue
+        ticker_atual, fator_atual = atual
+        ic = linha["issuing_company"]
+        fator = _fator_ajustes_posteriores(
+            ajustes_por_ic.get(ic, []), ic, negociado, data_com, mapa
+        )
+        valor = float(Decimal(str(linha["valor_por_acao"] * fator)) / Decimal(str(fator_atual)))
+        chave = (ticker_atual, "DIVIDENDO", data_com)
+        if chave in valores:
+            continue
+        valores[chave] = {
+            "ticker": ticker_atual,
+            "tipo": "DIVIDENDO",
+            "data_com": data_com,
+            "valor_por_acao": valor,
+            "data_pagamento": None,
+        }
 
     for unidade, (qtd_on, qtd_pn) in UNITS.items():
         ic = _ic_da_unidade(unidade, cadastro_b3)
@@ -1597,6 +1635,11 @@ class _Fontes:
         )
 
     @cached_property
+    def proventos_yahoo(self) -> list[dict]:
+        """Dividendos do Yahoo de data/proventos_yahoo (gerados por gerar-correcao-precos)."""
+        return carregar_proventos_yahoo()
+
+    @cached_property
     def suplemento(self) -> list[dict]:
         return _consulta(
             select(RawB3Suplemento.issuing_company, RawB3Suplemento.tipo, RawB3Suplemento.payload)
@@ -1636,7 +1679,9 @@ def _montar(tabela: str, f: _Fontes, exigir_juiza: bool, modelos: dict[str, str]
     if tabela == "eventos_acoes":
         return montar_eventos_acoes(f.suplemento, f.b3_cadastro)
     if tabela == "proventos":
-        return montar_proventos(f.proventos, f.suplemento, f.b3_cadastro)
+        return montar_proventos(
+            f.proventos, f.suplemento, f.b3_cadastro, proventos_yahoo=f.proventos_yahoo
+        )
     if tabela == "indices":
         return montar_indices(f.precos_raw, f.macro)
     if tabela == "composicao_ibov":

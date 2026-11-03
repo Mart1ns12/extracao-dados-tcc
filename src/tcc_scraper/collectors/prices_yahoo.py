@@ -90,6 +90,30 @@ def parse_chart(payload: dict, ticker: str) -> list[PriceRow]:
     return rows
 
 
+def parse_dividendos(payload: dict, fuso: dt.tzinfo | None = None) -> list[tuple[dt.date, float]]:
+    """Dividendos do chart API (events=div): (data ex, valor por acao), em ordem de data.
+
+    A data ex sai no fuso da bolsa, como em parse_chart (`fuso` padrao: o do `meta`). O valor
+    e o `amount` do evento, por acao do papel consultado. Sem eventos, devolve lista vazia.
+    """
+    try:
+        result = payload["chart"]["result"][0]
+    except (KeyError, IndexError, TypeError):
+        logger.warning("resposta do Yahoo sem dados de dividendos")
+        return []
+    eventos = (result.get("events") or {}).get("dividends") or {}
+    if fuso is None:
+        fuso = _fuso_pregao(result.get("meta", {}))
+    dividendos: list[tuple[dt.date, float]] = []
+    for chave, evento in eventos.items():
+        ts = evento.get("date", int(chave))
+        valor = evento.get("amount")
+        if valor is None:
+            continue
+        dividendos.append((dt.datetime.fromtimestamp(ts, tz=fuso).date(), float(valor)))
+    return sorted(dividendos)
+
+
 def _fuso_pregao(meta: dict) -> dt.tzinfo:
     """Fuso da bolsa (`exchangeTimezoneName`); UTC se ausente ou desconhecido.
 
@@ -215,6 +239,29 @@ class YahooPriceCollector(Collector):
 
         self._persist(rows)
         return UnitResult(items_found=len(rows))
+
+    def baixar_dividendos(
+        self, simbolo: str, inicio: dt.date, fim: dt.date
+    ) -> list[tuple[dt.date, float]]:
+        """Dividendos (data ex, valor por acao) do Yahoo entre `inicio` e `fim`, inclusive.
+
+        Mesmo chart API de process, so com events=div. Nao grava nada: quem chama decide.
+        """
+        params = {
+            "period1": int(
+                dt.datetime.combine(inicio, dt.time.min, tzinfo=dt.UTC).timestamp()
+            ),
+            # period2 e exclusivo, como em process.
+            "period2": int(
+                dt.datetime.combine(
+                    fim + dt.timedelta(days=1), dt.time.min, tzinfo=dt.UTC
+                ).timestamp()
+            ),
+            "interval": "1d",
+            "events": "div,split",
+        }
+        url = f"{CHART_ENDPOINT}/{urllib.parse.quote(simbolo)}?{urllib.parse.urlencode(params)}"
+        return parse_dividendos(self.fetch(url).json())
 
     def _persist(self, rows: list[PriceRow]) -> None:
         """Upsert por (ticker, date) em lote: recoletar corrige o dado sem duplicar."""

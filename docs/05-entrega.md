@@ -94,6 +94,8 @@ Chave: (`data`, `ticker`). Fonte: `raw_prices`, do Yahoo. Exceção: a AZUL3 de 
 
 O CSV ganha as colunas `fator_troca` e `fator_dividendos`. O `adj_close` da correção é ajustado por proventos em dinheiro da B3 (fator = 1 − provento ÷ fechamento na data-com) e emendado na base do Yahoo pelo primeiro pregão depois da janela.
 
+**Dividendos do Yahoo na correção do JBSS32 (2026-11-03).** A B3 não devolve os proventos da JBS S.A. depois de 2019-04-30, mas a JBS pagou dividendos de 2020 a 2025. A correção usa `proventos_yahoo="JBSS32.SA"`: os eventos de dividendo do Yahoo na janela entram no fator de dividendos, com data-com = pregão anterior à data ex. Os que a B3 já tem na mesma data-com ficam de fora. O resultado vai para `data/proventos_yahoo/JBSS32.csv` (gerado por `gerar-correcao-precos`, sem DDL) e para `v1-proventos`, na seção 8.
+
 | Coluna | Origem | Regra |
 |---|---|---|
 | `data` | `date` | Data do pregão |
@@ -250,6 +252,8 @@ Os fatores se multiplicam. Exemplo de conferência: o desdobramento 1:2 de 2008 
 **Units.** A unit é a soma por composição: `quantidade ON × valor ON + quantidade PN × valor PN`, com as quantidades de `UNITS`. A `data_pagamento` vem do evento da ON na data; se não houver evento de ON nessa data, vem do evento da PN.
 
 **Emissor por período e BDR (2026-11-03).** O `ticker` é sempre o atual. Proventos de JBSS3 saem como `JBSS32`, com `valor_por_acao` ÷ 0,5 (1 BDR = 2 ações); proventos de NTCO3 saem como `NATU3`. O coletor de proventos da B3 ganha as unidades `prov|JBSS|20575` e `prov|NTCO|24783`, para os códigos antigos. Proventos de um BDR que só existe no suplemento da B3 entram. A janela de cada emissor é decidida pela data-com (seção 12).
+
+**Complemento do Yahoo: JBS S.A. 2020 a 2025 (2026-11-03).** Os dividendos do Yahoo de JBSS3 (`data/proventos_yahoo/JBSS32.csv`, ver seção 3) entram como `JBSS32`, `tipo` = `DIVIDENDO`, com a mesma conversão (÷ 0,5) e o mesmo filtro de emissor por data. A `data_pagamento` fica vazia. A B3 vence onde já tem a mesma data-com e o tipo, sem duplicar. O Yahoo não distingue JCP de dividendo, então todo evento entra como `DIVIDENDO`.
 
 **Atualização.** Upsert pela chave.
 

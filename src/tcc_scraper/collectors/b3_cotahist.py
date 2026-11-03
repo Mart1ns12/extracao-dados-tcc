@@ -8,6 +8,10 @@ os proventos em dinheiro (fatores_dividendos) ajustam o adj_close.
 
 O resultado vai para data/correcoes_precos/<TICKER>.csv, versionado. O coletor do Yahoo le
 esses CSVs e troca o trecho errado (aplicar_correcoes, em prices_yahoo.py).
+
+Quando a correcao tem proventos_yahoo, os dividendos do Yahoo entram nos proventos do fator
+(data-com = pregao anterior a data ex) e vao para data/proventos_yahoo/<TICKER>.csv, que o
+builder da entrega le. A B3 vence onde ja tem a mesma data-com.
 """
 
 from __future__ import annotations
@@ -26,8 +30,13 @@ from sqlalchemy import select
 
 from tcc_scraper.collectors.b3_base import USER_AGENT_B3, data_b3, decimal_b3
 from tcc_scraper.collectors.base import Collector, UnitResult, WorkUnit
-from tcc_scraper.collectors.prices_yahoo import PriceRow
-from tcc_scraper.config import CORRECOES_PRECO_B3, PROJECT_ROOT, get_settings
+from tcc_scraper.collectors.prices_yahoo import PriceRow, YahooPriceCollector
+from tcc_scraper.config import (
+    CORRECOES_PRECO_B3,
+    PROJECT_ROOT,
+    CorrecaoPrecoB3,
+    get_settings,
+)
 from tcc_scraper.db.models_fontes import RawB3Proventos, RawB3Suplemento
 from tcc_scraper.db.session import session_scope
 
@@ -37,9 +46,14 @@ COTAHIST_URL = "https://bvmf.bmfbovespa.com.br/InstDados/SerHist/COTAHIST_A{ano}
 BVMF_DOMINIO = "bvmf.bmfbovespa.com.br"
 FONTE = "b3_cotahist"
 PASTA_CORRECOES = PROJECT_ROOT / "data" / "correcoes_precos"
+PASTA_PROVENTOS_YAHOO = PROJECT_ROOT / "data" / "proventos_yahoo"
 COLUNAS_CSV = [
     "ticker", "date", "open", "high", "low", "close", "adj_close", "volume",
     "codneg", "fatcot", "fator_grupamento", "fator_troca", "fator_dividendos",
+]
+COLUNAS_PROVENTOS_YAHOO = [
+    "ticker", "issuing_company", "ticker_negociado", "data_ex", "data_com",
+    "valor_por_acao", "fonte",
 ]
 # Rotulos da B3 (corporateAction, sem acento, em maiusculas) que pagam dinheiro ao acionista.
 TIPOS_PROVENTO_DINHEIRO = frozenset(
@@ -340,11 +354,90 @@ def _gravar_csv(caminho: Path, ajustadas: list[tuple[PriceRow, dict]]) -> None:
             ])
 
 
-def gerar_correcoes(pasta: Path = PASTA_CORRECOES) -> dict[str, object]:
+def _baixar_proventos_yahoo(
+    yahoo: YahooPriceCollector, correcoes: dict[str, CorrecaoPrecoB3]
+) -> dict[str, list[tuple[dt.date, float]]]:
+    """Dividendos do Yahoo por ticker, na janela de cada correcao com proventos_yahoo."""
+    return {
+        ticker: yahoo.baixar_dividendos(correcao.proventos_yahoo, correcao.inicio, correcao.fim)
+        for ticker, correcao in correcoes.items()
+        if correcao.proventos_yahoo
+    }
+
+
+def _proventos_yahoo_da_correcao(
+    ticker: str,
+    correcao: CorrecaoPrecoB3,
+    issuing_company: str,
+    dividendos_ex: Sequence[tuple[dt.date, float]],
+    brutos: list[dict],
+    inicio: dt.date,
+    fim: dt.date,
+    datas_b3: set[dt.date | None],
+) -> list[dict]:
+    """Dividendos do Yahoo com data-com = ultimo pregao anterior a data ex (na COTAHIST).
+
+    Descarta a data-com que a B3 ja tem em `datas_b3` e as que caem fora de [inicio, fim].
+    Cada linha sai no formato do CSV de proventos_yahoo.
+    """
+    pregoes = sorted({r["data"] for r in brutos})
+    linhas: list[dict] = []
+    for data_ex, valor in sorted(dividendos_ex):
+        anteriores = [data for data in pregoes if data < data_ex]
+        if not anteriores:
+            logger.warning("proventos Yahoo de %s: %s sem pregao anterior; pulado", ticker, data_ex)
+            continue
+        data_com = anteriores[-1]
+        if not inicio <= data_com <= fim or data_com in datas_b3:
+            continue
+        linhas.append({
+            "ticker": ticker,
+            "issuing_company": issuing_company,
+            "ticker_negociado": correcao.codigos[0],
+            "data_ex": data_ex,
+            "data_com": data_com,
+            "valor_por_acao": valor,
+            "fonte": "yahoo",
+        })
+    return linhas
+
+
+def _provento_de_yahoo(linha: dict, type_stock: str) -> dict:
+    """Linha de proventos_yahoo no formato de _proventos_do_banco (entra em fatores_dividendos)."""
+    return {
+        "type_stock": type_stock,
+        "corporate_action": "DIVIDENDO",
+        "value_cash": linha["valor_por_acao"],
+        "last_date_prior_ex": linha["data_com"],
+        # String, como em RawB3Proventos.quoted_per_shares (decimal_b3 espera texto).
+        "quoted_per_shares": "1",
+    }
+
+
+def _gravar_proventos_yahoo(caminho: Path, linhas: list[dict]) -> None:
+    caminho.parent.mkdir(parents=True, exist_ok=True)
+    with caminho.open("w", newline="", encoding="utf-8") as arquivo:
+        escritor = csv.writer(arquivo)
+        escritor.writerow(COLUNAS_PROVENTOS_YAHOO)
+        for linha in linhas:
+            escritor.writerow([
+                linha["ticker"], linha["issuing_company"], linha["ticker_negociado"],
+                linha["data_ex"].isoformat(), linha["data_com"].isoformat(),
+                linha["valor_por_acao"], linha["fonte"],
+            ])
+
+
+def gerar_correcoes(
+    pasta: Path = PASTA_CORRECOES,
+    pasta_proventos: Path = PASTA_PROVENTOS_YAHOO,
+    yahoo: YahooPriceCollector | None = None,
+) -> dict[str, object]:
     """Grava um CSV por entrada de CORRECOES_PRECO_B3 em `pasta`.
 
     Baixa cada ano do COTAHIST uma vez, para todas as correcoes, e corta cada serie em
-    max(inicio, price_start). Le grupamentos e proventos do banco. Nao grava no banco.
+    max(inicio, price_start). Le grupamentos e proventos do banco. Correcao com proventos_yahoo
+    ganha os dividendos do Yahoo (gravados em `pasta_proventos`). `yahoo` e injetavel para
+    teste; sem ele, um coletor proprio so e criado se alguma correcao precisar. Nao grava no banco.
     """
     settings = get_settings()
     codigos = {codigo for correcao in CORRECOES_PRECO_B3.values() for codigo in correcao.codigos}
@@ -360,6 +453,16 @@ def gerar_correcoes(pasta: Path = PASTA_CORRECOES) -> dict[str, object]:
                     if registro["codneg"] in correcao.codigos:
                         brutos[ticker].append(registro)
 
+    dividendos_yahoo: dict[str, list[tuple[dt.date, float]]] = {}
+    if any(c.proventos_yahoo for c in CORRECOES_PRECO_B3.values()):
+        proprio = yahoo is None
+        coletor_yahoo = YahooPriceCollector(tickers=[]) if proprio else yahoo
+        try:
+            dividendos_yahoo = _baixar_proventos_yahoo(coletor_yahoo, CORRECOES_PRECO_B3)
+        finally:
+            if proprio:
+                coletor_yahoo.close()
+
     stats: dict[str, object] = {}
     for ticker, correcao in CORRECOES_PRECO_B3.items():
         # Emissor do suplemento: o do config; sem ele, o ticker sem o numero da classe.
@@ -367,15 +470,26 @@ def gerar_correcoes(pasta: Path = PASTA_CORRECOES) -> dict[str, object]:
         inicio = max(correcao.inicio, settings.price_start)
         fim = correcao.fim
         grupamentos = _grupamentos_do_banco(issuing_company, correcao.isin)
+        proventos_banco = _proventos_do_banco(issuing_company)
         # Proventos fora da janela nao mudam nenhuma linha. Os de depois do fim ja estao no
         # Yahoo, que fornece a base de ajuste (aplicar_correcoes): conta-los aqui dobraria.
         proventos = [
-            p for p in _proventos_do_banco(issuing_company)
+            p for p in proventos_banco
             if p["last_date_prior_ex"] is None or inicio <= p["last_date_prior_ex"] <= fim
         ]
-        dividendos = fatores_dividendos(
-            proventos, brutos[ticker], _tipo_acao(correcao.codigos[0])
-        )
+        tipo_acao = _tipo_acao(correcao.codigos[0])
+        if correcao.proventos_yahoo:
+            datas_b3 = {p["last_date_prior_ex"] for p in proventos_banco}
+            yahoo_linhas = _proventos_yahoo_da_correcao(
+                ticker, correcao, issuing_company, dividendos_yahoo.get(ticker, []),
+                brutos[ticker], inicio, fim, datas_b3,
+            )
+            proventos = [
+                *proventos, *(_provento_de_yahoo(linha_y, tipo_acao) for linha_y in yahoo_linhas)
+            ]
+            _gravar_proventos_yahoo(pasta_proventos / f"{ticker}.csv", yahoo_linhas)
+            stats[f"{ticker} proventos yahoo"] = len(yahoo_linhas)
+        dividendos = fatores_dividendos(proventos, brutos[ticker], tipo_acao)
 
         linhas = [r for r in brutos[ticker] if inicio <= r["data"] <= fim]
         ajustadas = _ajustar(
@@ -418,3 +532,28 @@ def carregar_correcoes(pasta: Path = PASTA_CORRECOES) -> dict[str, list[PriceRow
         if linhas:
             correcoes[linhas[0].ticker] = linhas
     return correcoes
+
+
+def carregar_proventos_yahoo(pasta: Path = PASTA_PROVENTOS_YAHOO) -> list[dict]:
+    """Le os CSVs de proventos_yahoo da pasta (dividendos do Yahoo). Pasta ausente devolve vazio.
+
+    Cada dict: ticker (atual), issuing_company, ticker_negociado, data_ex, data_com,
+    valor_por_acao (por acao do ticker negociado) e fonte.
+    """
+    if not pasta.is_dir():
+        logger.warning("proventos Yahoo: pasta %s nao existe", pasta)
+        return []
+    proventos: list[dict] = []
+    for caminho in sorted(pasta.glob("*.csv")):
+        with caminho.open(newline="", encoding="utf-8") as arquivo:
+            for registro in csv.DictReader(arquivo):
+                proventos.append({
+                    "ticker": registro["ticker"],
+                    "issuing_company": registro["issuing_company"],
+                    "ticker_negociado": registro["ticker_negociado"],
+                    "data_ex": dt.date.fromisoformat(registro["data_ex"]),
+                    "data_com": dt.date.fromisoformat(registro["data_com"]),
+                    "valor_por_acao": float(registro["valor_por_acao"]),
+                    "fonte": registro["fonte"],
+                })
+    return proventos
