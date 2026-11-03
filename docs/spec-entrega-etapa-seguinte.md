@@ -211,3 +211,61 @@ Sentido do fator: `fator` multiplica a quantidade anterior. Para levar a quantid
 - Cisão (CIS RED CAP), resgate (RESG TOTAL RV) e redução ou restituição de capital. O sentido do fator desses eventos não foi verificado.
 - Nenhum deles muda a contagem da própria classe.
 - A troca de código de ação não entra aqui: aparece em `mudancas_ticker`.
+
+---
+
+## Adendo (2026-11-03)
+
+Acrescentado em 2026-11-03, sem alterar o texto acima nem o adendo de 2026-11-02. Cobre o emissor por período (troca de código que veio junto com troca de companhia), a situação dos balanços e a hora das notícias do Google News. A implementação está em [05-entrega.md](05-entrega.md), seções 2.3, 6, 7, 8 e 12.
+
+### A. `emissores_ticker.csv` (dicionário)
+
+Chave: (`ticker`, `ordem`). Uma linha por período de emissor de cada ticker. Ticker que nunca trocou de companhia tem uma linha só.
+
+| Coluna | Descrição | Exemplo |
+|---|---|---|
+| ticker | Ticker atual, o mesmo das outras tabelas | JBSS32 |
+| ordem | Número do período dentro do ticker | 1 |
+| ticker_negociado | Código que a B3 negociava naquele período | JBSS3 |
+| cd_cvm | Código CVM do emissor | 20575 |
+| cnpj | CNPJ do emissor, só números | 02916265000160 |
+| empresa | Nome do emissor naquele período | JBS S.A. |
+| vigencia_inicio | Primeiro dia do período (inclusive) | |
+| vigencia_fim | Último dia do período (inclusive). Vazio quer dizer vigente | 2025-06-08 |
+| fator_acoes | Ações do ticker atual por ação do emissor. 1 BDR = 2 ações JBSS3 dá 0,5. Troca 1:1 dá 1 | 0.5 |
+
+Os dois tickers com mais de um emissor:
+
+- JBSS32: JBS S.A. (CVM 20575, negociada como JBSS3 até 2025-06-08, fator 0,5) e JBS N.V. (CVM 80233, desde 2025-06-09).
+- NATU3: Natura Cosméticos (CVM 19550) até 2019-12-17; Natura &Co Holding (CVM 24783, negociada como NTCO3 de 2019-12-18 a 2025-07-01, troca 1:1); Natura Cosméticos de novo desde 2025-07-02.
+
+### B. Regra do emissor por período
+
+- **Data que decide.** Qual emissor vale é decidido pela data de entrega à CVM, não pela data de referência: `data_entrega` (`DT_RECEB`) nos balanços e nas ações, `data_entrega` nos documentos do IPE, e a data-com nos proventos. Pela data de referência, o 2T25 da Natura ficaria sem emissor, porque NTCO3 termina em 2025-07-01 e NATU3 volta em 2025-07-02. A data de entrega é a que já se conhecia na época, então não há vazamento temporal.
+- **Ticker sempre o atual.** Em todas as tabelas, o ticker é o atual (JBSS32 ou NATU3), mesmo quando o documento veio sob o código antigo.
+- **Ações emitidas.** Na base atual (`qtd_on_base_atual`, `qtd_pn_base_atual`), a quantidade do emissor é multiplicada pelo `fator_acoes` do emissor.
+- **Balanços e notícias do IPE.** Só entram no ticker se o emissor valia na data.
+
+### C. Situação em `balancos.csv`
+
+Coluna nova `situacao`:
+
+| Valor | Quando |
+|---|---|
+| ok | Padrão |
+| ajuste_ifrs17 | A receita tem o ajuste de seguros do IFRS 17 (só HAPV3, em 1T25, 2T25, 1T26 e 2T26) |
+| reapresentado | A linha usa o comparativo (PENÚLTIMO) de uma remessa posterior, porque o documento original veio com receita zerada |
+
+Se as duas se aplicam, vale `reapresentado`.
+
+### D. `receita_liquida` com ajuste IFRS 17 (HAPV3)
+
+Para a HAPV3, `receita_liquida` deixa de ser a conta 3.01 publicada. A companhia publica a despesa de seguros dentro da 3.01, numa subconta 3.01.NN negativa; a entrega subtrai essa subconta, ou seja, soma o seu valor absoluto. Exemplo: 1T25 passa de R$ 1,47 bi para R$ 7,80 bi, coerente com o 3T25 (R$ 7,92 bi). Nas outras companhias, `receita_liquida` continua igual à conta 3.01.
+
+### E. Proventos no ticker atual
+
+`proventos.csv` traz sempre o ticker atual. Proventos de JBSS3 saem como JBSS32, com `valor_por_acao` dividido por 0,5. Proventos de NTCO3 saem como NATU3. Proventos de um BDR que só existe no suplemento da B3 entram.
+
+### F. Notícias com data só
+
+Notícia com precisão de data (`published_precision = 'date'`) sai com `data_hora_publicacao` vazia e `momento_pregao` = `desconhecido`. Isso vale também para as notícias do Google News que tinham a hora falsa de 00:00 do Pacífico gravada como hora exata: a correção remarca para data, e o dia não muda.

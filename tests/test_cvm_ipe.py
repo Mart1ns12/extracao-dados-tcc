@@ -19,7 +19,7 @@ from tcc_scraper.collectors.cvm_ipe import (
     parse_ipe,
     tickers_do_cd_cvm,
 )
-from tcc_scraper.config import IPE_CATEGORIAS, TICKER_CODE_CVM, Settings
+from tcc_scraper.config import IPE_CATEGORIAS, TICKER_CODE_CVM, Settings, codigos_cvm_universo
 from tcc_scraper.db.models import Article
 from tcc_scraper.db.models_fontes import RawIpeDoc
 
@@ -103,6 +103,30 @@ def test_tickers_do_cd_cvm_lista_todas_as_classes_da_companhia(monkeypatch) -> N
     assert "PETR3" in tickers
     assert "PETR4" in tickers
     assert tickers == sorted(tickers)
+
+
+def test_parse_ipe_aceita_codigo_de_emissor_explicito_fora_do_ticker_code_cvm() -> None:
+    # Natura &Co Holding (24783): so existe em EMISSORES_POR_PERIODO, nao em TICKER_CODE_CVM.
+    linha = dict(_linhas()[0])
+    linha["Codigo_CVM"] = "24783"
+    linha["Categoria"] = "Fato Relevante"
+    linha["Data_Entrega"] = "2021-03-19"
+
+    docs = parse_ipe([linha], codigos_cvm_universo(), IPE_CATEGORIAS, DESDE_TUDO)
+
+    assert [doc.cd_cvm for doc in docs] == [24783]
+
+
+def test_tickers_do_cd_cvm_com_data_segue_o_emissor_da_epoca() -> None:
+    data = dt.date(2021, 3, 19)
+
+    # NTCO3 (24783) valia em 2021 sob o ticker NATU3; a Natura antiga (19550) ja tinha saido.
+    assert tickers_do_cd_cvm(24783, data) == ["NATU3"]
+    assert tickers_do_cd_cvm(19550, data) == []
+
+
+def test_tickers_do_cd_cvm_sem_data_mantem_o_inverso_do_ticker_code_cvm() -> None:
+    assert tickers_do_cd_cvm(19550) == ["NATU3"]
 
 
 def test_work_units_gera_uma_chave_por_ano(monkeypatch) -> None:

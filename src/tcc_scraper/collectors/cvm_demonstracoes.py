@@ -5,6 +5,10 @@ recebimento de cada documento), DRE, BPA, BPP e DFC (metodo indireto, so o MI) c
 e a composicao do capital. O parser e puro; o coletor baixa o zip, filtra pelo universo e
 grava em lote, append-only.
 
+Ficam no raw as linhas ULTIMO e PENULTIMO. O PENULTIMO e o comparativo do exercicio anterior,
+reapresentado pela companhia; o builder usa so o ULTIMO. Na DRE, as subcontas 3.01.NN entram
+para o ajuste IFRS 17.
+
 Os valores vao como a CVM publica, sem aplicar ESCALA_MOEDA: a escala fica na coluna
 escala_moeda e a conversao e responsabilidade da camada de features.
 """
@@ -29,7 +33,7 @@ from tcc_scraper.collectors.cvm_base import (
 from tcc_scraper.config import (
     CONTAS_CVM,
     CONTAS_CVM_AUXILIARES,
-    TICKER_CODE_CVM,
+    codigos_cvm_universo,
     conta_ajuste_dfc,
 )
 from tcc_scraper.db.models_fontes import RawCvmAcoes, RawCvmBalanco
@@ -82,12 +86,30 @@ def _quantidade(valor: str | None) -> int | None:
     return int(numero) if numero is not None else None
 
 
+def _ordem_sem_acento(ordem: str | None) -> str:
+    """ORDEM_EXERC sem acento e em maiuscula ("ÚLTIMO" vira "ULTIMO"). Vazio se nao houver."""
+    if not ordem:
+        return ""
+    sem_acento = unicodedata.normalize("NFKD", ordem).encode("ascii", "ignore").decode("ascii")
+    return sem_acento.strip().upper()
+
+
 def _ultimo(ordem: str | None) -> bool:
     """ORDEM_EXERC "ÚLTIMO" (ou "ULTIMO" sem acento): exercicio mais recente, nao o penultimo."""
-    if not ordem:
-        return False
-    sem_acento = unicodedata.normalize("NFKD", ordem).encode("ascii", "ignore").decode("ascii")
-    return sem_acento.strip().upper() == "ULTIMO"
+    return _ordem_sem_acento(ordem) == "ULTIMO"
+
+
+def _exercicio_aceito(ordem: str | None) -> bool:
+    """ÚLTIMO ou PENÚLTIMO. O PENÚLTIMO e o comparativo do exercicio anterior, reapresentado."""
+    return _ordem_sem_acento(ordem) in ("ULTIMO", "PENULTIMO")
+
+
+def conta_subreceita_dre(cd_conta: str) -> bool:
+    """True para 3.01.NN (3 niveis): subcontas da receita.
+
+    O builder procura nelas a despesa de seguros (IFRS 17).
+    """
+    return cd_conta.startswith("3.01.") and cd_conta.count(".") == 2
 
 
 def _balanco(
@@ -134,7 +156,9 @@ def parse_demonstracoes(
 
     csvs usa as chaves CHAVE_PRINCIPAL, CHAVE_DRE, CHAVE_BPA, CHAVE_BPP, CHAVE_DFC e
     CHAVE_COMPOSICAO (chave ausente conta como lista vazia). So entram companhias de
-    cd_cvm_universo. Linha repetida na mesma chave primaria: vale a ultima.
+    cd_cvm_universo. Entram ORDEM_EXERC ULTIMO e PENULTIMO (o PENULTIMO e o comparativo
+    reapresentado). Linha repetida na mesma chave primaria: vale a ultima, exceto que um
+    PENULTIMO nao sobrescreve um ULTIMO. Na DRE, as subcontas 3.01.NN tambem entram (IFRS 17).
     """
     cnpj_para_cd: dict[str, int] = {}
     recebimento: dict[tuple[str, dt.date | None, int | None], dt.date | None] = {}
@@ -148,7 +172,7 @@ def parse_demonstracoes(
 
     balancos: dict[tuple, dict] = {}
     for chave, demonstracao, aceita in (
-        (CHAVE_DRE, "DRE", lambda cd: cd in CONTAS_CVM["DRE"]),
+        (CHAVE_DRE, "DRE", lambda cd: cd in CONTAS_CVM["DRE"] or conta_subreceita_dre(cd)),
         (CHAVE_BPA, "BPA", lambda cd: cd in CONTAS_CVM["BPA"]),
         (
             CHAVE_BPP, "BPP",
@@ -157,11 +181,17 @@ def parse_demonstracoes(
         (CHAVE_DFC, "DFC", conta_ajuste_dfc),
     ):
         for r in csvs.get(chave, []):
-            if not _ultimo(r.get("ORDEM_EXERC")) or not aceita(r.get("CD_CONTA") or ""):
+            if not _exercicio_aceito(r.get("ORDEM_EXERC")) or not aceita(r.get("CD_CONTA") or ""):
                 continue
             linha = _balanco(r, tipo, demonstracao, cd_cvm_universo, recebimento)
-            if linha is not None:
-                balancos[tuple(linha[c] for c in _PK_BALANCO)] = linha
+            if linha is None:
+                continue
+            k = tuple(linha[c] for c in _PK_BALANCO)
+            anterior = balancos.get(k)
+            # PENULTIMO nao sobrescreve ULTIMO na mesma chave primaria.
+            if anterior and _ultimo(anterior["ordem_exerc"]) and not _ultimo(linha["ordem_exerc"]):
+                continue
+            balancos[k] = linha
 
     acoes: dict[tuple, dict] = {}
     for r in csvs.get(CHAVE_COMPOSICAO, []):
@@ -220,7 +250,7 @@ class CvmDemonstracoesCollector(CvmCollector):
     def process(self, unit: WorkUnit) -> UnitResult:
         tipo, ano, url = unit.payload["tipo"], unit.payload["ano"], unit.payload["url"]
         principal = f"{tipo.lower()}_cia_aberta_{ano}.csv"
-        universo = set(TICKER_CODE_CVM.values())
+        universo = codigos_cvm_universo()
         brutos = ler_csvs_do_zip(
             self.baixar_zip(url),
             (principal, _SUFIXO_DRE, _SUFIXO_BPA, _SUFIXO_BPP, _SUFIXO_DFC_MI, _SUFIXO_COMPOSICAO),

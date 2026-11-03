@@ -25,6 +25,7 @@ from sqlalchemy import delete, select, tuple_
 
 from tcc_scraper.collectors.b3_base import data_b3, decimal_b3
 from tcc_scraper.collectors.b3_cadastro import classificacao_b3
+from tcc_scraper.collectors.cvm_demonstracoes import conta_subreceita_dre
 from tcc_scraper.config import (
     ACOES_CVM_ANULADAS,
     BENCHMARK_TICKER,
@@ -36,8 +37,14 @@ from tcc_scraper.config import (
     NOMES_EMPRESA,
     TICKER_CODE_CVM,
     UNITS,
+    cnpj_do_ticker_em,
     conta_ajuste_dfc,
+    emissor_vale,
+    emissores_do_ticker,
+    fator_emissor,
     get_settings,
+    ticker_atual_do_negociado,
+    tickers_do_emissor,
     universo_coleta,
 )
 from tcc_scraper.db.models import Article, ArticleSentiment, ArticleTicker, Macro, Price
@@ -47,6 +54,7 @@ from tcc_scraper.db.models_entrega import (
     Balanco,
     Cadastro,
     ComposicaoIbov,
+    EmissorTicker,
     EventoAcao,
     Indice,
     MudancaTicker,
@@ -61,6 +69,7 @@ from tcc_scraper.db.models_fontes import (
     RawCvmAcoes,
     RawCvmBalanco,
     RawCvmCadastro,
+    RawIpeDoc,
     StagingHistoria,
     StagingNoticiaJulgamento,
 )
@@ -133,7 +142,11 @@ CHAVES: dict[str, list[str]] = {
     "proventos": ["ticker", "tipo", "data_com"],
     "indices": ["data", "indice"],
     "composicao_ibov": ["ticker", "vigencia_inicio"],
+    "emissores_ticker": ["ticker", "ordem"],
 }
+# Tabelas que a montagem produz por inteiro (sem janela de datas): o que deixa de sair e apagado
+# depois do upsert (ver `_apagar_obsoletas`). Tabela montada por janela nao entra aqui.
+TABELAS_COMPLETAS = {"balancos", "acoes_emitidas", "proventos", "emissores_ticker"}
 MODELOS = {
     "noticias": Noticia,
     "precos": Preco,
@@ -145,6 +158,7 @@ MODELOS = {
     "proventos": Provento,
     "indices": Indice,
     "composicao_ibov": ComposicaoIbov,
+    "emissores_ticker": EmissorTicker,
 }
 
 
@@ -202,6 +216,20 @@ def _julgamento(linha: dict) -> Julgamento:
 
 # -- noticias -------------------------------------------------------------------------------
 
+def _ipe_fora_do_emissor(artigo: dict, ticker: str, ipe_por_link: dict | None) -> bool:
+    """Se o documento IPE do artigo nao e do `ticker` na data de entrega (tickers_do_emissor).
+
+    Sem o dict, ou sem o documento, devolve False: o par segue como esta.
+    """
+    if not ipe_por_link:
+        return False
+    documento = ipe_por_link.get(artigo["resolved_url"] or artigo["url"])
+    if documento is None:
+        return False
+    cd_cvm, data_entrega = documento
+    return ticker not in tickers_do_emissor(cd_cvm, data_entrega)
+
+
 def montar_noticias(
     artigos: list[dict],
     vinculos: list[dict],
@@ -210,12 +238,16 @@ def montar_noticias(
     pregoes: set[dt.date],
     exigir_juiza: bool,
     modelo_por_lang: dict[str, str],
+    ipe_por_link: dict | None = None,
 ) -> list[dict]:
     """Uma linha por (artigo, ticker) aprovada para entrega.
 
     Ticker do par: staging_article_tickers e tickers_adicionais da juiza. Cada par leva o
     julgamento do proprio ticker (versao de prompt mais alta); tickers adicionais herdam o
     julgamento do ticker principal do artigo.
+
+    `ipe_por_link` (link -> (cd_cvm, data_entrega), ver `_Fontes.ipe_docs`) tira do IPE o par
+    cujo ticker nao era o emissor do documento na data de entrega.
     """
     por_id = {a["id"]: a for a in artigos}
 
@@ -246,6 +278,8 @@ def montar_noticias(
             continue
         origem = artigo["origem"]
         if not aprovado_para_entrega(julgamento, origem, exigir_juiza):
+            continue
+        if origem == "cvm_ipe" and _ipe_fora_do_emissor(artigo, ticker, ipe_por_link):
             continue
         publicado = artigo["published_at"]
         com_hora = artigo["published_precision"] == "datetime"
@@ -398,6 +432,40 @@ def montar_cadastro(
     return linhas
 
 
+def montar_emissores(
+    cadastro_b3: list[dict], cadastro_cvm: list[dict], universo: Iterable[str]
+) -> list[dict]:
+    """Uma linha por periodo de emissor de cada ticker do universo (`emissores_do_ticker`).
+
+    `ordem` numera os periodos do ticker a partir de 1. CNPJ: o do periodo; sem ele (ticker sem
+    periodo explicito), o do cadastro B3 e, por fim, o da CVM, sempre pelo codigo CVM. Empresa:
+    denominacao da CVM, nome de pregao da B3 ou NOMES_EMPRESA.
+    """
+    b3_por_cd = {r["cd_cvm"]: r for r in cadastro_b3}
+    cvm_por_cd = {r["cd_cvm"]: r for r in cadastro_cvm}
+    linhas: list[dict] = []
+    for ticker in sorted(set(universo)):
+        for ordem, periodo in enumerate(emissores_do_ticker(ticker), start=1):
+            b = b3_por_cd.get(periodo.cd_cvm, {})
+            c = cvm_por_cd.get(periodo.cd_cvm, {})
+            linhas.append({
+                "ticker": ticker,
+                "ordem": ordem,
+                "ticker_negociado": periodo.ticker_negociado,
+                "cd_cvm": periodo.cd_cvm,
+                "cnpj": periodo.cnpj or b.get("cnpj") or c.get("cnpj"),
+                "empresa": (
+                    c.get("denom_social")
+                    or b.get("trading_name")
+                    or NOMES_EMPRESA.get(ticker)
+                ),
+                "vigencia_inicio": periodo.inicio,
+                "vigencia_fim": periodo.fim,
+                "fator_acoes": periodo.fator,
+            })
+    return linhas
+
+
 def montar_mudancas() -> list[dict]:
     return [
         {"ticker_antigo": antigo, "ticker_novo": novo, "data_mudanca": data}
@@ -486,6 +554,49 @@ def _soma_das_contas(linhas: list[dict], demonstracao: str, coluna: str) -> floa
         linha["valor"] for linha in linhas
         if linha["cd_conta"] in codigos and _aceita_conta(coluna, linha["ds_conta"])
     ])
+
+
+def _e_despesa_de_seguro(ds_conta: str | None) -> bool:
+    ds = _norm(ds_conta)
+    return ds.startswith("despesa") and "seguro" in ds
+
+
+def _despesa_de_seguro_na_receita(linhas: list[dict]) -> float | None:
+    """Despesa de seguros (IFRS 17) que a HAPV3 publica dentro da 3.01: subcontas 3.01.NN
+    negativas com descricao de despesa de seguro. Outras subcontas negativas nao contam."""
+    return _soma([
+        linha["valor"] for linha in linhas
+        if conta_subreceita_dre(linha["cd_conta"]) and linha["valor"] < 0
+        and _e_despesa_de_seguro(linha["ds_conta"])
+    ])
+
+
+def _receita_liquida(linhas: list[dict]) -> float | None:
+    """Receita da 3.01 menos a despesa de seguros que vem dentro dela (IFRS 17)."""
+    base = _valor_da_conta(linhas, "DRE", "receita_liquida")
+    despesa = _despesa_de_seguro_na_receita(linhas)
+    if base is None or despesa is None:
+        return base
+    return float(Decimal(str(base)) - Decimal(str(despesa)))
+
+
+def _colunas_dre(grupo: list[dict]) -> dict[str, float | None]:
+    return {
+        "receita_liquida": _receita_liquida(grupo),
+        "lucro_bruto": _valor_da_conta(grupo, "DRE", "lucro_bruto"),
+        "lucro_liquido": _valor_da_conta(grupo, "DRE", "lucro_liquido"),
+        "ebit": _valor_da_conta(grupo, "DRE", "ebit"),
+    }
+
+
+@dataclass(frozen=True)
+class _Comparativo:
+    """Periodo que uma remessa posterior traz como PENULTIMO (reapresentacao)."""
+
+    dt_receb: dt.date | None
+    refer: dt.date
+    dre: list[dict]
+    dfc: list[dict]
 
 
 # Conta-pai e arrendamento (.03) de cada prazo: usados quando as subcontas vem zeradas.
@@ -613,12 +724,20 @@ def _corrigir_escala_balancos(balancos: list[dict]) -> list[dict]:
 def montar_balancos(balancos: list[dict]) -> list[dict]:
     """Uma linha por (cnpj, tipo, inicio, fim) da DRE. PL, caixa, aplicacoes e emprestimos
     do mesmo dt_refer valem para todas as linhas do documento; a D&A segue o periodo.
-    Bancos e seguradoras (CD_CVM_BANCOS_SEGURADORAS) saem em branco nas colunas da spec."""
+    Bancos e seguradoras (CD_CVM_BANCOS_SEGURADORAS) saem em branco nas colunas da spec.
+    Linha de emissor que ainda nao valia na data de entrega (EMISSORES_POR_PERIODO) sai antes
+    de tudo, inclusive dos comparativos (PENULTIMO), que tem o proprio dt_receb."""
+    balancos = [
+        r for r in balancos
+        if emissor_vale(r.get("cd_cvm"), r.get("dt_receb") or r["dt_refer"])
+    ]
     balancos = _corrigir_escala_balancos(balancos)
-    validos = [dict(r, valor=_valor_escalado(r)) for r in balancos if _ultimo(r["ordem_exerc"])]
+    todas = [dict(r, valor=_valor_escalado(r)) for r in balancos]
+    validos = [r for r in todas if _ultimo(r["ordem_exerc"])]
 
+    # A maior versao vale para o documento inteiro, PENULTIMO incluido.
     maior: dict[tuple, int] = {}
-    for r in validos:
+    for r in todas:
         chave = (r["cnpj"], r["tipo_documento"], r["dt_refer"])
         maior[chave] = max(maior.get(chave, r["versao"]), r["versao"])
 
@@ -628,10 +747,64 @@ def montar_balancos(balancos: list[dict]) -> list[dict]:
         if r["versao"] == maior[chave]:
             por_documento[chave].append(r)
 
+    # Periodos que cada remessa traz como comparativo (PENULTIMO da maior versao).
+    comparativos_doc: dict[tuple, list[dict]] = defaultdict(list)
+    for r in todas:
+        chave = (r["cnpj"], r["tipo_documento"], r["dt_refer"])
+        if not _ultimo(r["ordem_exerc"]) and r["versao"] == maior[chave]:
+            comparativos_doc[chave].append(r)
+    comparativos: dict[tuple, list[_Comparativo]] = defaultdict(list)
+    for (cnpj, tipo, refer), itens in comparativos_doc.items():
+        dre_doc: dict[tuple, list[dict]] = defaultdict(list)
+        dfc_doc: dict[tuple, list[dict]] = defaultdict(list)
+        for r in itens:
+            periodo = (r["dt_ini_exerc"], r["dt_fim_exerc"])
+            if r["demonstracao"] == "DRE":
+                dre_doc[periodo].append(r)
+            elif r["demonstracao"] == "DFC":
+                dfc_doc[periodo].append(r)
+        for (inicio, fim), dre in dre_doc.items():
+            comparativos[(cnpj, tipo, inicio, fim)].append(
+                _Comparativo(dre[0]["dt_receb"], refer, dre, dfc_doc.get((inicio, fim), []))
+            )
+
+    # Reapresentacao (JBS, 1T25): o ULTIMO traz receita zero ou ausente e uma remessa
+    # posterior traz o mesmo periodo como PENULTIMO com receita. Vale a de menor dt_receb
+    # posterior. O documento original vira invalido: sem PL, BP nem D&A.
+    substituicoes: dict[tuple, _Comparativo] = {}
+    invalidos: set[tuple] = set()
+    for (cnpj, tipo, refer), itens in por_documento.items():
+        grupos_doc: dict[tuple, list[dict]] = defaultdict(list)
+        for r in itens:
+            if r["demonstracao"] == "DRE":
+                grupos_doc[(r["dt_ini_exerc"], r["dt_fim_exerc"])].append(r)
+        for (inicio, fim), grupo in grupos_doc.items():
+            if _receita_liquida(grupo) not in (None, 0.0):
+                continue
+            original = grupo[0]["dt_receb"]
+            candidatos = [
+                c for c in comparativos.get((cnpj, tipo, inicio, fim), [])
+                if c.dt_receb is not None
+                and (original is None or c.dt_receb > original)
+                and _receita_liquida(c.dre) not in (None, 0.0)
+            ]
+            if not candidatos:
+                continue
+            escolhido = min(candidatos, key=lambda c: (c.dt_receb, c.refer))
+            substituicoes[(cnpj, tipo, refer, inicio, fim)] = escolhido
+            invalidos.add((cnpj, tipo, refer))
+            logger.warning(
+                "entrega: balancos: receita zerada (cnpj %s, %s, dt_refer %s, %s..%s); "
+                "usada a remessa de %s (dt_refer %s)",
+                cnpj, tipo, refer, inicio, fim, escolhido.dt_receb, escolhido.refer,
+            )
+
     # D&A acumulada no ano por (cnpj, inicio, fim), de cada documento. Serve para derivar
     # o trimestre do ITR: a CVM so publica a DFC acumulada (D5).
     da_acumulada: dict[tuple, float | None] = {}
     for (cnpj, _tipo, refer), itens in por_documento.items():
+        if (cnpj, _tipo, refer) in invalidos:
+            continue
         dfc_doc: dict[tuple, list[dict]] = defaultdict(list)
         for r in itens:
             if r["demonstracao"] == "DFC":
@@ -644,6 +817,7 @@ def montar_balancos(balancos: list[dict]) -> list[dict]:
 
     saida: dict[tuple, dict] = {}
     for (cnpj, tipo, refer), itens in por_documento.items():
+        invalido = (cnpj, tipo, refer) in invalidos
         dre = [r for r in itens if r["demonstracao"] == "DRE"]
         bpa = [r for r in itens if r["demonstracao"] == "BPA" and r["dt_fim_exerc"] == refer]
         bpp = [r for r in itens if r["demonstracao"] == "BPP" and r["dt_fim_exerc"] == refer]
@@ -657,25 +831,45 @@ def montar_balancos(balancos: list[dict]) -> list[dict]:
             "caixa": _valor_da_conta(bpa, "BPA", "caixa"),
             "aplicacoes_financeiras": _valor_da_conta(bpa, "BPA", "aplicacoes_financeiras"),
         }
+        if invalido:
+            # Documento substituido por reapresentacao: o BP dele nao vale para o periodo.
+            patrimonio = None
+            posicoes = dict.fromkeys(posicoes)
         grupos: dict[tuple, list[dict]] = defaultdict(list)
         for r in dre:
             grupos[(r["dt_ini_exerc"], r["dt_fim_exerc"])].append(r)
         for (inicio, fim), grupo in grupos.items():
+            substituta = substituicoes.get((cnpj, tipo, refer, inicio, fim))
+            if substituta is None:
+                colunas = _colunas_dre(grupo)
+                data_entrega = grupo[0]["dt_receb"]
+                depreciacao = _da_do_periodo(da_acumulada, cnpj, inicio, fim, inicios_dfc)
+            else:
+                colunas = _colunas_dre(substituta.dre)
+                data_entrega = substituta.dt_receb
+                depreciacao = (
+                    _depreciacao_amortizacao(substituta.dfc) if substituta.dfc else None
+                )
+            if substituta is not None:
+                situacao = "reapresentado"
+            elif _despesa_de_seguro_na_receita(grupo) not in (None, 0.0):
+                situacao = "ajuste_ifrs17"
+            else:
+                situacao = "ok"
             linha = {
                 "cnpj": cnpj,
                 "tipo_documento": tipo,
                 "data_inicio_periodo": inicio,
                 "data_fim_periodo": fim,
-                "data_entrega": grupo[0]["dt_receb"],
-                "receita_liquida": _valor_da_conta(grupo, "DRE", "receita_liquida"),
-                "lucro_bruto": _valor_da_conta(grupo, "DRE", "lucro_bruto"),
-                "lucro_liquido": _valor_da_conta(grupo, "DRE", "lucro_liquido"),
+                "data_entrega": data_entrega,
+                "receita_liquida": colunas["receita_liquida"],
+                "lucro_bruto": colunas["lucro_bruto"],
+                "lucro_liquido": colunas["lucro_liquido"],
                 "patrimonio_liquido": patrimonio,
-                "ebit": _valor_da_conta(grupo, "DRE", "ebit"),
-                "depreciacao_amortizacao": _da_do_periodo(
-                    da_acumulada, cnpj, inicio, fim, inicios_dfc
-                ),
+                "ebit": colunas["ebit"],
+                "depreciacao_amortizacao": depreciacao,
                 **posicoes,
+                "situacao": situacao,
             }
             if financeira:
                 for coluna in COLUNAS_SEM_FINANCEIRAS:
@@ -693,7 +887,8 @@ def volumes_por_cnpj(
     for r in precos_raw:
         simbolo = r["ticker"]
         ticker = simbolo[:-3] if simbolo.endswith(".SA") else simbolo
-        cnpj = cnpj_por_ticker.get(ticker)
+        # Ticker que trocou de emissor (NATU3 ate 2025-07-01 era a holding): o CNPJ e o da data.
+        cnpj = cnpj_do_ticker_em(ticker, r["date"]) or cnpj_por_ticker.get(ticker)
         volume = _volume(r["volume"])
         if cnpj is None or volume is None:
             continue
@@ -959,6 +1154,8 @@ def montar_acoes_emitidas(
     """
     melhor: dict[tuple, tuple[tuple, dict]] = {}
     for r in raw_cvm_acoes:
+        if not emissor_vale(r.get("cd_cvm"), r.get("dt_receb") or r["dt_refer"]):
+            continue
         chave = (r["cnpj"], r["dt_refer"])
         ranking = (r["tipo_documento"] == "DFP", r["versao"])
         if chave not in melhor or ranking > melhor[chave][0]:
@@ -980,6 +1177,12 @@ def montar_acoes_emitidas(
         _corrigir_digito(serie)
         _alertar_isolados(cnpj, serie)
         _base_atual(serie, None if eventos is None else eventos_por_cnpj.get(cnpj, []))
+        # Acoes recebidas por acao do ticker atual (JBSS3 -> JBSS32 = 0,5): so a base muda.
+        for r in serie:
+            fator = fator_emissor(r.get("cd_cvm"), r.get("dt_receb") or r["dt_refer"])
+            for base in ("base_on", "base_pn"):
+                if r[base] is not None:
+                    r[base] = round(r[base] * fator)
     escolhidas = [r for serie in por_cnpj.values() for r in serie]
     return [
         {
@@ -1183,6 +1386,10 @@ def montar_proventos(
         if data_com is None or valor_bruto is None:
             continue
         ticker = ic + sufixo
+        atual = ticker_atual_do_negociado(ticker, data_com)
+        if atual is None:
+            continue
+        ticker_atual, fator_atual = atual
         quoted = decimal_b3(r["quoted_per_shares"]) or Decimal(1)
         fator = 1.0
         for evento in ajustes_por_ic.get(ic, []):
@@ -1193,20 +1400,41 @@ def montar_proventos(
                 continue
             fator *= fator_ajuste(evento)
         valor = valor_bruto / float(quoted) * fator
+        # Por acao do ticker atual: JBSS3 R$ 1 com fator 0,5 vira JBSS32 R$ 2.
+        valor = float(Decimal(str(valor)) / Decimal(str(fator_atual)))
         pagamento = _data_pagamento(
             pagamentos_por_ic.get(ic, []), ticker, ic, rotulo, data_com, valor_bruto, mapa
         )
-        chave = (ticker, tipo, data_com)
+        chave = (ticker_atual, tipo, data_com)
         if chave in valores:
             valores[chave]["valor_por_acao"] += valor
             valores[chave]["data_pagamento"] = valores[chave]["data_pagamento"] or pagamento
         else:
             valores[chave] = {
-                "ticker": ticker,
+                "ticker": ticker_atual,
                 "tipo": tipo,
                 "data_com": data_com,
                 "valor_por_acao": valor,
                 "data_pagamento": pagamento,
+            }
+
+    # BDR (ex.: JBSS32) so tem provento no suplemento da B3: entra se a chave ainda nao existe.
+    for ic, eventos in pagamentos_por_ic.items():
+        for evento in eventos:
+            tipo = MAPA_TIPO.get((evento.get("label") or "").strip().upper())
+            ticker = _ticker_do_evento(evento, ic, mapa)
+            if tipo is None or ticker is None or _tipo_acao(ticker) != "BDR":
+                continue
+            data_com = data_b3(evento.get("lastDatePrior"))
+            valor = decimal_b3(evento.get("rate"))
+            if data_com is None or valor is None or (ticker, tipo, data_com) in valores:
+                continue
+            valores[(ticker, tipo, data_com)] = {
+                "ticker": ticker,
+                "tipo": tipo,
+                "data_com": data_com,
+                "valor_por_acao": float(valor),
+                "data_pagamento": data_b3(evento.get("paymentDate")),
             }
 
     for unidade, (qtd_on, qtd_pn) in UNITS.items():
@@ -1329,6 +1557,14 @@ class _Fontes:
         )
 
     @cached_property
+    def ipe_docs(self) -> dict[str, tuple[int, dt.date]]:
+        """Link do documento IPE -> (cd_cvm, data_entrega). Chave igual a resolved_url do artigo."""
+        linhas = _consulta(
+            select(RawIpeDoc.link_download, RawIpeDoc.cd_cvm, RawIpeDoc.data_entrega)
+        )
+        return {r["link_download"]: (r["cd_cvm"], r["data_entrega"]) for r in linhas}
+
+    @cached_property
     def balancos(self) -> list[dict]:
         return _consulta(
             select(
@@ -1346,6 +1582,7 @@ class _Fontes:
             select(
                 RawCvmAcoes.cnpj, RawCvmAcoes.tipo_documento, RawCvmAcoes.dt_refer,
                 RawCvmAcoes.versao, RawCvmAcoes.qt_on, RawCvmAcoes.qt_pn, RawCvmAcoes.dt_receb,
+                RawCvmAcoes.cd_cvm,
             )
         )
 
@@ -1378,7 +1615,8 @@ class _Fontes:
 def _montar(tabela: str, f: _Fontes, exigir_juiza: bool, modelos: dict[str, str]) -> list[dict]:
     if tabela == "noticias":
         return montar_noticias(
-            f.artigos, f.vinculos, f.sentimentos, f.julgamentos, f.pregoes, exigir_juiza, modelos
+            f.artigos, f.vinculos, f.sentimentos, f.julgamentos, f.pregoes, exigir_juiza, modelos,
+            ipe_por_link=f.ipe_docs,
         )
     if tabela == "precos":
         return montar_precos(f.precos_raw)
@@ -1403,6 +1641,8 @@ def _montar(tabela: str, f: _Fontes, exigir_juiza: bool, modelos: dict[str, str]
         return montar_indices(f.precos_raw, f.macro)
     if tabela == "composicao_ibov":
         return montar_composicao(f.composicao_fechamentos)
+    if tabela == "emissores_ticker":
+        return montar_emissores(f.b3_cadastro, f.cvm_cadastro, universo_coleta())
     raise ValueError(f"tabela de entrega desconhecida: {tabela!r}")
 
 
@@ -1421,16 +1661,32 @@ class _Poda:
     janela: set[int]  # artigos lidos (published_at >= inicio_noticias)
     julgados: set[int]  # artigos com julgamento na versao vigente do prompt da juiza
     exigir_juiza: bool  # entrega_filtro_juiza
+    ipe: set[int]  # artigos de origem cvm_ipe da janela
+
+
+def _ids_a_apagar(poda: _Poda, com_aprovada: set[str]) -> set[str]:
+    """Codigos de noticia que saem de `noticias` por inteiro, com todas as linhas.
+
+    Artigo IPE sem nenhum par aprovado sai sempre: o IPE entra sem julgamento, entao so fica
+    sem par quando o ticker deixou de ser o emissor do documento (`montar_noticias`). Com a
+    juiza exigida, tambem sai o artigo julgado sem par aprovado. Artigo sem julgamento que nao
+    e do IPE nao sai por id.
+    """
+    apagar = {id_noticia(a) for a in poda.ipe}
+    if poda.exigir_juiza:
+        apagar |= {id_noticia(a) for a in poda.janela & poda.julgados}
+    return apagar - com_aprovada
 
 
 def _apagar_reprovadas(linhas: list[dict], poda: _Poda) -> None:
-    """Tira de `noticias` o que a juiza reprovou (desenho 5.1). So mexe em artigo julgado.
+    """Tira de `noticias` o que a juiza reprovou (desenho 5.1) e o que o emissor nao cobre.
 
     O upsert so grava: uma linha entregue antes de ligar o filtro, ou um artigo rejulgado como
-    panorama, ficaria para sempre. Com o filtro ligado, artigo julgado sem nenhuma linha
-    aprovada sai por id, e o par (id, ticker) que nao esta entre as aprovadas sai por chave
-    composta (ticker que deixou de valer). Com o filtro desligado, so saem os pares obsoletos.
-    Artigo sem julgamento fica como esta: nem entra com o filtro ligado, nem sai o ja entregue.
+    panorama, ficaria para sempre. Saem por id os artigos de `_ids_a_apagar`. Entre os que
+    ainda tem par aprovado, sai por chave composta o par (id, ticker) que nao esta entre as
+    aprovadas (ticker que deixou de valer), para artigo julgado ou do IPE. Com o filtro
+    desligado, artigo julgado nao sai por id. Artigo sem julgamento fica como esta: nem entra
+    com o filtro ligado, nem sai o ja entregue.
     """
     sem_julgamento = poda.janela - poda.julgados
     if poda.exigir_juiza and sem_julgamento:
@@ -1440,12 +1696,11 @@ def _apagar_reprovadas(linhas: list[dict], poda: _Poda) -> None:
         )
     aprovadas = {(r["id"], r["ticker"]) for r in linhas}
     com_aprovada = {id_ for id_, _ in aprovadas}
-    julgados = {id_noticia(a) for a in poda.janela & poda.julgados}
+    com_par = {id_noticia(a) for a in poda.janela & (poda.julgados | poda.ipe)} & com_aprovada
     with session_scope() as session:
-        if poda.exigir_juiza:
-            for lote in _em_lotes(sorted(julgados - com_aprovada)):
-                session.execute(delete(Noticia.__table__).where(Noticia.id.in_(lote)))
-        for lote in _em_lotes(sorted(julgados & com_aprovada)):
+        for lote in _em_lotes(sorted(_ids_a_apagar(poda, com_aprovada))):
+            session.execute(delete(Noticia.__table__).where(Noticia.id.in_(lote)))
+        for lote in _em_lotes(sorted(com_par)):
             existentes = session.execute(
                 select(Noticia.id, Noticia.ticker).where(Noticia.id.in_(lote))
             ).all()
@@ -1457,10 +1712,38 @@ def _apagar_reprovadas(linhas: list[dict], poda: _Poda) -> None:
                 ))
 
 
-def _gravar(tabela: str, linhas: list[dict], poda: _Poda | None = None) -> None:
-    """Upsert pela chave da spec. Sem linhas, nao faz upsert.
+def _chaves_obsoletas(
+    existentes: Iterable[Iterable[Any]], linhas: list[dict], chave: list[str]
+) -> list[tuple]:
+    """Chaves (tuplas na ordem de `chave`) de `existentes` que nao aparecem em `linhas`.
 
-    Em `noticias`, com `poda`, tambem apaga o que a juiza reprovou: ver `_apagar_reprovadas`.
+    `existentes` traz as colunas de `chave` como vieram do banco. Funcao pura: quem decide se
+    a montagem e completa e `_gravar`.
+    """
+    nova = {tuple(linha[c] for c in chave) for linha in linhas}
+    return [tuple(valor) for valor in existentes if tuple(valor) not in nova]
+
+
+def _apagar_obsoletas(session: Any, tabela: str, linhas: list[dict]) -> None:
+    """Apaga de `tabela` o que a montagem completa nao produz mais. O upsert so grava.
+
+    Chamada so com montagem nao vazia (ver `_gravar`): sem linhas, nao apaga nada.
+    """
+    chave = CHAVES[tabela]
+    tabela_db = MODELOS[tabela].__table__
+    colunas = [tabela_db.c[c] for c in chave]
+    existentes = session.execute(select(*colunas)).all()
+    obsoletas = _chaves_obsoletas(existentes, linhas, chave)
+    for lote in _em_lotes(obsoletas):
+        session.execute(delete(tabela_db).where(tuple_(*colunas).in_(lote)))
+    logger.info("entrega: %s: %d linhas obsoletas apagadas", tabela, len(obsoletas))
+
+
+def _gravar(tabela: str, linhas: list[dict], poda: _Poda | None = None) -> None:
+    """Upsert pela chave da spec. Sem linhas, nao faz upsert nem apaga nada.
+
+    Em `TABELAS_COMPLETAS`, apaga o que a montagem nao produz mais (`_apagar_obsoletas`). Em
+    `noticias`, com `poda`, tambem apaga o que a juiza reprovou: ver `_apagar_reprovadas`.
     """
     chave = CHAVES[tabela]
     if linhas:
@@ -1472,6 +1755,8 @@ def _gravar(tabela: str, linhas: list[dict], poda: _Poda | None = None) -> None:
                 index_elements=chave,
                 update_columns=[c for c in COLUNAS[tabela] if c not in chave],
             )
+            if tabela in TABELAS_COMPLETAS:
+                _apagar_obsoletas(session, tabela, linhas)
     if tabela == "noticias" and poda is not None:
         _apagar_reprovadas(linhas, poda)
 
@@ -1513,6 +1798,7 @@ def build_entrega(
                         if j["prompt_versao"] == VERSAO_JUIZA
                     },
                     exigir_juiza=settings.entrega_filtro_juiza,
+                    ipe={a["id"] for a in fontes.artigos if a["origem"] == "cvm_ipe"},
                 )
             _gravar(tabela, linhas, poda)
             if csv:

@@ -554,6 +554,10 @@ class CorrecaoPrecoB3:
     isin: str
     inicio: date
     fim: date
+    # Emissor no suplemento e nos proventos da B3 (sem ele: o ticker sem o numero).
+    issuing_company: str | None = None
+    # Acoes do ticker atual por acao do codigo negociado (ver EmissorPeriodo.fator).
+    fator_troca: float = 1.0
 
 
 # Papeis em que o Yahoo emenda ativos diferentes e fica corrompido (medido em 2026-10-26).
@@ -567,6 +571,21 @@ CORRECOES_PRECO_B3: dict[str, CorrecaoPrecoB3] = {
         isin="BRAZULA01OR8",
         inicio=date(2026, 1, 13),
         fim=date(2026, 4, 17),
+    ),
+    "JBSS32": CorrecaoPrecoB3(
+        codigos=("JBSS3",),
+        isin="BRJBSSACNOR8",
+        inicio=date(2019, 12, 2),
+        fim=date(2025, 6, 6),
+        issuing_company="JBSS",
+        fator_troca=0.5,
+    ),
+    "NATU3": CorrecaoPrecoB3(
+        codigos=("NTCO3",),
+        isin="BRNTCOACNOR5",
+        inicio=date(2019, 12, 18),
+        fim=date(2025, 7, 1),
+        issuing_company="NTCO",
     ),
 }
 
@@ -738,6 +757,182 @@ MUDANCAS_TICKER: list[tuple[str, str, date | None]] = [
     ("PETZ3", "AUAU3", date(2026, 1, 5)),
     ("CCRO3", "MOTV3", date(2025, 5, 2)),
 ]
+
+
+@dataclass(frozen=True)
+class EmissorPeriodo:
+    """Companhia (codigo CVM) ligada a um ticker num intervalo de datas.
+
+    inicio e fim sao inclusivos; None = sem limite. fator: acoes do ticker atual recebidas por
+    acao do ticker negociado (1 BDR JBSS32 = 2 acoes JBSS3 -> fator 0,5 no periodo de JBSS3).
+    """
+
+    cd_cvm: int
+    cnpj: str
+    issuing_company: str
+    nomes_pregao: tuple[str, ...]
+    ticker_negociado: str
+    inicio: date | None
+    fim: date | None
+    fator: float = 1.0
+
+
+# Tickers cujo emissor muda ao longo do tempo (a troca de codigo veio com troca de companhia).
+# Sem entrada aqui, o ticker tem um so emissor: o de TICKER_CODE_CVM, em periodo aberto.
+EMISSORES_POR_PERIODO: dict[str, tuple[EmissorPeriodo, ...]] = {
+    "JBSS32": (
+        EmissorPeriodo(
+            cd_cvm=20575,
+            cnpj="02916265000160",
+            issuing_company="JBSS",
+            nomes_pregao=("JBS", "JBS S.A.", "JBS SA"),
+            ticker_negociado="JBSS3",
+            inicio=None,
+            fim=date(2025, 6, 8),
+            fator=0.5,
+        ),
+        EmissorPeriodo(
+            cd_cvm=80233,
+            cnpj="49115815000105",
+            issuing_company="JBSS",
+            nomes_pregao=("JBS N.V.",),
+            ticker_negociado="JBSS32",
+            inicio=date(2025, 6, 9),
+            fim=None,
+        ),
+    ),
+    "NATU3": (
+        EmissorPeriodo(
+            cd_cvm=19550,
+            cnpj="71673990000177",
+            issuing_company="NATU",
+            nomes_pregao=("NATURA",),
+            ticker_negociado="NATU3",
+            inicio=None,
+            fim=date(2019, 12, 17),
+        ),
+        EmissorPeriodo(
+            cd_cvm=24783,
+            cnpj="32785497000197",
+            issuing_company="NTCO",
+            nomes_pregao=("NATURA &CO", "NATURA & CO", "NATURA &CO HOLDING"),
+            ticker_negociado="NTCO3",
+            inicio=date(2019, 12, 18),
+            fim=date(2025, 7, 1),
+        ),
+        EmissorPeriodo(
+            cd_cvm=19550,
+            cnpj="71673990000177",
+            issuing_company="NATU",
+            nomes_pregao=("NATURA",),
+            ticker_negociado="NATU3",
+            inicio=date(2025, 7, 2),
+            fim=None,
+        ),
+    ),
+}
+
+
+def emissores_do_ticker(ticker: str) -> tuple[EmissorPeriodo, ...]:
+    """Periodos de emissor do ticker: os explicitos ou, sem eles, um periodo aberto com o
+    codigo de TICKER_CODE_CVM. Vazio se o ticker nao tem codigo."""
+    if ticker in EMISSORES_POR_PERIODO:
+        return EMISSORES_POR_PERIODO[ticker]
+    cd = TICKER_CODE_CVM.get(ticker)
+    if cd is None:
+        return ()
+    return (
+        EmissorPeriodo(
+            cd_cvm=cd,
+            cnpj="",
+            issuing_company=ticker.rstrip("0123456789"),
+            nomes_pregao=(),
+            ticker_negociado=ticker,
+            inicio=None,
+            fim=None,
+        ),
+    )
+
+
+def codigos_cvm_universo() -> set[int]:
+    """Codigos CVM de TICKER_CODE_CVM e de todos os periodos de EMISSORES_POR_PERIODO."""
+    codigos = set(TICKER_CODE_CVM.values())
+    for periodos in EMISSORES_POR_PERIODO.values():
+        codigos.update(periodo.cd_cvm for periodo in periodos)
+    return codigos
+
+
+def _contem(periodo: EmissorPeriodo, data: date) -> bool:
+    return (periodo.inicio is None or periodo.inicio <= data) and (
+        periodo.fim is None or data <= periodo.fim
+    )
+
+
+def _periodos_do_codigo(cd: int | None) -> list[EmissorPeriodo]:
+    """Periodos explicitos com esse codigo CVM (lista vazia se None ou nao explicito)."""
+    if cd is None:
+        return []
+    return [
+        periodo
+        for periodos in EMISSORES_POR_PERIODO.values()
+        for periodo in periodos
+        if periodo.cd_cvm == cd
+    ]
+
+
+def emissor_vale(cd: int | None, data: date) -> bool:
+    """Se o emissor de codigo `cd` vale na `data`. Codigo None ou nao explicito vale sempre."""
+    periodos = _periodos_do_codigo(cd)
+    if not periodos:
+        return True
+    return any(_contem(periodo, data) for periodo in periodos)
+
+
+def fator_emissor(cd: int | None, data: date) -> float:
+    """Fator do periodo explicito de codigo `cd` que contem a `data`; 1.0 se nao houver."""
+    for periodo in _periodos_do_codigo(cd):
+        if _contem(periodo, data):
+            return periodo.fator
+    return 1.0
+
+
+def tickers_do_emissor(cd: int, data: date) -> list[str]:
+    """Tickers do emissor `cd` na `data`, em ordem. Ticker explicito entra so no periodo em que
+    o codigo dele contem a data; os demais vem de TICKER_CODE_CVM."""
+    tickers = {
+        ticker
+        for ticker, codigo in TICKER_CODE_CVM.items()
+        if codigo == cd and ticker not in EMISSORES_POR_PERIODO
+    }
+    for ticker, periodos in EMISSORES_POR_PERIODO.items():
+        if any(periodo.cd_cvm == cd and _contem(periodo, data) for periodo in periodos):
+            tickers.add(ticker)
+    return sorted(tickers)
+
+
+def ticker_atual_do_negociado(negociado: str, data: date) -> tuple[str, float] | None:
+    """(ticker, fator) que o papel negociado como `negociado` tinha na `data`.
+
+    Se `negociado` aparece em EMISSORES_POR_PERIODO mas nenhum periodo contem a data, devolve
+    None. Sem nenhuma entrada, devolve (negociado, 1.0).
+    """
+    aparece = False
+    for ticker, periodos in EMISSORES_POR_PERIODO.items():
+        for periodo in periodos:
+            if periodo.ticker_negociado != negociado:
+                continue
+            aparece = True
+            if _contem(periodo, data):
+                return ticker, periodo.fator
+    return None if aparece else (negociado, 1.0)
+
+
+def cnpj_do_ticker_em(ticker: str, data: date) -> str | None:
+    """CNPJ do periodo explicito do ticker que contem a `data`; None se nao houver."""
+    for periodo in EMISSORES_POR_PERIODO.get(ticker, ()):
+        if _contem(periodo, data):
+            return periodo.cnpj
+    return None
 
 # Rebalanceamentos do IBOV depois da carteira oficial de set/2024 (a ultima do repositorio
 # paccafelipe). Fonte: comunicados da B3 e imprensa, conferidos em 2026-10-23. Cada tupla e

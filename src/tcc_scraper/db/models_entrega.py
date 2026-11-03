@@ -1,4 +1,5 @@
-"""As 10 tabelas de entrega (8 fixas pela spec, a composicao do IBOV e os eventos de acoes), sem prefixo de camada.
+"""As 11 tabelas de entrega (8 fixas pela spec, a composicao do IBOV, os eventos de acoes e os
+emissores por ticker), sem prefixo de camada.
 
 Colunas na ordem da spec (parte 2, dicionario de colunas). A `noticias` leva, depois das 10
 colunas da spec, as 7 extras da secao 5.1 do desenho. `COLUNAS` e a fonte unica dessa ordem
@@ -17,6 +18,7 @@ from sqlalchemy import (
     Date,
     Double,
     Index,
+    Integer,
     SmallInteger,
     String,
     Text,
@@ -45,7 +47,7 @@ COLUNAS: dict[str, list[str]] = {
         "cnpj", "tipo_documento", "data_inicio_periodo", "data_fim_periodo", "data_entrega",
         "receita_liquida", "lucro_bruto", "lucro_liquido", "patrimonio_liquido",
         "ebit", "depreciacao_amortizacao", "emprestimos_curto_prazo", "emprestimos_longo_prazo",
-        "caixa", "aplicacoes_financeiras",
+        "caixa", "aplicacoes_financeiras", "situacao",
     ],
     "acoes_emitidas": [
         "cnpj", "data_referencia", "qtd_on", "qtd_pn", "data_entrega",
@@ -57,6 +59,10 @@ COLUNAS: dict[str, list[str]] = {
     "proventos": ["ticker", "tipo", "data_com", "valor_por_acao", "data_pagamento"],
     "indices": ["data", "indice", "valor"],
     "composicao_ibov": ["ticker", "vigencia_inicio", "vigencia_fim", "participacao", "fonte"],
+    "emissores_ticker": [
+        "ticker", "ordem", "ticker_negociado", "cd_cvm", "cnpj", "empresa", "vigencia_inicio",
+        "vigencia_fim", "fator_acoes",
+    ],
 }
 
 
@@ -157,6 +163,7 @@ class Balanco(Base):
     emprestimos_longo_prazo: Mapped[float | None] = mapped_column(Double)
     caixa: Mapped[float | None] = mapped_column(Double)
     aplicacoes_financeiras: Mapped[float | None] = mapped_column(Double)
+    situacao: Mapped[str] = mapped_column(String(16), nullable=False, server_default="ok")
 
 
 class AcoesEmitida(Base):
@@ -210,3 +217,24 @@ class Indice(Base):
     data: Mapped[dt.date] = mapped_column(Date, primary_key=True)
     indice: Mapped[str] = mapped_column(String(8), primary_key=True)
     valor: Mapped[float] = mapped_column(Double, nullable=False)
+
+
+class EmissorTicker(Base):
+    """Emissor (companhia e codigo CVM) de cada ticker, por periodo. `ordem` numera os periodos.
+
+    Sem periodo explicito em `EMISSORES_POR_PERIODO`, o ticker tem uma linha so. `fator_acoes`
+    e o de `EmissorPeriodo`: acoes do ticker atual recebidas por acao do ticker negociado.
+    """
+
+    __tablename__ = f"{PREFIXO_TABELA}emissores_ticker"
+    __table_args__ = (Index("ix_emissores_ticker_cnpj", "cnpj"),)
+
+    ticker: Mapped[str] = mapped_column(String(12), primary_key=True)
+    ordem: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    ticker_negociado: Mapped[str] = mapped_column(String(12), nullable=False)
+    cd_cvm: Mapped[int | None] = mapped_column(Integer)
+    cnpj: Mapped[str | None] = mapped_column(String(14))
+    empresa: Mapped[str | None] = mapped_column(String(128))
+    vigencia_inicio: Mapped[dt.date | None] = mapped_column(Date)
+    vigencia_fim: Mapped[dt.date | None] = mapped_column(Date)
+    fator_acoes: Mapped[float] = mapped_column(Double, nullable=False)

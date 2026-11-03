@@ -14,7 +14,7 @@ from tcc_scraper.collectors.b3_cadastro import (
 )
 from tcc_scraper.collectors.base import UnitResult, WorkUnit
 from tcc_scraper.collectors.cvm_cadastro import parse_cad_cia_aberta
-from tcc_scraper.config import TICKER_CODE_CVM
+from tcc_scraper.config import TICKER_CODE_CVM, codigos_cvm_universo
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -61,6 +61,16 @@ def test_parse_cad_cia_aberta_filtra_pelo_universo_e_normaliza() -> None:
     assert por_cvm[9512]["cnpj"] == "33000167000101"
     assert por_cvm[12653]["cnpj"] == "89637490000145"
     assert "BRASILEIRO" in por_cvm[9512]["denom_social"]
+
+
+def test_parse_cad_cia_aberta_mantem_jbs_s_a_20575_e_natura_holding_24783() -> None:
+    # Emissores explicitos de EMISSORES_POR_PERIODO: nao estao em TICKER_CODE_CVM.
+    linhas = [
+        {"CNPJ_CIA": "02.916.265/0001-60", "CD_CVM": "20575", "DENOM_SOCIAL": "JBS S.A."},
+        {"CNPJ_CIA": "32.785.497/0001-97", "CD_CVM": "24783", "DENOM_SOCIAL": "NATURA &CO"},
+    ]
+    regs = parse_cad_cia_aberta(linhas, codigos_cvm_universo())
+    assert {r["cd_cvm"] for r in regs} == {20575, 24783}
 
 
 def test_parse_cad_cia_aberta_codigo_com_zeros_a_esquerda_vira_int() -> None:

@@ -17,7 +17,7 @@ from tcc_scraper.collectors.cvm_demonstracoes import (
     CvmDemonstracoesCollector,
     parse_demonstracoes,
 )
-from tcc_scraper.config import TICKER_CODE_CVM, get_settings
+from tcc_scraper.config import CONTAS_CVM, TICKER_CODE_CVM, codigos_cvm_universo, get_settings
 
 FIXTURES = Path(__file__).parent / "fixtures"
 UNIVERSO = set(TICKER_CODE_CVM.values())
@@ -91,6 +91,8 @@ def test_itr_3_11_mantem_trimestre_e_acumulado_separados() -> None:
         and r["cd_conta"] == "3.11"
         and r["demonstracao"] == "DRE"
         and r["dt_refer"] == dt.date(2025, 6, 30)
+        # O PENULTIMO (comparativo de 2024) tambem sai no raw; aqui so interessa o ULTIMO.
+        and r["ordem_exerc"] == "ÚLTIMO"
     }
     assert inicios == {dt.date(2025, 1, 1), dt.date(2025, 4, 1)}
 
@@ -106,6 +108,14 @@ def test_companhia_fora_do_universo_nao_sai() -> None:
     balancos, acoes = parse_demonstracoes(_csvs("itr_2025"), "ITR", {PETROBRAS})
     assert balancos and acoes
     assert {r["cd_cvm"] for r in balancos + acoes} == {PETROBRAS}
+
+
+def test_parse_demonstracoes_mantem_jbs_s_a_20575() -> None:
+    # JBS S.A. (20575) e emissor explicito de JBSS3; nao esta em TICKER_CODE_CVM.
+    csvs = {demo.CHAVE_DRE: [_linha_sintetica(CD_CVM="020575")]}
+    balancos, _ = parse_demonstracoes(csvs, "ITR", codigos_cvm_universo())
+    assert balancos
+    assert {r["cd_cvm"] for r in balancos} == {20575}
 
 
 def test_valor_sem_escala_e_escala_preservada() -> None:
@@ -139,7 +149,7 @@ def test_composicao_traz_acoes_inteiras_por_cnpj_do_principal() -> None:
     assert linha["dt_receb"] == dt.date(2025, 5, 12)
 
 
-def test_dfp_2024_traz_penultimo_exercicio_sem_sair() -> None:
+def test_dfp_2024_traz_penultimo_exercicio_com_ordem_preservada() -> None:
     balancos, acoes = parse_demonstracoes(_csvs("dfp_2024"), "DFP", UNIVERSO)
     lucro = [
         r
@@ -148,10 +158,56 @@ def test_dfp_2024_traz_penultimo_exercicio_sem_sair() -> None:
         and r["cd_conta"] == "3.11"
         and r["dt_refer"] == dt.date(2024, 12, 31)
     ]
-    assert len(lucro) == 1
-    assert lucro[0]["vl_conta"] == 37009000.0
-    assert lucro[0]["tipo_documento"] == "DFP"
+    ultimo = [r for r in lucro if r["ordem_exerc"] == "ÚLTIMO"]
+    assert len(ultimo) == 1
+    assert ultimo[0]["vl_conta"] == 37009000.0
+    assert ultimo[0]["tipo_documento"] == "DFP"
+    penultimo = [r for r in lucro if r["ordem_exerc"] == "PENÚLTIMO"]
+    assert len(penultimo) == 1
+    assert penultimo[0]["dt_fim_exerc"] == dt.date(2023, 12, 31)
+    assert penultimo[0]["vl_conta"] == 125166000.0
     assert any(r["cd_cvm"] == PETROBRAS for r in acoes)
+
+
+def test_dre_traz_subconta_3_01_nn_da_receita_e_nao_a_mais_profunda() -> None:
+    csvs = {
+        demo.CHAVE_PRINCIPAL: [],
+        demo.CHAVE_DRE: [
+            _linha_sintetica(CD_CONTA="3.01.02", DS_CONTA="Despesa de seguros", VL_CONTA="-5.0"),
+            _linha_sintetica(CD_CONTA="3.01.02.01", DS_CONTA="Detalhe", VL_CONTA="-1.0"),
+            _linha_sintetica(CD_CONTA="3.02", DS_CONTA="Custo", VL_CONTA="-7.0"),
+        ],
+        demo.CHAVE_BPP: [],
+        demo.CHAVE_COMPOSICAO: [],
+    }
+    balancos, _ = parse_demonstracoes(csvs, "ITR", UNIVERSO)
+    contas = {r["cd_conta"] for r in balancos}
+    assert "3.01.02" in contas
+    assert "3.01.02.01" not in contas
+    # 3.02 so entra se estiver em CONTAS_CVM; o coletor nao muda essa regra.
+    assert ("3.02" in contas) == ("3.02" in CONTAS_CVM["DRE"])
+
+
+@pytest.mark.parametrize(
+    ("cd_conta", "esperado"),
+    [("3.01.01", True), ("3.01", False), ("3.01.01.01", False), ("3.02.01", False)],
+)
+def test_conta_subreceita_dre_so_pega_3_01_nn(cd_conta: str, esperado: bool) -> None:
+    assert demo.conta_subreceita_dre(cd_conta) is esperado
+
+
+def test_penultimo_nao_sobrescreve_ultimo_na_mesma_chave() -> None:
+    ultimo = _linha_sintetica(ORDEM_EXERC="ÚLTIMO", VL_CONTA="10.0")
+    penultimo = _linha_sintetica(ORDEM_EXERC="PENÚLTIMO", VL_CONTA="99.0")
+    for linhas in ([ultimo, penultimo], [penultimo, ultimo]):
+        csvs = {
+            demo.CHAVE_PRINCIPAL: [],
+            demo.CHAVE_DRE: linhas,
+            demo.CHAVE_BPP: [],
+            demo.CHAVE_COMPOSICAO: [],
+        }
+        balancos, _ = parse_demonstracoes(csvs, "ITR", UNIVERSO)
+        assert [(r["ordem_exerc"], r["vl_conta"]) for r in balancos] == [("ÚLTIMO", 10.0)]
 
 
 def test_ordem_ultimo_aceita_com_e_sem_acento() -> None:
@@ -171,7 +227,8 @@ def test_ordem_ultimo_aceita_com_e_sem_acento() -> None:
         demo.CHAVE_COMPOSICAO: [],
     }
     balancos, _ = parse_demonstracoes(csvs, "ITR", UNIVERSO)
-    assert [r["vl_conta"] for r in balancos] == [10.0]
+    assert {r["vl_conta"] for r in balancos} == {10.0, 99.0}
+    assert {r["ordem_exerc"] for r in balancos} == {"ÚLTIMO", "PENÚLTIMO"}
 
     csvs[demo.CHAVE_DRE] = [_linha_sintetica(ORDEM_EXERC="ULTIMO", VL_CONTA="11.0")]
     balancos, _ = parse_demonstracoes(csvs, "ITR", UNIVERSO)
@@ -364,3 +421,37 @@ def test_process_le_bpa_e_dfc_mi_ignora_dfc_md_e_fora_do_universo(
     assert {r["cd_cvm"] for r in balancos} == {PETROBRAS}
     assert 777.0 not in {r["vl_conta"] for r in balancos}
     assert resultado.items_found == 3
+
+
+def test_process_mantem_jbs_s_a_20575_pelo_universo_de_emissores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cabecalho = (
+        "CNPJ_CIA;DT_REFER;VERSAO;CD_CVM;DT_INI_EXERC;DT_FIM_EXERC;CD_CONTA;DS_CONTA;"
+        "ORDEM_EXERC;VL_CONTA;ESCALA_MOEDA\n"
+    )
+    cnpj = "02.916.265/0001-60"
+    zip_cvm = _zip_cvm({
+        "itr_cia_aberta_2025.csv": (
+            "CNPJ_CIA;DT_REFER;VERSAO;CD_CVM;DT_RECEB\n"
+            f"{cnpj};2025-06-30;1;020575;2025-08-12\n"
+        ),
+        "itr_cia_aberta_BPA_con_2025.csv": cabecalho + (
+            f"{cnpj};2025-06-30;1;020575;2025-01-01;2025-06-30;1.01.01;"
+            "Caixa e Equivalentes de Caixa;ULTIMO;100.0;MIL\n"
+            "33.999.999/0001-99;2025-06-30;1;999999;2025-01-01;2025-06-30;1.01.01;"
+            "Caixa;ULTIMO;1.0;MIL\n"
+        ),
+    })
+    gravados: list[list[dict]] = []
+    with CvmDemonstracoesCollector(anos=[2025]) as coletor:
+        monkeypatch.setattr(coletor, "baixar_zip", lambda url: zip_cvm)
+        monkeypatch.setattr(coletor, "_persist", lambda balancos, acoes: gravados.append(balancos))
+        coletor.process(
+            WorkUnit(
+                key="ITR|2025|teste",
+                payload={"tipo": "ITR", "ano": 2025, "url": "https://exemplo/itr_2025.zip"},
+            )
+        )
+
+    assert {r["cd_cvm"] for r in gravados[0]} == {20575}

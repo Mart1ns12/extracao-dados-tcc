@@ -235,6 +235,52 @@ def test_artigos_exclui_republicacao_que_nao_e_representante(monkeypatch) -> Non
     assert "!=" in sql or "<>" in sql
 
 
+# -- IPE: documento de emissor que nao valia na data de entrega -------------------------------
+
+LINK_IPE = "https://www.rad.cvm.gov.br/ENET/documento.pdf"
+
+
+def _montar_ipe(ipe_por_link: dict | None, ticker: str = "NATU3") -> list[dict]:
+    artigo = {**_artigo(origem="cvm_ipe", precisao="date",
+                        publicado=dt.datetime(2026, 6, 18, 3, 0, tzinfo=UTC)),
+              "resolved_url": LINK_IPE, "url": LINK_IPE}
+    return B.montar_noticias([artigo], [{"article_id": 1234567, "ticker": ticker}], [], [],
+                             PREGOES, False, MODELOS, ipe_por_link=ipe_por_link)
+
+
+def test_documento_ipe_da_natura_cosmeticos_em_2021_nao_gera_natu3() -> None:
+    # Natura Cosmeticos (19550) nao era o NATU3 entre 2019-12-18 e 2025-07-01.
+    assert _montar_ipe({LINK_IPE: (19550, dt.date(2021, 3, 15))}) == []
+
+
+def test_documento_ipe_da_holding_em_2021_gera_natu3() -> None:
+    (linha,) = _montar_ipe({LINK_IPE: (24783, dt.date(2021, 3, 15))})
+    assert linha["ticker"] == "NATU3"
+    assert linha["fonte"] == "CVM"
+
+
+def test_sem_ipe_por_link_ou_sem_o_documento_nada_muda() -> None:
+    assert len(_montar_ipe(None)) == 1
+    assert len(_montar_ipe({})) == 1
+    assert len(_montar_ipe({"https://outro.link/x": (19550, dt.date(2021, 3, 15))})) == 1
+
+
+def test_ids_a_apagar_inclui_ipe_sem_par_aprovado_com_juiza_desligada() -> None:
+    poda = B._Poda(janela={1, 2}, julgados=set(), exigir_juiza=False, ipe={1})
+    assert B._ids_a_apagar(poda, set()) == {B.id_noticia(1)}
+    assert B._ids_a_apagar(poda, {B.id_noticia(1)}) == set()
+
+
+def test_ids_a_apagar_sem_juiza_nao_apaga_julgado_nem_sem_julgamento_fora_do_ipe() -> None:
+    poda = B._Poda(janela={2, 3}, julgados={2}, exigir_juiza=False, ipe=set())
+    assert B._ids_a_apagar(poda, set()) == set()
+
+
+def test_ids_a_apagar_com_juiza_exigida_apaga_julgado_sem_aprovada_e_nao_o_sem_julgamento() -> None:
+    poda = B._Poda(janela={2, 3}, julgados={2}, exigir_juiza=True, ipe=set())
+    assert B._ids_a_apagar(poda, set()) == {B.id_noticia(2)}
+
+
 # -- precos e indices ------------------------------------------------------------------------
 
 def _preco(ticker, close=10.0, adj=9.0, volume=1000, data=dt.date(2026, 6, 18), abertura=1.0):
@@ -346,15 +392,103 @@ def test_mudancas_ticker_vem_do_config() -> None:
     assert len(linhas) == len(MUDANCAS_TICKER)
 
 
+# -- emissores por periodo (emissores_ticker) ------------------------------------------------
+
+def _cvm_emissores() -> list[dict]:
+    return [
+        {"cd_cvm": 20575, "cnpj": "02916265000160", "denom_social": "JBS S.A."},
+        {"cd_cvm": 80233, "cnpj": "49115815000105", "denom_social": "JBS N.V."},
+        {"cd_cvm": 19550, "cnpj": "71673990000177", "denom_social": "NATURA COSMETICOS S.A."},
+        {"cd_cvm": 24783, "cnpj": "32785497000197", "denom_social": "NATURA &CO HOLDING S.A."},
+        {"cd_cvm": 9512, "cnpj": PETROBRAS, "denom_social": "PETROBRAS"},
+    ]
+
+
+def test_emissores_jbss32_tem_dois_periodos_com_cnpj_e_fator_do_periodo() -> None:
+    linhas = B.montar_emissores([], _cvm_emissores(), ["JBSS32"])
+    assert all(list(r) == COLUNAS["emissores_ticker"] for r in linhas)
+    assert [(r["ordem"], r["ticker_negociado"], r["cd_cvm"]) for r in linhas] == [
+        (1, "JBSS3", 20575), (2, "JBSS32", 80233),
+    ]
+    antes, depois = linhas
+    assert (antes["vigencia_inicio"], antes["vigencia_fim"]) == (None, dt.date(2025, 6, 8))
+    assert (depois["vigencia_inicio"], depois["vigencia_fim"]) == (dt.date(2025, 6, 9), None)
+    assert (antes["cnpj"], antes["fator_acoes"]) == ("02916265000160", 0.5)
+    assert (depois["cnpj"], depois["fator_acoes"]) == ("49115815000105", 1.0)
+    assert (antes["empresa"], depois["empresa"]) == ("JBS S.A.", "JBS N.V.")
+
+
+def test_emissores_natu3_tem_tres_periodos_e_volta_a_natura() -> None:
+    linhas = B.montar_emissores([], _cvm_emissores(), ["NATU3"])
+    assert [(r["ordem"], r["ticker_negociado"], r["cd_cvm"]) for r in linhas] == [
+        (1, "NATU3", 19550), (2, "NTCO3", 24783), (3, "NATU3", 19550),
+    ]
+    assert [r["cnpj"] for r in linhas] == [
+        "71673990000177", "32785497000197", "71673990000177",
+    ]
+    assert linhas[1]["vigencia_inicio"] == dt.date(2019, 12, 18)
+    assert linhas[1]["vigencia_fim"] == dt.date(2025, 7, 1)
+    assert linhas[2]["vigencia_inicio"] == dt.date(2025, 7, 2)
+    assert linhas[2]["vigencia_fim"] is None
+
+
+def test_emissores_ticker_sem_periodo_usa_b3_ou_cvm_e_uma_linha_aberta() -> None:
+    b3 = [{"cd_cvm": 9512, "cnpj": PETROBRAS, "trading_name": "PETROBRAS B3"}]
+    (linha,) = B.montar_emissores(b3, [], ["PETR4"])
+    assert list(linha) == COLUNAS["emissores_ticker"]
+    assert (linha["ticker"], linha["ordem"], linha["ticker_negociado"]) == ("PETR4", 1, "PETR4")
+    assert (linha["cd_cvm"], linha["cnpj"], linha["fator_acoes"]) == (9512, PETROBRAS, 1.0)
+    assert (linha["vigencia_inicio"], linha["vigencia_fim"]) == (None, None)
+    assert linha["empresa"] == "PETROBRAS B3"
+    (sem_nada,) = B.montar_emissores([], [], ["PETR4"])
+    assert sem_nada["cnpj"] is None
+    assert sem_nada["empresa"] == NOMES_EMPRESA["PETR4"]
+
+
+def test_emissores_ignora_ticker_sem_codigo_cvm() -> None:
+    assert B.montar_emissores([], _cvm_emissores(), ["ZZZZ3"]) == []
+
+
+def test_tabelas_completas_sao_tabelas_da_entrega() -> None:
+    esperadas = {"balancos", "acoes_emitidas", "proventos", "emissores_ticker"}
+    assert esperadas == B.TABELAS_COMPLETAS
+    assert set(COLUNAS) >= B.TABELAS_COMPLETAS
+
+
+def test_chaves_obsoletas_sobra_o_que_a_montagem_nao_produz_mais() -> None:
+    existentes = [("JBSS32", 1), ("JBSS32", 2), ("PETR4", 1)]
+    linhas = [{"ticker": "JBSS32", "ordem": 2}, {"ticker": "PETR4", "ordem": 1}]
+    assert B._chaves_obsoletas(existentes, linhas, ["ticker", "ordem"]) == [("JBSS32", 1)]
+
+
+def test_chaves_obsoletas_vazio_quando_nada_sobra() -> None:
+    existentes = [("JBSS32", 1), ("PETR4", 1)]
+    linhas = [
+        {"ticker": "PETR4", "ordem": 1}, {"ticker": "JBSS32", "ordem": 1},
+        {"ticker": "NOVO3", "ordem": 1},
+    ]
+    assert B._chaves_obsoletas(existentes, linhas, ["ticker", "ordem"]) == []
+
+
+def test_chaves_obsoletas_compara_datas_como_vem_do_banco() -> None:
+    cnpj = "71673990000177"
+    existentes = [(cnpj, dt.date(2024, 12, 31)), (cnpj, dt.date(2025, 3, 31))]
+    linhas = [{"cnpj": cnpj, "data_referencia": dt.date(2025, 3, 31), "qtd_on": 10}]
+    assert B._chaves_obsoletas(existentes, linhas, ["cnpj", "data_referencia"]) == [
+        (cnpj, dt.date(2024, 12, 31)),
+    ]
+
+
 # -- balancos e acoes emitidas ---------------------------------------------------------------
 
 def _bal(cd, ds, valor, *, demo="DRE", ini=dt.date(2025, 4, 1), fim=dt.date(2025, 6, 30),
-         refer=dt.date(2025, 6, 30), versao=1, escala="MIL", tipo="ITR", cd_cvm=9512):
+         refer=dt.date(2025, 6, 30), versao=1, escala="MIL", tipo="ITR", cd_cvm=9512,
+         ordem="ÚLTIMO", receb=dt.date(2025, 8, 8)):
     return {
         "cnpj": PETROBRAS, "tipo_documento": tipo, "dt_refer": refer, "versao": versao,
         "demonstracao": demo, "cd_conta": cd, "dt_ini_exerc": ini, "dt_fim_exerc": fim,
-        "ds_conta": ds, "ordem_exerc": "ÚLTIMO", "escala_moeda": escala, "vl_conta": valor,
-        "dt_receb": dt.date(2025, 8, 8), "cd_cvm": cd_cvm,
+        "ds_conta": ds, "ordem_exerc": ordem, "escala_moeda": escala, "vl_conta": valor,
+        "dt_receb": receb, "cd_cvm": cd_cvm,
     }
 
 
@@ -414,6 +548,121 @@ def test_itr_trimestre_e_acumulado_viram_linhas_separadas_e_versao_maior_vence()
     linhas = B.montar_balancos(balancos)
     assert len(linhas) == 2
     assert {linha["receita_liquida"] for linha in linhas} == {111.0, 250.0}
+
+
+def test_despesa_de_seguros_dentro_da_3_01_sai_da_receita_hapv() -> None:
+    # HAPV3 (IFRS 17): a 3.01 do 1T25 ja vem com a despesa de seguros (3.01.02) dentro.
+    ini, fim = dt.date(2025, 1, 1), dt.date(2025, 3, 31)
+    balancos = [
+        _bal("3.01", "Receita de Seguros", 1469235.0, ini=ini, fim=fim, refer=fim),
+        _bal("3.01.01", "Receita de seguros", 7626925.0, ini=ini, fim=fim, refer=fim),
+        _bal("3.01.02", "Despesa de seguros", -6335219.0, ini=ini, fim=fim, refer=fim),
+        _bal("3.01.03", "Outras receitas", 177529.0, ini=ini, fim=fim, refer=fim),
+    ]
+    (linha,) = B.montar_balancos(balancos)
+    assert linha["receita_liquida"] == 7804454000.0
+    assert linha["situacao"] == "ajuste_ifrs17"
+
+
+def test_subconta_negativa_que_nao_e_despesa_de_seguro_nao_muda_a_receita() -> None:
+    # RADL: 3.01.02 e imposto sobre vendas (negativo), nao despesa de seguro.
+    balancos = [
+        _bal("3.01", "Receita de Venda de Bens e/ou Serviços", 100.0, escala="UNIDADE"),
+        _bal("3.01.02", "Impostos Incidentes sobre Vendas", -10.0, escala="UNIDADE"),
+    ]
+    (linha,) = B.montar_balancos(balancos)
+    assert linha["receita_liquida"] == 100.0
+    assert linha["situacao"] == "ok"
+
+
+def test_reapresentacao_troca_receita_zerada_pelo_comparativo_posterior_jbs() -> None:
+    ini1, fim1 = dt.date(2025, 1, 1), dt.date(2025, 3, 31)
+    ini2, fim2 = dt.date(2026, 1, 1), dt.date(2026, 3, 31)
+    recebido_original = dt.date(2025, 5, 27)
+    recebido_reapresentacao = dt.date(2026, 5, 12)
+    balancos = [
+        # ITR 1T25 original: receita zerada, com PL, BP e DFC proprios.
+        _bal("3.01", "Receita de Venda de Bens e/ou Serviços", 0.0, ini=ini1, fim=fim1,
+             refer=fim1, receb=recebido_original),
+        _bal("3.11", "Lucro/Prejuízo Consolidado do Período", 724742.0, ini=ini1, fim=fim1,
+             refer=fim1, receb=recebido_original),
+        _bal("2.03", "Patrimônio Líquido Consolidado", 11837070.0, demo="BPP", ini=fim1,
+             fim=fim1, refer=fim1, receb=recebido_original),
+        _bal("6.01.01.04", "Depreciação e Amortização", 999.0, demo="DFC", ini=ini1, fim=fim1,
+             refer=fim1, receb=recebido_original),
+        # ITR 1T26 traz o 1T25 reapresentado como PENULTIMO, e o 1T26 proprio.
+        _bal("3.01", "Receita de Venda de Bens e/ou Serviços", 114127485.0, ini=ini1, fim=fim1,
+             refer=fim2, ordem="PENÚLTIMO", receb=recebido_reapresentacao),
+        _bal("3.11", "Lucro/Prejuízo Consolidado do Período", 3251604.0, ini=ini1, fim=fim1,
+             refer=fim2, ordem="PENÚLTIMO", receb=recebido_reapresentacao),
+        _bal("6.01.01.04", "Depreciação e Amortização", 1000.0, demo="DFC", ini=ini1,
+             fim=fim1, refer=fim2, ordem="PENÚLTIMO", receb=recebido_reapresentacao),
+        _bal("3.01", "Receita de Venda de Bens e/ou Serviços", 130000000.0, ini=ini2, fim=fim2,
+             refer=fim2, receb=recebido_reapresentacao),
+        # ITR 2T25: DRE 3M e DFC 6M. A D&A 3M depende do 1T25 invalido, entao sai None.
+        _bal("3.01", "Receita de Venda de Bens e/ou Serviços", 120000000.0,
+             ini=dt.date(2025, 4, 1), fim=dt.date(2025, 6, 30), refer=dt.date(2025, 6, 30),
+             receb=dt.date(2025, 8, 13)),
+        _bal("6.01.01.04", "Depreciação e Amortização", 2000.0, demo="DFC",
+             ini=ini1, fim=dt.date(2025, 6, 30), refer=dt.date(2025, 6, 30),
+             receb=dt.date(2025, 8, 13)),
+    ]
+    por_periodo = _por_periodo(B.montar_balancos(balancos))
+
+    t1 = por_periodo[(ini1, fim1)]
+    assert t1["receita_liquida"] == 114127485000.0
+    assert t1["lucro_liquido"] == 3251604000.0
+    assert t1["patrimonio_liquido"] is None
+    assert t1["data_entrega"] == recebido_reapresentacao
+    assert t1["depreciacao_amortizacao"] == 1000000.0
+    assert t1["situacao"] == "reapresentado"
+
+    assert por_periodo[(ini2, fim2)]["receita_liquida"] == 130000000000.0
+    assert por_periodo[(ini2, fim2)]["situacao"] == "ok"
+    t2 = por_periodo[(dt.date(2025, 4, 1), dt.date(2025, 6, 30))]
+    assert t2["receita_liquida"] == 120000000000.0
+    assert t2["depreciacao_amortizacao"] is None
+    assert t2["situacao"] == "ok"
+
+
+def test_receita_zero_sem_comparativo_com_receita_fica_zero_com_data_original() -> None:
+    ini, fim = dt.date(2025, 1, 1), dt.date(2025, 3, 31)
+    balancos = [
+        _bal("3.01", "Receita", 0.0, escala="UNIDADE", ini=ini, fim=fim, refer=fim,
+             receb=dt.date(2025, 5, 27)),
+        _bal("3.01", "Receita", 0.0, escala="UNIDADE", ini=ini, fim=fim,
+             refer=dt.date(2026, 3, 31), ordem="PENÚLTIMO", receb=dt.date(2026, 5, 12)),
+    ]
+    (linha,) = B.montar_balancos(balancos)
+    assert linha["receita_liquida"] == 0.0
+    assert linha["data_entrega"] == dt.date(2025, 5, 27)
+
+
+def test_receita_do_ultimo_nao_zero_vence_comparativo_diferente() -> None:
+    ini, fim = dt.date(2025, 1, 1), dt.date(2025, 3, 31)
+    balancos = [
+        _bal("3.01", "Receita", 100.0, escala="UNIDADE", ini=ini, fim=fim, refer=fim,
+             receb=dt.date(2025, 5, 27)),
+        _bal("3.01", "Receita", 150.0, escala="UNIDADE", ini=ini, fim=fim,
+             refer=dt.date(2026, 3, 31), ordem="PENÚLTIMO", receb=dt.date(2026, 5, 12)),
+    ]
+    (linha,) = B.montar_balancos(balancos)
+    assert linha["receita_liquida"] == 100.0
+    assert linha["data_entrega"] == dt.date(2025, 5, 27)
+
+
+def test_comparativo_com_recebimento_nao_posterior_ao_original_e_ignorado() -> None:
+    ini, fim = dt.date(2025, 1, 1), dt.date(2025, 3, 31)
+    recebido = dt.date(2025, 5, 27)
+    balancos = [
+        _bal("3.01", "Receita", 0.0, escala="UNIDADE", ini=ini, fim=fim, refer=fim,
+             receb=recebido),
+        _bal("3.01", "Receita", 150.0, escala="UNIDADE", ini=ini, fim=fim,
+             refer=dt.date(2025, 6, 30), ordem="PENÚLTIMO", receb=recebido),
+    ]
+    (linha,) = B.montar_balancos(balancos)
+    assert linha["receita_liquida"] == 0.0
+    assert linha["data_entrega"] == recebido
 
 
 def test_acoes_dfp_vence_itr_na_mesma_data_e_maior_versao_no_mesmo_tipo() -> None:
@@ -736,6 +985,58 @@ def test_unit_e_composta_pelas_acoes_on_e_pn_da_mesma_empresa() -> None:
     assert len(unit) == 1
     assert unit[0]["valor_por_acao"] == pytest.approx(1 * 0.10 + 4 * 0.20)
     assert unit[0]["tipo"] == "DIVIDENDO"
+
+
+def test_jbss3_antes_da_troca_vira_jbss32_com_valor_dobrado() -> None:
+    # JBSS3 -> JBSS32 ate 2025-06-08 (fator 0,5): R$ 1 por JBSS3 = R$ 2 por JBSS32.
+    (linha,) = B.montar_proventos(
+        [_prov(ic="JBSS", type_stock="ON", valor=1.0, data_com=dt.date(2024, 5, 1))],
+        [], [],
+    )
+    assert linha["ticker"] == "JBSS32"
+    assert linha["valor_por_acao"] == pytest.approx(2.0)
+
+
+def test_natu3_na_holding_nao_entra() -> None:
+    # NATU3 durante o periodo da holding era a subsidiaria, nao o papel negociado.
+    linhas = B.montar_proventos(
+        [_prov(ic="NATU", type_stock="ON", valor=0.5, data_com=dt.date(2021, 6, 23))],
+        [], [],
+    )
+    assert linhas == []
+
+
+def test_ntco3_antes_da_troca_vira_natu3_com_o_mesmo_valor() -> None:
+    (linha,) = B.montar_proventos(
+        [_prov(ic="NTCO", type_stock="ON", valor=0.5, data_com=dt.date(2022, 3, 10))],
+        [], [],
+    )
+    assert linha["ticker"] == "NATU3"
+    assert linha["valor_por_acao"] == pytest.approx(0.5)
+
+
+def test_dividendo_de_bdr_so_no_suplemento_entra_como_jbss32() -> None:
+    cadastro = [{
+        "issuing_company": "JBSS", "other_codes": ["JBSS32", "JBSS3"],
+        "payload": {"otherCodes": [
+            {"isin": "BRJBSSBDR002", "code": "JBSS32"},
+            {"isin": "BRJBSSACNOR8", "code": "JBSS3"},
+        ]},
+    }]
+    suplemento = [{
+        "issuing_company": "JBSS", "tipo": "cash",
+        "payload": {
+            "label": "DIVIDENDO", "isinCode": "BRJBSSBDR002",
+            "lastDatePrior": "18/05/2026", "paymentDate": "22/06/2026",
+            "rate": "4,27635785",
+        },
+    }]
+    (linha,) = B.montar_proventos([], suplemento, cadastro)
+    assert linha["ticker"] == "JBSS32"
+    assert linha["tipo"] == "DIVIDENDO"
+    assert linha["data_com"] == dt.date(2026, 5, 18)
+    assert linha["valor_por_acao"] == pytest.approx(4.27635785)
+    assert linha["data_pagamento"] == dt.date(2026, 6, 22)
 
 
 # -- eventos em acoes (eventos_acoes) --------------------------------------------------------
@@ -1148,3 +1449,85 @@ def test_documento_em_mil_em_cnpj_unidade_vira_unidade() -> None:
     assert [r["receita_liquida"] for r in linhas] == [
         100_000_000.0, 110_000_000.0, 120_000_000.0, 130_000_000.0,
     ]
+
+
+# -- emissor por periodo (EMISSORES_POR_PERIODO, pela data de entrega) ----------------------------
+
+JBS_ANTIGA = "02916265000160"  # JBS S.A. (codigo 20575): vale ate 2025-06-08, fator 0,5
+NATURA = "71673990000177"  # Natura Cosmeticos (codigo 19550)
+NATURA_HOLDING = "32785497000197"  # Natura &Co (codigo 24783), era o emissor de NTCO3
+
+
+def test_balanco_de_emissor_antes_de_valer_sai_e_depois_fica() -> None:
+    # JBS N.V. (80233) so vale a partir de 2025-06-09: o documento entregue antes sai.
+    antes = [_bal("3.01", "Receita", 1000.0, cd_cvm=80233, receb=dt.date(2024, 12, 27))]
+    assert B.montar_balancos(antes) == []
+    depois = [_bal("3.01", "Receita", 1000.0, cd_cvm=80233, receb=dt.date(2025, 8, 13))]
+    (linha,) = B.montar_balancos(depois)
+    assert linha["data_entrega"] == dt.date(2025, 8, 13)
+
+
+def test_balanco_natura_fora_do_periodo_da_natu3_sai_e_depois_fica() -> None:
+    # Natura Cosmeticos (19550) nao vale de 2019-12-18 a 2025-07-01: ali o emissor e a holding.
+    antes = [_bal("3.01", "Receita", 1000.0, cd_cvm=19550, receb=dt.date(2025, 5, 12))]
+    assert B.montar_balancos(antes) == []
+    depois = [_bal("3.01", "Receita", 1000.0, cd_cvm=19550, receb=dt.date(2025, 8, 11))]
+    (linha,) = B.montar_balancos(depois)
+    assert linha["data_entrega"] == dt.date(2025, 8, 11)
+
+
+def test_balanco_sem_cd_cvm_fica() -> None:
+    (linha,) = B.montar_balancos([_bal("3.01", "Receita", 1000.0, cd_cvm=None)])
+    assert linha["receita_liquida"] == 1_000_000.0
+
+
+def test_reapresentacao_usa_comparativo_posterior_que_passa_pelo_filtro() -> None:
+    # JBS N.V.: o ITR entregue com receita zero e substituido pelo PENULTIMO de uma remessa
+    # posterior. Essa linha crua tem o proprio dt_receb e tambem passa pelo filtro do emissor.
+    original = _bal("3.01", "Receita", 0.0, cd_cvm=80233, receb=dt.date(2025, 6, 10),
+                    ini=dt.date(2025, 1, 1), fim=dt.date(2025, 3, 31),
+                    refer=dt.date(2025, 3, 31))
+    comparativo = _bal("3.01", "Receita", 100.0, cd_cvm=80233, receb=dt.date(2025, 8, 13),
+                       ini=dt.date(2025, 1, 1), fim=dt.date(2025, 3, 31),
+                       refer=dt.date(2025, 6, 30), ordem="PENÚLTIMO")
+    (linha,) = B.montar_balancos([original, comparativo])
+    assert linha["receita_liquida"] == 100_000.0
+    assert linha["data_entrega"] == dt.date(2025, 8, 13)
+
+
+def test_acoes_de_emissor_antes_de_valer_saem_e_base_atual_usa_o_fator() -> None:
+    # JBS (20575) vale ate 2025-06-08 com fator 0,5 (1 BDR JBSS32 = 2 acoes JBSS3).
+    jbs = {"cnpj": JBS_ANTIGA, "tipo_documento": "ITR", "dt_refer": dt.date(2024, 3, 31),
+           "versao": 1, "qt_on": 1_000_000, "qt_pn": 0, "cd_cvm": 20575,
+           "dt_receb": dt.date(2024, 5, 10)}
+    fora = {**jbs, "cd_cvm": 80233, "dt_refer": dt.date(2024, 12, 31),
+            "dt_receb": dt.date(2024, 12, 27)}
+    (linha,) = B.montar_acoes_emitidas([jbs, fora])
+    assert linha["data_referencia"] == dt.date(2024, 3, 31)
+    assert linha["qtd_on"] == 1_000_000
+    assert linha["qtd_on_base_atual"] == 500_000
+    assert linha["qtd_pn_base_atual"] == 0
+
+
+def test_acao_de_versao_fora_do_emissor_nao_vence_a_versao_valida() -> None:
+    # O filtro vem antes da escolha da maior versao: a versao 2 (fora do periodo) sai.
+    base = {"cnpj": JBS_ANTIGA, "tipo_documento": "ITR", "dt_refer": dt.date(2024, 3, 31),
+            "qt_on": 1_000_000, "qt_pn": 0, "cd_cvm": 20575, "dt_receb": dt.date(2024, 5, 10)}
+    v1 = {**base, "versao": 1}
+    v2 = {**base, "versao": 2, "cd_cvm": 80233, "qt_on": 9_000_000,
+          "dt_receb": dt.date(2024, 12, 27)}
+    (linha,) = B.montar_acoes_emitidas([v1, v2])
+    assert linha["qtd_on"] == 1_000_000
+
+
+def test_volumes_de_ticker_que_trocou_de_emissor_vao_para_o_cnpj_da_epoca() -> None:
+    # NATU3 ate 2025-07-01 era o papel da holding (NTCO3); depois, da Natura Cosmeticos.
+    cadastro = [{"ticker": "NATU3", "cnpj": NATURA}]
+    precos = [
+        {"ticker": "NATU3.SA", "date": dt.date(2021, 6, 18), "volume": 100},
+        {"ticker": "NATU3.SA", "date": dt.date(2025, 8, 11), "volume": 50},
+    ]
+    assert B.volumes_por_cnpj(cadastro, precos) == {
+        NATURA_HOLDING: {dt.date(2021, 6, 18): 100.0},
+        NATURA: {dt.date(2025, 8, 11): 50.0},
+    }

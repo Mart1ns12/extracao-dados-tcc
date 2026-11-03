@@ -13,13 +13,17 @@ from decimal import Decimal
 
 import pytest
 
+from tcc_scraper.collectors import b3_cotahist
 from tcc_scraper.collectors.b3_cotahist import (
     carregar_correcoes,
+    fatores_dividendos,
+    gerar_correcoes,
     grupamentos_do_suplemento,
     ler_cotahist,
     parse_linha,
     serie_corrigida,
 )
+from tcc_scraper.config import CorrecaoPrecoB3
 
 ISIN_AZUL = "BRAZULA01OR8"
 GRUPAMENTOS = [
@@ -246,3 +250,171 @@ def test_carregar_correcoes_le_csv_da_pasta(tmp_path) -> None:
 
 def test_carregar_correcoes_pasta_ausente_devolve_vazio(tmp_path) -> None:
     assert carregar_correcoes(tmp_path / "nao_existe") == {}
+
+
+# -- fator_troca (JBSS3 -> JBSS32) ----------------------------------------------------
+def test_fator_troca_dobra_o_preco_e_divide_o_volume() -> None:
+    """Meia acao nova por acao antiga: o preco por acao dobra e o volume cai pela metade."""
+    registro = _linha(data="20260113", preabe=900, premax=1100, premin=800, preult=1000,
+                      quatot=1000, fatcot=1)
+
+    base = serie_corrigida(_registros(registro), "JBSS32", [])[0]
+    troca = serie_corrigida(_registros(registro), "JBSS32", [], Decimal("0.5"))[0]
+
+    assert base.close == pytest.approx(10.0)
+    assert troca.open == pytest.approx(18.0)
+    assert troca.high == pytest.approx(22.0)
+    assert troca.low == pytest.approx(16.0)
+    assert troca.close == pytest.approx(20.0)
+    assert troca.volume == 500
+
+
+# -- fatores_dividendos e adj_close ---------------------------------------------------
+def _provento(data_com, valor, *, tipo="ON", acao="DIVIDENDO", quoted=None) -> dict:
+    return {
+        "type_stock": tipo, "corporate_action": acao, "value_cash": valor,
+        "last_date_prior_ex": data_com, "quoted_per_shares": quoted,
+    }
+
+
+def _linhas_com_close_10(*datas: dt.date) -> list[dict]:
+    """Pregoes com preco por acao 10,00 (fatcot 1) nas datas dadas."""
+    return _registros(*[
+        _linha(data=d.strftime("%Y%m%d"), preabe=1000, premax=1000, premin=1000, preult=1000,
+               fatcot=1)
+        for d in datas
+    ])
+
+
+def test_dividendo_de_um_reais_com_close_10_reduz_so_ate_a_data_com() -> None:
+    """Antes e no dia da data-com o adj_close vale 0,9 x close; depois, o proprio close."""
+    dias = [dt.date(2026, 3, 2), dt.date(2026, 3, 3), dt.date(2026, 3, 4)]
+    registros = _linhas_com_close_10(*dias)
+
+    fatores = fatores_dividendos([_provento(dt.date(2026, 3, 3), 1.0)], registros, "ON")
+    assert fatores == [(dt.date(2026, 3, 3), Decimal("0.9"))]
+
+    serie = serie_corrigida(registros, "AZUL3", [], dividendos=fatores)
+    assert serie[0].adj_close == pytest.approx(9.0)
+    assert serie[1].adj_close == pytest.approx(9.0)
+    assert serie[2].adj_close == serie[2].close == pytest.approx(10.0)
+
+
+def test_sem_proventos_adj_close_fica_igual_ao_close_mesmo_com_troca() -> None:
+    serie = serie_corrigida(_registros(_linha(preult=1000, fatcot=1)), "JBSS32", [],
+                            Decimal("0.5"), [])
+    assert serie[0].adj_close == serie[0].close
+
+
+def test_fator_abaixo_de_meio_levanta_erro() -> None:
+    registros = _linhas_com_close_10(dt.date(2026, 3, 2), dt.date(2026, 3, 3))
+    with pytest.raises(ValueError, match="abaixo de"):
+        fatores_dividendos([_provento(dt.date(2026, 3, 3), 6.0)], registros, "ON")
+
+
+def test_fatores_filtram_tipo_de_acao_e_rotulo_e_aceitam_acento() -> None:
+    registros = _linhas_com_close_10(dt.date(2026, 3, 2), dt.date(2026, 3, 3))
+    proventos = [
+        _provento(dt.date(2026, 3, 3), 0.5, tipo="PN"),  # outro tipo: sai
+        _provento(dt.date(2026, 3, 3), 0.5, acao="BONIFICACAO EM ACOES"),  # rotulo: sai
+        _provento(dt.date(2026, 3, 3), 0.5, acao="RESTITUIÇÃO DE CAPITAL"),  # entra
+    ]
+
+    assert fatores_dividendos(proventos, registros, "ON") == [
+        (dt.date(2026, 3, 3), Decimal("0.95"))
+    ]
+
+
+def test_fatores_somam_proventos_da_mesma_data_com_e_dividem_por_quoted() -> None:
+    registros = _linhas_com_close_10(dt.date(2026, 3, 2), dt.date(2026, 3, 3))
+    proventos = [
+        _provento(dt.date(2026, 3, 3), 0.5),
+        _provento(dt.date(2026, 3, 3), 1000.0, acao="JRS CAP PROPRIO", quoted="1000,00000000"),
+    ]
+
+    # 0,5 + 1000 / 1000 = 1,5 por acao sobre close 10: f = 0,85.
+    assert fatores_dividendos(proventos, registros, "ON") == [
+        (dt.date(2026, 3, 3), Decimal("0.85"))
+    ]
+
+
+def test_provento_antes_da_primeira_linha_nao_entra() -> None:
+    registros = _linhas_com_close_10(dt.date(2026, 3, 2))
+    assert fatores_dividendos([_provento(dt.date(2026, 3, 1), 6.0)], registros, "ON") == []
+
+
+def test_provento_sem_valor_levanta_erro() -> None:
+    registros = _linhas_com_close_10(dt.date(2026, 3, 2))
+    with pytest.raises(ValueError, match="sem data-com ou valor"):
+        fatores_dividendos([_provento(dt.date(2026, 3, 2), None)], registros, "ON")
+
+
+# -- gerar_correcoes (sem rede, sem banco) --------------------------------------------
+def test_gerar_correcoes_baixa_cada_ano_uma_vez_e_grava_as_colunas_novas(
+    tmp_path, monkeypatch
+) -> None:
+    baixados: list[int] = []
+
+    class ColetorFalso:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def baixar_ano(self, ano: int) -> bytes:
+            baixados.append(ano)
+            return _zip_com(
+                _linha(data="20260112", codneg="JBSS3", preult=1000, quatot=1000, fatcot=1),
+                _linha(data="20260113", codneg="JBSS3", preult=1000, quatot=1000, fatcot=1),
+                _linha(data="20260114", codneg="JBSS3", preult=1000, quatot=1000, fatcot=1),
+                _linha(data="20260112", codneg="NTCO3", preult=2000, quatot=500, fatcot=1),
+                _linha(data="20260113", codneg="NTCO3", preult=2000, quatot=500, fatcot=1),
+            )
+
+    correcoes = {
+        "JBSS32": CorrecaoPrecoB3(
+            codigos=("JBSS3",), isin="BRJBSSACNOR8", inicio=dt.date(2026, 1, 12),
+            fim=dt.date(2026, 1, 14), issuing_company="JBSS", fator_troca=0.5,
+        ),
+        "NATU3": CorrecaoPrecoB3(
+            codigos=("NTCO3",), isin="BRNTCOACNOR5", inicio=dt.date(2026, 1, 12),
+            fim=dt.date(2026, 1, 14), issuing_company="NTCO",
+        ),
+    }
+    proventos_por_emissor = {
+        "JBSS": [_provento(dt.date(2026, 1, 13), 1.0)],  # ON, DIVIDENDO: entra
+        "NTCO": [],
+    }
+    emissores_lidos: list[str] = []
+
+    def proventos_do_banco(emissor: str) -> list[dict]:
+        emissores_lidos.append(emissor)
+        return proventos_por_emissor[emissor]
+
+    monkeypatch.setattr(b3_cotahist, "CORRECOES_PRECO_B3", correcoes)
+    monkeypatch.setattr(b3_cotahist, "CotahistCollector", ColetorFalso)
+    monkeypatch.setattr(
+        b3_cotahist, "get_settings", lambda: type("S", (), {"price_start": dt.date(2026, 1, 13)})
+    )
+    monkeypatch.setattr(b3_cotahist, "_grupamentos_do_banco", lambda emissor, isin: [])
+    monkeypatch.setattr(b3_cotahist, "_proventos_do_banco", proventos_do_banco)
+
+    stats = gerar_correcoes(tmp_path)
+
+    assert baixados == [2026]  # um ano, uma vez, para as duas correcoes
+    assert emissores_lidos == ["JBSS", "NTCO"]
+    assert stats["JBSS32 linhas"] == 2  # a janela corta em price_start (13/01)
+    assert stats["NATU3 linhas"] == 1
+
+    cabecalho = (tmp_path / "JBSS32.csv").read_text(encoding="utf-8").splitlines()[0]
+    assert cabecalho.endswith(",fator_grupamento,fator_troca,fator_dividendos")
+
+    carregadas = carregar_correcoes(tmp_path)
+    dia_13, dia_14 = carregadas["JBSS32"]
+    # JBSS3 a 10,00 com troca 0,5: preco 20,00; provento de 1,00 sobre 10,00 -> f = 0,9.
+    assert dia_13.close == pytest.approx(20.0)
+    assert dia_13.adj_close == pytest.approx(18.0)
+    assert dia_13.volume == 500
+    assert dia_14.adj_close == pytest.approx(20.0)  # depois da data-com: sem ajuste
+    assert carregadas["NATU3"][0].close == pytest.approx(20.0)

@@ -56,7 +56,7 @@ uma fonte rejeitada sem antes provar, com uma chamada real, que a limitação mu
 | **BCB SGS série 432** | Selic | Oficial, sem chave, sem limite |
 | **BCB PTAX** | Dólar | Oficial, sem chave. Usar `cotacaoVenda` |
 | **Brapi** | *Fallback* de preço (sem coletor implementado) | Funciona sem token; free = 15.000 req/mês. Só 1 ano de histórico |
-| **B3 COTAHIST** | Correção de preço por lista explícita (`CORRECOES_PRECO_B3`; hoje só AZUL3 de 2026-01-13 a 2026-04-17) | Oficial, sem chave. O Yahoo emenda papéis nessa janela (AZUL53 cotada por lote de 1 milhão). CSV versionado em `data/correcoes_precos/`, aplicado pelo coletor do Yahoo |
+| **B3 COTAHIST** | Correção de preço por lista explícita (`CORRECOES_PRECO_B3`; hoje AZUL3 de 2026-01-13 a 2026-04-17, e as emendas de troca de código JBSS32 (série JBSS3 até 2025-06-06, fator 0,5) e NATU3 (série NTCO3 de 2019-12-18 a 2025-07-01), de 2026-11-03) | Oficial, sem chave. O Yahoo emenda papéis nessa janela (AZUL53 cotada por lote de 1 milhão). CSV versionado em `data/correcoes_precos/`, aplicado pelo coletor do Yahoo |
 
 **API WordPress, medida em 2026-03.** O Google News era lento para cobrir esses 3 veículos (throttle de 2,0 s, sequencial, ~9.010 consultas/ano, mais de 30 h para 5 anos). O WordPress entregou 11.306 posts no mês em 122 requisições, sem erro. A API cobre 862 de 865 (99,7%) do que o Google trouxe desses sites (faltaram 2 de conteúdo de marca e 1 renomeado), e a normalização de URL acertou 100%. Republicação entre veículos (106 pares/mês) conta como 1 notícia, a "história", com o representante no `date_gmt` mais antigo (decisão do dono). Posts por ano nos 3 sites: 89,5 mil (2021), 93,8 mil (2022), 83,6 mil (2023), 84,6 mil (2024) e 106,1 mil (2025).
 
@@ -184,12 +184,12 @@ o que se perdeu com isso.**
   conforme o banco. Há teste de regressão.
 - **Timestamps usam `UTCDateTime`**: o MySQL não guarda fuso e, sem o tipo, o valor voltaria
   naive, deslocando a agregação diária.
-- **A camada `raw` é append-only, com exceções de UPDATE.** Reprocessamento sempre parte dela — nunca da rede. As exceções reais são upserts que atualizam `raw_prices`, `raw_macro`, `raw_articles.resolved_url`, `v1-raw_cvm_cadastro` e `v1-raw_b3_cadastro` (ver [docs/06-banco-de-dados.md](docs/06-banco-de-dados.md), seção 3.3).
+- **A camada `raw` é append-only, com exceções de UPDATE.** Reprocessamento sempre parte dela — nunca da rede. As exceções reais são upserts que atualizam `raw_prices`, `raw_macro`, `raw_articles.resolved_url`, `raw_articles.published_at`, `published_precision` e `published_time_source` (esses três pelo `fix-news-times`, de 2026-11-03), `v1-raw_cvm_cadastro` e `v1-raw_b3_cadastro` (ver [docs/06-banco-de-dados.md](docs/06-banco-de-dados.md), seção 3.3).
 - **Deduplicação por `url_hash`**, nunca pela URL crua (querystrings de tracking variam).
 - **Alteração de schema é manual:** muda o model em `src/tcc_scraper/db/`, atualiza `sql/schema.mysql.sql` e escreve o ALTER em `sql/alteracoes/AAAA-MM-DD_descricao.mysql.sql`. Quem aplica é o dono, com usuário com DDL, após aprovação. Nada de `CREATE TABLE` solto.
 - **Prefixo `v1-` só nas tabelas criadas pela pipeline nova** (`PREFIXO_TABELA` em `db/models.py`):
-  as que nasceram nas antigas migrations 0004–0007 e nas alterações depois delas (31 tabelas: `painel_*`,
-  fontes/juíza, as 10 de entrega, sendo a 9ª `v1-composicao_ibov`, de 2026-10-23, e a 10ª `v1-eventos_acoes`, de 2026-11-02, e as 3 da coleta WordPress,
+  as que nasceram nas antigas migrations 0004–0007 e nas alterações depois delas (32 tabelas: `painel_*`,
+  fontes/juíza, as 11 de entrega, sendo a 9ª `v1-composicao_ibov`, de 2026-10-23, a 10ª `v1-eventos_acoes`, de 2026-11-02, e a 11ª `v1-emissores_ticker`, de 2026-11-03, e as 3 da coleta WordPress,
   de 2026-10-27: `v1-raw_wp_posts`, `v1-staging_historias` e `v1-staging_wp_processamento`). O nome real é `v1-painel_logs`, `v1-raw_ipe_docs`, `v1-noticias` … `v1-indices` (o CSV
   continua com o nome da spec). As 14 antigas mantêm o nome, inclusive `raw_articles`, `raw_prices` e
   `raw_llm_runs`; ficam sem prefixo também `features_dataset_v1`. O hífen exige
@@ -226,7 +226,7 @@ python -m tcc_scraper.cli collect-cadastro     # cadastro das companhias (CVM e 
 python -m tcc_scraper.cli collect-proventos    # proventos (B3)
 python -m tcc_scraper.cli collect-indices      # CDI e IPCA (BCB)
 python -m tcc_scraper.cli judge-news [--limite N] [--backlog [--anos A] [--orcamento-usd X]] [--status] [--concordancia N [--semente S] [--referencia MODELO]]   # juiza de noticias
-python -m tcc_scraper.cli build-entrega [--csv] [--tabela X]    # 10 tabelas da entrega
+python -m tcc_scraper.cli build-entrega [--csv] [--tabela X]    # 11 tabelas da entrega
 python -m tcc_scraper.cli executor             # worker do painel (Railway): comandos, daily das 08:00 BRT, carga historica
 python -m tcc_scraper.cli daily [--etapa ID]   # daily de 9 etapas, sem painel (bloqueante)
 python -m tcc_scraper.cli historico --anos 2025 --anos 2026 [--modo pendentes]  # carga historica (bloqueante)

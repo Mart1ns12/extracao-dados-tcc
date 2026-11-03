@@ -759,3 +759,25 @@ CREATE TABLE `v1-eventos_acoes` (
 
 CREATE INDEX ix_eventos_acoes_cnpj ON `v1-eventos_acoes` (cnpj);
 
+-- Etapa 0014: emissor por periodo de cada ticker (ver sql/alteracoes/2026-11-03_emissores_ticker.mysql.sql)
+
+CREATE TABLE `v1-emissores_ticker` (
+    ticker VARCHAR(12) NOT NULL,
+    ordem SMALLINT NOT NULL,
+    ticker_negociado VARCHAR(12) NOT NULL,
+    cd_cvm INTEGER NULL,
+    cnpj VARCHAR(14) NULL,
+    empresa VARCHAR(128) NULL,
+    vigencia_inicio DATE NULL,
+    vigencia_fim DATE NULL,
+    fator_acoes DOUBLE NOT NULL,
+    CONSTRAINT pk_emissores_ticker PRIMARY KEY (ticker, ordem)
+);
+
+CREATE INDEX ix_emissores_ticker_cnpj ON `v1-emissores_ticker` (cnpj);
+
+-- Etapa 0015: situacao do balanco na entrega (ver sql/alteracoes/2026-11-03_balancos_situacao.mysql.sql)
+
+ALTER TABLE `v1-balancos`
+    ADD COLUMN situacao VARCHAR(16) NOT NULL DEFAULT 'ok' AFTER aplicacoes_financeiras;
+

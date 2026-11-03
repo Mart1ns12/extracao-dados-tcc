@@ -24,6 +24,7 @@ from sqlalchemy import select
 
 from tcc_scraper.collectors.b3_base import B3Collector, data_b3, decimal_b3, registro_hash
 from tcc_scraper.collectors.base import UnitResult, WorkUnit
+from tcc_scraper.config import EMISSORES_POR_PERIODO, TICKER_CODE_CVM
 from tcc_scraper.db.models_fontes import RawB3Cadastro, RawB3Proventos, RawB3Suplemento
 from tcc_scraper.db.session import session_scope
 from tcc_scraper.db.upsert import bulk_upsert
@@ -55,6 +56,11 @@ class B3ProventosCollector(B3Collector):
             alvo = self._ler_universo()
         for empresa in alvo:
             yield WorkUnit(key=f"prov|{empresa['issuing_company']}", payload=empresa)
+        if self._empresas is None:
+            # Emissores antigos de tickers atuais (ex.: JBS de JBSS32, Natura &Co de NATU3).
+            for empresa in empresas_de_periodos():
+                ic, cd = empresa["issuing_company"], empresa["cd_cvm"]
+                yield WorkUnit(key=f"prov|{ic}|{cd}", payload=empresa)
 
     def process(self, unit: WorkUnit) -> UnitResult:
         ic = unit.payload["issuing_company"]
@@ -152,11 +158,39 @@ class B3ProventosCollector(B3Collector):
             )
 
 
+def empresas_de_periodos() -> list[dict]:
+    """Emissores de periodo que nao sao o codigo atual do ticker (ex.: JBS de JBSS32 ate
+    2025-06-08, Natura &Co de NATU3 ate 2025-07-01). Sem repetir (issuing_company, cd_cvm)."""
+    vistos: set[tuple[str, int]] = set()
+    empresas: list[dict] = []
+    for ticker, periodos in EMISSORES_POR_PERIODO.items():
+        for periodo in periodos:
+            if periodo.cd_cvm == TICKER_CODE_CVM.get(ticker):
+                continue
+            chave = (periodo.issuing_company, periodo.cd_cvm)
+            if chave in vistos:
+                continue
+            vistos.add(chave)
+            empresas.append(
+                {
+                    "issuing_company": periodo.issuing_company,
+                    "trading_name": periodo.nomes_pregao[0],
+                    "company_name": None,
+                    "nomes": list(periodo.nomes_pregao),
+                    "cd_cvm": periodo.cd_cvm,
+                }
+            )
+    return empresas
+
+
 def _nomes_candidatos(payload: dict) -> list[str]:
-    """trading_name e companyName do cadastro, sem vazios nem repetidos, nessa ordem."""
+    """trading_name e companyName do cadastro, depois os nomes de pregao do periodo ("nomes"),
+    sem vazios nem repetidos, nessa ordem."""
+    candidatos = [payload.get("trading_name"), payload.get("company_name")]
+    candidatos += payload.get("nomes") or []
     nomes: list[str] = []
-    for chave in ("trading_name", "company_name"):
-        nome = (payload.get(chave) or "").strip()
+    for valor in candidatos:
+        nome = (valor or "").strip()
         if nome and nome not in nomes:
             nomes.append(nome)
     return nomes

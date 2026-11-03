@@ -1,6 +1,6 @@
-# Entrega: as 10 tabelas para a etapa seguinte
+# Entrega: as 11 tabelas para a etapa seguinte
 
-Este documento cobre as 10 tabelas entregues: as 8 da spec (`v1-noticias` a `v1-indices`), `v1-composicao_ibov`, que não está na spec (seção 10), e `v1-eventos_acoes`, que entrou pelo adendo de 2026-11-02 da spec (seção 11). Para cada uma: a origem de cada coluna, a chave, a regra de atualização e as regras especiais. A especificação do que foi pedido está em [spec-entrega-etapa-seguinte.md](spec-entrega-etapa-seguinte.md), e o desenho detalhado em [superpowers/specs/2026-10-19-entrega-etapa-seguinte-design.md](superpowers/specs/2026-10-19-entrega-etapa-seguinte-design.md). Este texto descreve o código atual.
+Este documento cobre as 11 tabelas entregues: as 8 da spec (`v1-noticias` a `v1-indices`), `v1-composicao_ibov`, que não está na spec (seção 10), `v1-eventos_acoes`, que entrou pelo adendo de 2026-11-02 da spec (seção 11), e `v1-emissores_ticker`, que entrou pelo adendo de 2026-11-03 (seção 12). Para cada uma: a origem de cada coluna, a chave, a regra de atualização e as regras especiais. A especificação do que foi pedido está em [spec-entrega-etapa-seguinte.md](spec-entrega-etapa-seguinte.md), e o desenho detalhado em [superpowers/specs/2026-10-19-entrega-etapa-seguinte-design.md](superpowers/specs/2026-10-19-entrega-etapa-seguinte-design.md). Este texto descreve o código atual.
 
 ## 1. Visão geral
 
@@ -16,6 +16,7 @@ Este documento cobre as 10 tabelas entregues: as 8 da spec (`v1-noticias` a `v1-
 | `v1-proventos` | (`ticker`, `tipo`, `data_com`) | `raw_b3_proventos`, `raw_b3_suplemento`, `raw_b3_cadastro` |
 | `v1-indices` | (`data`, `indice`) | `raw_prices` (Yahoo) e `raw_macro` (BCB) |
 | `v1-composicao_ibov` | (`ticker`, `vigencia_inicio`) | Carteiras oficiais em `data/composicao_ibov/`, `REBALANCEAMENTOS_IBOV`, `EVENTOS_IBOV_EXTRAORDINARIOS` e `MUDANCAS_TICKER` em `config.py`, coletor `b3_carteira_ibov` |
+| `v1-emissores_ticker` | (`ticker`, `ordem`) | `EMISSORES_POR_PERIODO` em `config.py` (emissor de cada ticker por período) |
 
 Todas levam o prefixo `v1-`, como as demais tabelas da pipeline nova (ver [06-banco-de-dados.md](06-banco-de-dados.md)).
 
@@ -40,7 +41,7 @@ Chave: (`id`, `ticker`). Uma linha por par (artigo, ticker) aprovado.
 |---|---|---|
 | `id` | `raw_articles.id` | `n` seguido do id com zeros à esquerda até 6 dígitos (`n000123`). Cresce sem colisão além disso |
 | `ticker` | `article_tickers` e `tickers_adicionais` da juíza | Uma linha por par. Tickers adicionais só entram se estiverem no universo de coleta |
-| `data_hora_publicacao` | `raw_articles.published_at` | ISO 8601 no fuso de São Paulo, com offset. **Vazia** quando `published_precision = 'date'` (documentos do IPE) |
+| `data_hora_publicacao` | `raw_articles.published_at` | ISO 8601 no fuso de São Paulo, com offset. **Vazia** quando `published_precision = 'date'` (documentos do IPE e notícias do Google News sem hora, ver 2.3) |
 | `data_hora_coleta` | `raw_articles.collected_at` | ISO 8601 no fuso de São Paulo |
 | `titulo` | `raw_articles.title` | Sem o sufixo com o nome do veículo |
 | `fonte` | `source_name`, senão `source_domain` | Documento do IPE: `CVM` |
@@ -72,7 +73,10 @@ Depois das 10 colunas da spec, a tabela tem 7 colunas extras, nesta ordem:
   - `apos_fechamento`: a partir das 18:00.
 
   Notícias do Google News só têm a data quando o RSS entrega 00:00 de Los Angeles. Nesse caso `published_precision = 'date'` e a hora vira `desconhecido`, a menos que a própria página da matéria traga a hora (`published_time_source = 'pagina'`, ver `docs/09-historico-de-mudancas.md`, seção 12).
+
+  Antes de 2026-11-03, parte dessas matérias tinha a hora falsa de 00:00 do Pacífico gravada como hora exata (em geral caindo em `antes_abertura`). O `fix-news-times` (`corrigir_horas_publicacao`, em `enrich/article_fetcher.py`), fase (a), remarca essas matérias para `date`, com `published_at` às 00:00 de São Paulo do mesmo dia. O dia não muda, então `features_dataset_v1` não muda. Em `v1-noticias`, a linha passa a ter `data_hora_publicacao` vazia e `momento_pregao` = `desconhecido`. A fase (b), opcional, busca a hora na página (~15.900 páginas).
 - **Julgamento por ticker.** Cada par leva o julgamento do próprio ticker, na versão mais alta do prompt da juíza. Tickers adicionais herdam o julgamento do ticker principal do artigo.
+- **Emissor por período (IPE, 2026-11-03).** Um documento do IPE só fica no ticker se o emissor desse ticker valia na `data_entrega` do documento (ver seção 12). Por isso, as 7 notas da Natura Cosméticos ligadas a `NATU3` saem de `v1-noticias`: a Natura Cosméticos (CVM 19550) não era o emissor de `NATU3` no período em que elas foram entregues.
 - **Filtro da juíza.** Controlado por `ENTREGA_FILTRO_JUIZA`, com padrão `false`.
   - Com o filtro **desligado**, entra todo par com vínculo, inclusive panoramas e opiniões. Os campos da juíza saem vazios quando não há julgamento.
   - Com o filtro **ligado**, documentos do IPE entram sempre. As demais notícias só entram se `tipo_conteudo = reportagem` e `papel` for `protagonista` ou `citada_com_fato`. Artigo sem julgamento fica de fora.
@@ -82,6 +86,13 @@ Depois das 10 colunas da spec, a tabela tem 7 colunas extras, nesta ordem:
 ## 3. Preços: `v1-precos`
 
 Chave: (`data`, `ticker`). Fonte: `raw_prices`, do Yahoo. Exceção: a AZUL3 de 2026-01-13 a 2026-04-17 vem da COTAHIST da B3 (`data/correcoes_precos/AZUL3.csv`, gerado por `gerar-correcao-precos`), com `source` = `b3_cotahist`.
+
+**Emendas de troca de código (2026-11-03).** `CORRECOES_PRECO_B3` ganhou duas entradas, com a mesma origem (COTAHIST) e o mesmo CSV em `data/correcoes_precos/`:
+
+- `JBSS32`: série `JBSS3` de 2019-12-02 a 2025-06-06. Com `fator_troca` = 0,5 (1 BDR = 2 ações), o preço sai ×2 e o volume ×0,5. Corrige a alta falsa de +100% do JBSS32 em 2025-06-09, que o Yahoo emendava sem ajuste.
+- `NATU3`: série `NTCO3` de 2019-12-18 a 2025-07-01, sem fator. Corrige os 4 dias falsos a R$ 36,86 (placeholder do Yahoo).
+
+O CSV ganha as colunas `fator_troca` e `fator_dividendos`. O `adj_close` da correção é ajustado por proventos em dinheiro da B3 (fator = 1 − provento ÷ fechamento na data-com) e emendado na base do Yahoo pelo primeiro pregão depois da janela.
 
 | Coluna | Origem | Regra |
 |---|---|---|
@@ -152,7 +163,7 @@ Chave: (`cnpj`, `tipo_documento`, `data_inicio_periodo`, `data_fim_periodo`). Fo
 | `cnpj`, `tipo_documento` | `CNPJ_CIA`, tipo do documento (DFP ou ITR) | Vêm do registro |
 | `data_inicio_periodo`, `data_fim_periodo` | `DT_INI_EXERC`, `DT_FIM_EXERC` da DRE | No ITR, o trimestre e o acumulado do ano são linhas diferentes, e as duas são entregues |
 | `data_entrega` | `DT_RECEB` da DRE do período | |
-| `receita_liquida` | DRE, conta `3.01` | |
+| `receita_liquida` | DRE, conta `3.01` | Para a HAPV3, com o ajuste de seguros IFRS 17 (ver regras especiais). Em 2026-11-03 o significado mudou só para ela |
 | `lucro_bruto` | DRE, conta `3.03` | A descrição precisa começar com "resultado bruto" e não pode conter "intermediacao" nem "operacoes". Em branco para bancos e seguradoras |
 | `lucro_liquido` | DRE, conta `3.11`, senão `3.09` | A descrição precisa começar com "lucro/prejuizo consolidado do periodo" ou "lucro/prejuizo do periodo" |
 | `patrimonio_liquido` | BPP, conta `2.08`, senão `2.03` | Linha com `DT_FIM_EXERC` igual à data da DRE. A descrição precisa começar com "patrimonio liquido" |
@@ -162,10 +173,11 @@ Chave: (`cnpj`, `tipo_documento`, `data_inicio_periodo`, `data_fim_periodo`). Fo
 | `emprestimos_longo_prazo` | BPP, contas `2.02.01.01` + `2.02.01.02`; se somam zero, conta-pai `2.02.01` menos `2.02.01.03` | Igual a `emprestimos_curto_prazo`, para o passivo de longo prazo. O arrendamento (`2.02.01.03`) fica de fora. Em branco para bancos e seguradoras |
 | `caixa` | BPA, conta `1.01.01` | A descrição precisa começar com "caixa e equivalentes". Linha com `DT_FIM_EXERC` igual à data de referência do documento. Em branco para bancos e seguradoras |
 | `aplicacoes_financeiras` | BPA, conta `1.01.02` | A descrição precisa começar com "aplicacoes financeiras". Linha com `DT_FIM_EXERC` igual à data de referência do documento. Em branco para bancos e seguradoras |
+| `situacao` | Regra da entrega | `ok` (padrão), `ajuste_ifrs17` (receita com ajuste de seguros) ou `reapresentado` (linha que usa o comparativo de uma remessa posterior). Se as duas se aplicam, vale `reapresentado` |
 
 **Regras especiais:**
 
-- Só entra a linha com `ORDEM_EXERC = ÚLTIMO`.
+- Só entra a linha com `ORDEM_EXERC = ÚLTIMO`, salvo na reapresentação (abaixo). Desde 2026-11-03, o raw guarda também o `PENÚLTIMO` (comparativo do exercício anterior, reapresentado pela companhia) e as subcontas `3.01.NN`. O builder só lê o `PENÚLTIMO` na reapresentação.
 - Para cada (CNPJ, tipo, `DT_REFER`), só a maior `VERSAO`.
 - Valores com escala `MIL` são multiplicados por 1.000. A multiplicação usa `Decimal`.
 - **Escala declarada errada.** Se a companhia declara `UNIDADE` num documento cuja magnitude fica 100x abaixo da mediana dos seus documentos em `MIL` (ou o contrário, com 100x acima), a escala do documento passa a ser a da maioria dos documentos do CNPJ. Cada correção sai no log. O raw não muda.
@@ -173,6 +185,11 @@ Chave: (`cnpj`, `tipo_documento`, `data_inicio_periodo`, `data_fim_periodo`). Fo
 - **Empréstimos sem subconta.** CSN, Sabesp, Rede D'Or, Magalu, CMIN e outras lançam a dívida só na conta-pai (`2.01.04`, `2.02.01`), com as subcontas em 0. Por isso as subcontas valem quando somam mais que zero; senão, usa-se o pai menos o arrendamento (`.03`), tratado como 0 quando não existe. A regra não vale para aplicações financeiras, que zeradas continuam valendo 0. **Limitação da fonte:** se a empresa preenche só o pai e deixa o `.03` em 0, o valor pode incluir arrendamento, que a CVM não separa. As contas-pai só existem no `raw_cvm_balancos` depois de recoletar `cvm_itr_dfp`.
 - **D&A no ITR.** A DFC do ITR é acumulada no ano. Na linha cujo período é igual ao de uma DFC (acumulado, primeiro trimestre ou DFP), a D&A é a dessa DFC. No trimestre seguinte, a D&A é a acumulada até o fim do período menos a acumulada até a véspera do início, ambas do mesmo CNPJ. Se o documento anterior não existir, ou a diferença sair negativa, a coluna fica em branco. Se houver mais de uma versão do documento anterior, vale a de maior `VERSAO`.
 - **Bancos e seguradoras** usam outro plano de contas: o lucro fica em `3.11` ou `3.09` e o patrimônio em `2.08` ou `2.03`. A descrição não basta para separá-los (há bancos com "Caixa e Equivalentes de Caixa", e a seguradora PSSA3 usa o plano industrial). Por isso a lista explícita `CD_CVM_BANCOS_SEGURADORAS`, em `config.py`, diz quem são. Para eles, `lucro_bruto`, `ebit`, `depreciacao_amortizacao`, os empréstimos, `caixa` e `aplicacoes_financeiras` ficam em branco. Lucro líquido e patrimônio seguem a regra normal.
+- **Receita IFRS 17 (2026-11-03).** Algumas companhias publicam a despesa de seguros dentro da conta `3.01`, como subconta `3.01.NN` negativa cuja descrição começa com "despesa" e contém "seguro". Nesse caso, `receita_liquida` subtrai essa subconta da `3.01` (como ela é negativa, o valor sobe) e `situacao` vira `ajuste_ifrs17`. Hoje só a HAPV3 cai nessa regra, em 1T25, 2T25, 1T26 e 2T26: o 1T25 passa de R$ 1,47 bi para R$ 7,80 bi, coerente com o 3T25 (R$ 7,92 bi) e com o anual. Para essa companhia, `receita_liquida` deixa de ser o valor publicado na `3.01`.
+- **Reapresentação (2026-11-03).** Se a receita do documento `ÚLTIMO` vem zerada ou ausente, e uma remessa posterior traz o mesmo período como `PENÚLTIMO` com receita diferente de zero, a linha usa o comparativo da primeira remessa posterior. Nesse caso, `data_entrega` passa a ser a `DT_RECEB` dessa remessa, o que não gera vazamento, porque a linha só existe a partir dela. O documento original fica inválido: PL e posições saem em branco, e ele deixa de entrar na D&A acumulada. `situacao` vira `reapresentado`. Caso real: JBS N.V. 1T25, publicado com receita 0 em 2025-05-27 e reapresentado com R$ 114,1 bi em 2026-05-12.
+- **SAUD3 (não corrigido).** No próprio dado da CVM, a receita da BRADSAÚDE salta de cerca de R$ 0,6 bi para cerca de R$ 8 bi por trimestre entre 1T26 e 2T26, por mudança de escopo da companhia. A entrega não corrige: a série fica como publicada.
+- **Fora do escopo.** TIMS3 e BBSE3 publicam a conta `3.01` igual a 0 na DFP 2025. Não há tratamento para isso.
+- **Emissor por período (2026-11-03).** Um balanço só entra se o CNPJ era o emissor do ticker na `data_entrega` (ver seção 12), e o ticker é sempre o atual. Saem da entrega os balanços da Natura Cosméticos de 2021 ao 1T25 e os da JBS N.V. antes da listagem; ficam no raw. Documentos da JBS S.A. após 2025-06-08 ficam sem ticker.
 
 **Atualização.** Upsert pela chave.
 
@@ -203,6 +220,8 @@ Valor que não se encaixa em nenhuma camada não é alterado. O caso de AZUL3 em
 
 **Eventos já refletidos no documento.** Um documento entregue depois de um evento pode já trazer a quantidade pós-evento. O DFP de IRBR3 de 2022-12, entregue em 2023-03-21 (`data_entrega`), já vem na base do grupamento 30:1 de 2023-01-24. Por isso, um evento com data-com entre a data de referência e a data de entrega só é aplicado se a quantidade ainda não o refletir: compara-se com a linha anterior, e, se a razão já for o fator do evento (tolerância de 5%), o evento não entra de novo. Essa conversão é feita pelo pipeline. Quem recebesse só os eventos aplicaria o grupamento duas vezes.
 
+**Emissor por período e fator (2026-11-03).** Um documento só entra se o CNPJ era o emissor do ticker na `data_entrega` (ver seção 12). Na base atual, a quantidade é multiplicada também pelo `fator_acoes` do emissor, que é a quantidade de ações do ticker atual por ação do emissor: JBSS32 usa 0,5, porque 1 BDR corresponde a 2 ações JBSS3. Assim, base atual × fator do emissor.
+
 **Atualização.** Upsert pela chave.
 
 ## 8. Proventos: `v1-proventos`
@@ -229,6 +248,8 @@ Os fatores se multiplicam. Exemplo de conferência: o desdobramento 1:2 de 2008 
 **Colisão na chave.** Dois proventos com o mesmo ticker, tipo e `data_com` têm os valores somados. A `data_pagamento` é a primeira não vazia. Os valores originais ficam em `raw_b3_proventos`.
 
 **Units.** A unit é a soma por composição: `quantidade ON × valor ON + quantidade PN × valor PN`, com as quantidades de `UNITS`. A `data_pagamento` vem do evento da ON na data; se não houver evento de ON nessa data, vem do evento da PN.
+
+**Emissor por período e BDR (2026-11-03).** O `ticker` é sempre o atual. Proventos de JBSS3 saem como `JBSS32`, com `valor_por_acao` ÷ 0,5 (1 BDR = 2 ações); proventos de NTCO3 saem como `NATU3`. O coletor de proventos da B3 ganha as unidades `prov|JBSS|20575` e `prov|NTCO|24783`, para os códigos antigos. Proventos de um BDR que só existe no suplemento da B3 entram. A janela de cada emissor é decidida pela data-com (seção 12).
 
 **Atualização.** Upsert pela chave.
 
@@ -315,10 +336,44 @@ Chave: (`ticker`, `data_com`, `tipo`, `isin_emitido`). Fonte: `v1-raw_b3_supleme
 
 **Atualização.** Upsert pela chave.
 
-## 12. Como gerar as tabelas e os CSVs
+## 12. Emissores por período: `v1-emissores_ticker`
+
+Chave: (`ticker`, `ordem`). Fonte: `EMISSORES_POR_PERIODO` em `config.py`, que diz qual companhia (código CVM e CNPJ) era o emissor de cada ticker em cada intervalo de datas. Ticker sem entrada ali tem um único emissor, o de `TICKER_CODE_CVM`, em período aberto. Tabela criada pela alteração de 2026-11-03 (`sql/alteracoes/2026-11-03_emissores_ticker.mysql.sql`) e gravada pela etapa `entrega`. Foi acrescentada à entrega pelo adendo de 2026-11-03 da spec, que traz o dicionário de `emissores_ticker.csv`.
+
+| Coluna | Regra |
+|---|---|
+| `ticker` | Ticker atual, o mesmo que aparece nas outras tabelas da entrega |
+| `ordem` | Número do período dentro do ticker |
+| `ticker_negociado` | Código que a B3 negociava naquele período (ex.: `JBSS3`, `NTCO3`) |
+| `cd_cvm`, `cnpj` | Código CVM e CNPJ da companhia emissora |
+| `empresa` | Nome da companhia emissora |
+| `vigencia_inicio`, `vigencia_fim` | Datas do período, inclusivas. `vigencia_fim` vazio quer dizer vigente |
+| `fator_acoes` | Ações do ticker atual por ação do emissor. JBSS32 em JBSS3: 0,5 (1 BDR = 2 ações). Natura &Co em NTCO3: 1,0 (troca 1:1) |
+
+Os dois tickers com mais de um emissor:
+
+- `JBSS32`: JBS S.A. (CVM 20575, negociada como JBSS3 até 2025-06-08, fator 0,5); JBS N.V. (CVM 80233, desde 2025-06-09).
+- `NATU3`: Natura Cosméticos (CVM 19550) até 2019-12-17; Natura &Co Holding (CVM 24783, negociada como NTCO3 de 2019-12-18 a 2025-07-01); Natura Cosméticos de novo desde 2025-07-02.
+
+**Regra de emissor por período.** Qual emissor vale é decidido pela **data de entrega à CVM**, não pela data de referência: `dt_receb` nos balanços e nas ações, `data_entrega` nos documentos do IPE e a data-com nos proventos. Pela data de referência, o 2T25 da Natura não teria dono, porque o trimestre termina em 2025-06-30 e a Natura Cosméticos só volta a ser a emissora em 2025-07-02. A `data_entrega` é o que já se sabia na época, então não há vazamento temporal.
+
+- **Ticker sempre o atual.** As linhas da entrega saem com `NATU3` ou `JBSS32`, mesmo quando o documento foi publicado sob o código antigo.
+- **Balanços** (seção 6) e **ações emitidas** (seção 7) só entram se o CNPJ era o emissor na data de entrega. **Proventos** (seção 8) são convertidos para o ticker atual. **Notícias do IPE** (seção 2.3) só ficam no ticker se o emissor valia na data.
+- **Gravação.** A etapa `entrega` apaga as linhas obsoletas de `v1-balancos`, `v1-acoes_emitidas`, `v1-proventos` e `v1-emissores_ticker`, mas só quando a montagem produz linhas para a tabela. Montagem vazia não apaga nada.
+
+**Preço.** O histórico de `JBSS32` e `NATU3` em `v1-precos` vem das emendas de troca de código da COTAHIST (seção 3). A alta falsa de +100% do JBSS32 em 2025-06-09 e os quatro dias de NATU3 a R$ 36,86 saem corrigidos.
+
+**O que se perde:**
+
+- Balanços da Natura Cosméticos de 2021 ao 1T25 e da JBS N.V. antes da listagem saem da entrega. Ficam no raw.
+- Documentos da JBS S.A. após 2025-06-08 ficam sem ticker.
+- `volume_relativo` do JBSS32 tem quebra de regime: o BDR negocia cerca de 1% do volume da JBSS3, então a série não é comparável com a de antes de 2025-06-09.
+- Risco: a B3 pode não devolver o histórico de NTCO3, que foi cancelada. Sem ele, a emenda de NATU3 não pode ser feita pela COTAHIST.
+
+## 13. Como gerar as tabelas e os CSVs
 
 ```bash
-python -m tcc_scraper.cli build-entrega                             # grava as 10 tabelas no banco
+python -m tcc_scraper.cli build-entrega                             # grava as 11 tabelas no banco
 python -m tcc_scraper.cli build-entrega --csv                       # grava no banco e exporta CSV
 python -m tcc_scraper.cli build-entrega --tabela noticias --csv     # só uma tabela; --tabela é repetível
 ```
@@ -334,7 +389,7 @@ SELECT ticker, data_publicacao, titulo
  LIMIT 10;
 ```
 
-## 13. Lacunas e pendências
+## 14. Lacunas e pendências
 
 - **Composição do IBOV não validada contra a B3.** A reconstrução de set/2024 até hoje dá 84 papéis, e a carteira da API tem 76. As divergências e as contagens citadas em B estão em [09-historico-de-mudancas.md](09-historico-de-mudancas.md), seção 14. A decisão é do dono.
 - **Filtro da juíza desligado por padrão.** Com `ENTREGA_FILTRO_JUIZA=false`, `v1-noticias` leva panoramas e opiniões. O filtro ligado é a regra de qualidade pretendida (spec, seção 5.1), e a decisão de ligá-lo é do dono.

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
+
 from tcc_scraper.collectors.prices_yahoo import PriceRow, aplicar_correcoes
 
 
@@ -81,3 +83,52 @@ def test_ticker_sem_correcao_nao_mexe_na_serie() -> None:
     correcoes = {"AZUL3": [_b3(DIA(2026, 1, 13))]}
 
     assert aplicar_correcoes(rows, correcoes) is rows
+
+
+def _yahoo_com_ajuste(data: dt.date, close: float | None, adj: float | None) -> PriceRow:
+    return PriceRow(
+        ticker="AZUL3", date=data, open=close, high=close, low=close, close=close,
+        adj_close=adj, volume=100,
+    )
+
+
+def test_reescala_adj_close_da_correcao_pela_base_do_yahoo_depois_da_janela() -> None:
+    """Yahoo 0,9 x close no 1o pregao depois da janela: a correcao sobe a mesma base."""
+    rows = [_yahoo_com_ajuste(DIA(2026, 4, 20), close=10.0, adj=9.0)]
+    correcao = [_b3(DIA(2026, 1, 13), 464.06), _b3(DIA(2026, 4, 17), 32.25)]
+
+    resultado = {r.date: r for r in aplicar_correcoes(rows, {"AZUL3": correcao})}
+
+    assert resultado[DIA(2026, 1, 13)].close == pytest.approx(464.06)
+    assert resultado[DIA(2026, 1, 13)].adj_close == pytest.approx(464.06 * 0.9)
+    assert resultado[DIA(2026, 4, 17)].adj_close == pytest.approx(32.25 * 0.9)
+
+
+def test_reescala_usa_o_primeiro_pregao_depois_da_janela() -> None:
+    rows = [
+        _yahoo_com_ajuste(DIA(2026, 4, 21), close=10.0, adj=5.0),
+        _yahoo_com_ajuste(DIA(2026, 4, 20), close=10.0, adj=9.0),
+    ]
+    correcao = [_b3(DIA(2026, 1, 13), 100.0)]
+
+    resultado = aplicar_correcoes(rows, {"AZUL3": correcao})
+
+    assert resultado[0].adj_close == pytest.approx(90.0)
+
+
+def test_sem_pregao_yahoo_depois_da_janela_a_correcao_fica_como_esta() -> None:
+    rows = [_yahoo_com_ajuste(DIA(2026, 1, 12), close=10.0, adj=9.0)]
+    correcao = [_b3(DIA(2026, 1, 13), 100.0)]
+
+    resultado = aplicar_correcoes(rows, {"AZUL3": correcao})
+
+    assert resultado[-1].adj_close == 100.0
+
+
+def test_pregao_posterior_sem_close_nao_serve_de_referencia() -> None:
+    rows = [_yahoo_com_ajuste(DIA(2026, 4, 20), close=None, adj=None)]
+    correcao = [_b3(DIA(2026, 1, 13), 100.0)]
+
+    resultado = aplicar_correcoes(rows, {"AZUL3": correcao})
+
+    assert resultado[0].adj_close == 100.0

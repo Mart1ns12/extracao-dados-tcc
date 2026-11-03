@@ -27,7 +27,12 @@ from tcc_scraper.collectors.cvm_base import (
     last_modified,
     ler_csvs_do_zip,
 )
-from tcc_scraper.config import IPE_CATEGORIAS, TICKER_CODE_CVM
+from tcc_scraper.config import (
+    IPE_CATEGORIAS,
+    TICKER_CODE_CVM,
+    codigos_cvm_universo,
+    tickers_do_emissor,
+)
 from tcc_scraper.db.models import Article, ArticleTicker, url_hash
 from tcc_scraper.db.models_fontes import RawIpeDoc
 from tcc_scraper.db.session import session_scope
@@ -87,7 +92,7 @@ class CvmIpeCollector(CvmCollector):
         linhas = ler_csvs_do_zip(conteudo, (nome_csv,))[nome_csv]
         docs = parse_ipe(
             linhas,
-            set(TICKER_CODE_CVM.values()),
+            codigos_cvm_universo(),
             IPE_CATEGORIAS,
             desde=self.settings.inicio_noticias,
         )
@@ -158,8 +163,11 @@ def artigo_de_ipe(doc: IpeDocumento, agora: dt.datetime) -> dict:
     }
 
 
-def tickers_do_cd_cvm(cd_cvm: int) -> list[str]:
-    """Tickers da companhia (inverso de TICKER_CODE_CVM), ordenados."""
+def tickers_do_cd_cvm(cd_cvm: int, data: dt.date | None = None) -> list[str]:
+    """Tickers da companhia, ordenados. Sem `data`, o inverso de TICKER_CODE_CVM; com ela, os
+    tickers do emissor que valia na data (ver config.tickers_do_emissor)."""
+    if data is not None:
+        return tickers_do_emissor(cd_cvm, data)
     return sorted(ticker for ticker, codigo in TICKER_CODE_CVM.items() if codigo == cd_cvm)
 
 
@@ -223,7 +231,7 @@ def _persist(docs: list[IpeDocumento]) -> int:
             {"article_id": ids_por_hash[h], "ticker": ticker}
             for h, doc in por_hash.items()
             if h in ids_por_hash
-            for ticker in tickers_do_cd_cvm(doc.cd_cvm)
+            for ticker in tickers_do_cd_cvm(doc.cd_cvm, doc.data_entrega)
         ]
         bulk_upsert(
             session,

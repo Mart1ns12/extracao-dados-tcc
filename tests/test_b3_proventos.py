@@ -10,6 +10,7 @@ import pytest
 from tcc_scraper.collectors.b3_proventos import (
     B3ProventosCollector,
     _nomes_candidatos,
+    empresas_de_periodos,
     parse_cash_dividends,
     parse_suplemento,
 )
@@ -153,3 +154,42 @@ def test_nomes_candidatos_sem_vazios_nem_repetidos() -> None:
     assert _nomes_candidatos(payload) == ["KLABIN S/A", "KLABIN S.A."]
     assert _nomes_candidatos({"trading_name": "  ", "company_name": None}) == []
     assert _nomes_candidatos({"trading_name": "X", "company_name": "X"}) == ["X"]
+
+
+def test_nomes_candidatos_inclui_nomes_do_periodo_sem_repetir() -> None:
+    payload = {
+        "trading_name": "JBS",
+        "company_name": "JBS S.A.",
+        "nomes": ["JBS", "JBS S.A.", "JBS SA"],
+    }
+    assert _nomes_candidatos(payload) == ["JBS", "JBS S.A.", "JBS SA"]
+
+
+def test_empresas_de_periodos_so_emissores_diferentes_do_codigo_atual() -> None:
+    empresas = empresas_de_periodos()
+    assert [(e["issuing_company"], e["cd_cvm"]) for e in empresas] == [
+        ("JBSS", 20575),
+        ("NTCO", 24783),
+    ]
+    jbs = empresas[0]
+    assert jbs == {
+        "issuing_company": "JBSS",
+        "trading_name": "JBS",
+        "company_name": None,
+        "nomes": ["JBS", "JBS S.A.", "JBS SA"],
+        "cd_cvm": 20575,
+    }
+
+
+def test_work_units_sem_empresas_inclui_emissores_de_periodo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    universo = [{"issuing_company": "JBSS", "trading_name": "JBS", "company_name": None}]
+    monkeypatch.setattr(B3ProventosCollector, "_ler_universo", lambda self: universo)
+    chaves = [u.key for u in B3ProventosCollector().work_units()]
+    assert chaves == ["prov|JBSS", "prov|JBSS|20575", "prov|NTCO|24783"]
+
+
+def test_work_units_com_empresas_explicitas_nao_inclui_periodos() -> None:
+    chaves = [u.key for u in B3ProventosCollector(empresas=[("PETR", "PETROBRAS")]).work_units()]
+    assert chaves == ["prov|PETR"]

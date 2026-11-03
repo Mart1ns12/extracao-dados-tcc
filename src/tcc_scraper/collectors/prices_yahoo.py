@@ -11,7 +11,7 @@ import datetime as dt
 import logging
 import urllib.parse
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from tcc_scraper.collectors.base import Collector, UnitResult, WorkUnit
@@ -117,6 +117,26 @@ def _adj_ou_close(adj: list | None, index: int, close: float) -> float:
     return ajustado if ajustado is not None else close
 
 
+def _emendar_base_de_ajuste(
+    correcao: list[PriceRow], rows: list[PriceRow], fim: dt.date
+) -> list[PriceRow]:
+    """Reescala o adj_close da correcao pela base do Yahoo logo depois da janela.
+
+    O Yahoo ajusta cada dia pelos proventos posteriores a ele. A correcao so tem os proventos
+    ate `fim`; o fator (adj / close) do primeiro pregao seguinte leva os de depois. Sem
+    pregao posterior com close no Yahoo, a correcao fica como esta.
+    """
+    posteriores = sorted((r for r in rows if r.date > fim and r.close), key=lambda r: r.date)
+    if not posteriores or posteriores[0].adj_close is None:
+        return correcao
+    referencia = posteriores[0]
+    fator = referencia.adj_close / referencia.close
+    return [
+        replace(r, adj_close=r.adj_close * fator) if r.adj_close is not None else r
+        for r in correcao
+    ]
+
+
 def aplicar_correcoes(
     rows: list[PriceRow],
     correcoes: dict[str, list[PriceRow]],
@@ -126,7 +146,8 @@ def aplicar_correcoes(
 
     Descarta as linhas do Yahoo entre a menor e a maior data da correcao e mete as da
     correcao no lugar. Fora dessa janela o Yahoo fica. `ticker` so importa quando `rows`
-    esta vazio: sem linhas do Yahoo, o ticker nao sai delas.
+    esta vazio: sem linhas do Yahoo, o ticker nao sai delas. Se o Yahoo tem pregoes depois
+    da janela, o adj_close da correcao e reescalado pela base dele (_emendar_base_de_ajuste).
     """
     alvo = ticker or (rows[0].ticker if rows else None)
     correcao = correcoes.get(alvo) if alvo else None
@@ -135,6 +156,7 @@ def aplicar_correcoes(
     inicio = min(r.date for r in correcao)
     fim = max(r.date for r in correcao)
     mantidas = [r for r in rows if not inicio <= r.date <= fim]
+    correcao = _emendar_base_de_ajuste(correcao, rows, fim)
     return sorted([*mantidas, *correcao], key=lambda r: r.date)
 
 

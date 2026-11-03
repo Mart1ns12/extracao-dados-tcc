@@ -1,4 +1,4 @@
-"""Modelos das 10 tabelas de entrega, sem banco.
+"""Modelos das 11 tabelas de entrega, sem banco.
 
 Garante o contrato do schema em sql/schema.mysql.sql: nomes fixos pela spec, colunas na ordem
 da spec (parte 2), chaves primarias compostas como na spec, indices uteis e nenhum Float (so
@@ -24,6 +24,7 @@ PKS_ESPERADAS = {
     "proventos": ["ticker", "tipo", "data_com"],
     "indices": ["data", "indice"],
     "composicao_ibov": ["ticker", "vigencia_inicio"],
+    "emissores_ticker": ["ticker", "ordem"],
 }
 
 INDICES_ESPERADOS = {
@@ -32,6 +33,7 @@ INDICES_ESPERADOS = {
     "proventos": {"ix_proventos_ticker"},
     "indices": {"ix_indices_indice"},
     "eventos_acoes": {"ix_eventos_acoes_cnpj"},
+    "emissores_ticker": {"ix_emissores_ticker_cnpj"},
 }
 
 
@@ -40,14 +42,14 @@ def _tabela(nome: str):
     return Base.metadata.tables[f"{PREFIXO_TABELA}{nome}"]
 
 
-def test_dez_tabelas_de_entrega_no_metadata() -> None:
+def test_onze_tabelas_de_entrega_no_metadata() -> None:
     assert set(ENTREGA_TABLES) == {
         "v1-noticias", "v1-precos", "v1-cadastro", "v1-mudancas_ticker",
         "v1-balancos", "v1-acoes_emitidas", "v1-eventos_acoes", "v1-proventos", "v1-indices",
-        "v1-composicao_ibov",
+        "v1-composicao_ibov", "v1-emissores_ticker",
     }
     assert set(ENTREGA_TABLES) <= set(Base.metadata.tables)
-    assert len(ENTREGA_TABLES) == 10
+    assert len(ENTREGA_TABLES) == 11
 
 
 def test_nomes_passam_no_filtro_de_camada() -> None:

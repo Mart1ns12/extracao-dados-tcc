@@ -1,4 +1,4 @@
-# Banco de dados: MySQL 8 único, dicionário das 44 tabelas e schema
+# Banco de dados: MySQL 8 único, dicionário das 46 tabelas e schema
 
 Este documento cobre o banco do projeto: o servidor, o dicionário de todas as tabelas, o schema e as alterações de
 schema, as regras de tipo e de escrita e os testes que gravam no banco. Absorve o antigo roteiro de migração MySQL, que foi removido.
@@ -53,8 +53,8 @@ As camadas são **prefixo no nome da tabela**, não schema: no MySQL, "schema" e
 | `painel_` | Estado do executor e da carga, lido pelo painel | `painel_logs` |
 | sem prefixo de camada | Tabelas de entrega, com nomes fixos pela spec | `noticias` (com `v1-`) |
 
-O prefixo `v1-` (`PREFIXO_TABELA` em `db/models.py`) marca as **31 tabelas criadas pela pipeline nova**
-(criadas nas antigas migrations 0004 a 0007 e nas alterações posteriores), por pedido do dono: 8 `painel_*`, 13 de fontes, juíza e coleta WordPress e as 10 de entrega (incluindo `v1-composicao_ibov` e `v1-eventos_acoes`).
+O prefixo `v1-` (`PREFIXO_TABELA` em `db/models.py`) marca as **32 tabelas criadas pela pipeline nova**
+(criadas nas antigas migrations 0004 a 0007 e nas alterações posteriores), por pedido do dono: 8 `painel_*`, 13 de fontes, juíza e coleta WordPress e as 11 de entrega (incluindo `v1-composicao_ibov`, `v1-eventos_acoes` e `v1-emissores_ticker`).
 As 14 tabelas que já existiam (antigas migrations 0001 a 0003) mantêm o nome original. `features_dataset_v1` também não
 recebe o prefixo.
 
@@ -67,7 +67,7 @@ SELECT * FROM `v1-painel_logs` ORDER BY ts DESC LIMIT 20;
 A função `tabela_do_projeto(name)` (`db/models.py`) diz se uma tabela pertence ao projeto. Ela tira o `v1-` antes de
 comparar o prefixo de camada.
 
-## 3. Dicionário das 44 tabelas
+## 3. Dicionário das 46 tabelas
 
 Chave primária (PK) segundo o modelo SQLAlchemy. "Escreve" aponta o módulo que grava a tabela. "Linhas" aparece
 só onde o ledger do trabalho registra um número; caso contrário, `-`.
@@ -76,7 +76,7 @@ só onde o ledger do trabalho registra um número; caso contrário, `-`.
 
 | Tabela | Camada | Escreve | Chave (PK) | Migration | Linhas |
 |---|---|---|---|---|---|
-| `raw_articles` | raw | `collectors/google_news.py` (notícias), `collectors/cvm_ipe.py` (fatos relevantes, `origem` IPE), `enrich/article_fetcher.py` (UPDATE de `resolved_url`) | `id`; único `url_hash` | 0001 (`origem` e `published_precision` na 0004) | - |
+| `raw_articles` | raw | `collectors/google_news.py` (notícias), `collectors/cvm_ipe.py` (fatos relevantes, `origem` IPE), `enrich/article_fetcher.py` (UPDATE de `resolved_url`; e, pelo `fix-news-times`, de `published_at`, `published_precision` e `published_time_source`) | `id`; único `url_hash` | 0001 (`origem` e `published_precision` na 0004) | - |
 | `raw_article_bodies` | raw | `enrich/article_fetcher.py` | `article_id` | 0001 | - |
 | `raw_prices` | raw | `collectors/prices_yahoo.py` | `ticker`, `date` | 0001 | - |
 | `raw_macro` | raw | `collectors/macro_bcb.py` (Selic, PTAX) e `collectors/indices.py` (CDI, IPCA) | `series`, `date` | 0001 | - |
@@ -91,7 +91,7 @@ só onde o ledger do trabalho registra um número; caso contrário, `-`.
 | `staging_llm_acoes_sinais` | staging (LLM) | `llm/job.py`, substituída por dia | `data_referencia`, `ticker` | 0003 | - |
 | `staging_llm_mercados` | staging (LLM) | `llm/job.py`, substituída por dia | `data_referencia`, `nome` | 0003 | - |
 
-### 3.2 Tabelas com prefixo `v1-` (30)
+### 3.2 Tabelas com prefixo `v1-` (32)
 
 Painel (migration 0004). Quem escreve é o executor, salvo `v1-painel_comandos`, que a API do painel cria e confirma.
 
@@ -111,7 +111,7 @@ Fontes oficiais e juíza (migration 0005).
 | Tabela | Escreve | Chave (PK) | Migration | Linhas |
 |---|---|---|---|---|
 | `v1-raw_ipe_docs` | `collectors/cvm_ipe.py` (IPE da CVM) | `protocolo_entrega` | 0005; larguras na 0007 | 2.714 |
-| `v1-raw_cvm_balancos` | `collectors/cvm_demonstracoes.py` (ITR e DFP, demonstrações) | `cnpj`, `tipo_documento`, `dt_refer`, `versao`, `demonstracao`, `cd_conta`, `dt_ini_exerc`, `dt_fim_exerc` | 0005 | - |
+| `v1-raw_cvm_balancos` | `collectors/cvm_demonstracoes.py` (ITR e DFP, demonstrações; desde 2026-11-03 guarda também `ORDEM_EXERC` PENÚLTIMO, o comparativo reapresentado, e as subcontas `3.01.NN`, sem DDL; o raw cerca de dobra) | `cnpj`, `tipo_documento`, `dt_refer`, `versao`, `demonstracao`, `cd_conta`, `dt_ini_exerc`, `dt_fim_exerc` | 0005 | - |
 | `v1-raw_cvm_acoes` | `collectors/cvm_demonstracoes.py` (composição do capital) | `cnpj`, `tipo_documento`, `dt_refer`, `versao` | 0005 | - |
 | `v1-raw_cvm_cadastro` | `collectors/cvm_cadastro.py` (cad_cia_aberta) | `cnpj` | 0005 | - |
 | `v1-raw_b3_cadastro` | `collectors/b3_cadastro.py` (GetDetail por código CVM) | `cd_cvm` | 0005 | - |
@@ -157,10 +157,18 @@ Entrega (migration 0006). Os nomes e as colunas seguem a spec em `spec-entrega-e
 | `v1-indices` | `data`, `indice` | 210 |
 | `v1-composicao_ibov` | `ticker`, `vigencia_inicio` | - |
 | `v1-composicao_ibov` | `ticker`, `vigencia_inicio` | ainda não gravada (a reconstrução local dá 133 linhas) |
+| `v1-emissores_ticker` | `ticker`, `ordem` | - |
 
 `v1-acoes_emitidas` ganhou quatro colunas e `v1-eventos_acoes` foi criada pela alteração de 2026-11-02 (`sql/alteracoes/2026-11-02_acoes_base_atual_eventos.mysql.sql`, aplicada à mão pelo dono).
 
-As regras de origem de cada coluna das 10 tabelas estão em [Entrega](05-entrega.md).
+Alterações de 2026-11-03 (a aplicação no banco de produção é feita à mão pelo dono, seção 4.2):
+
+- `sql/alteracoes/2026-11-03_emissores_ticker.mysql.sql` cria `v1-emissores_ticker`, a 11ª tabela da entrega (dicionário de emissor por período, ver [Entrega](05-entrega.md), seção 12). É gravada pelo builder, na etapa `entrega`.
+- `sql/alteracoes/2026-11-03_balancos_situacao.mysql.sql` acrescenta a coluna `situacao` em `v1-balancos` (`ok`, `ajuste_ifrs17` ou `reapresentado`).
+
+A entrega passa a apagar, além das linhas reprovadas de `v1-noticias`, as linhas obsoletas de `v1-balancos`, `v1-acoes_emitidas`, `v1-proventos` e `v1-emissores_ticker`, mas só quando a montagem produz linhas para a tabela.
+
+As regras de origem de cada coluna das 11 tabelas estão em [Entrega](05-entrega.md).
 
 ### 3.3 Regra de atualização
 
@@ -171,7 +179,7 @@ Por padrão, o `bulk_upsert` (seção 5) grava só linhas novas: com `update_col
 |---|---|
 | `raw_prices` | `open`, `high`, `low`, `close`, `adj_close`, `volume`, `source` |
 | `raw_macro` | `value` |
-| `raw_articles` | `resolved_url`, por UPDATE em `enrich/article_fetcher.py` |
+| `raw_articles` | `resolved_url`, por UPDATE em `enrich/article_fetcher.py`; `published_at`, `published_precision` e `published_time_source`, por UPDATE do `fix-news-times` (`corrigir_horas_publicacao`, de 2026-11-03: remarca a hora falsa de 00:00 do Pacífico como `date`; a fase (b), opcional, grava a hora da página) |
 | `raw_cvm_cadastro` | `cd_cvm`, `denom_social`, `sit`, `setor_ativ`, `fetched_at` |
 | `raw_b3_cadastro` | `cnpj`, `trading_name`, `issuing_company`, `industry_classification`, `other_codes`, `payload`, `fetched_at` |
 | `staging_article_sentiment` | `prob_pos`, `prob_neu`, `prob_neg`, `text_source`, `scored_at` |
@@ -189,7 +197,7 @@ descontinuado: o schema atual fica em um arquivo SQL, e cada alteração é escr
 
 ### 4.1 Banco vazio
 
-`sql/schema.mysql.sql` tem o schema completo do estado atual, com as 44 tabelas. Para criar um banco vazio, aplique esse
+`sql/schema.mysql.sql` tem o schema completo do estado atual, com as 46 tabelas. Para criar um banco vazio, aplique esse
 arquivo com um usuário que tem DDL. Ele não cria a tabela `alembic_version`. Banco que já tem as tabelas não precisa dele.
 
 ### 4.2 Alterar o schema
@@ -261,7 +269,7 @@ Por isso, cada teste limpa só as linhas que criou, pelos prefixos `TESTE-`, `RE
 - **`raw_b3_cadastro.cd_cvm` vira `AUTO_INCREMENT`.** A PK é um `Integer` simples, e o SQLAlchemy gera
   `AUTO_INCREMENT` no DDL (ver `sql/schema.mysql.sql`). É inofensivo, porque o coletor sempre informa
   o `cd_cvm`. A correção certa é `autoincrement=False` no modelo e um ALTER em `sql/alteracoes/`. Não foi feita.
-- **"Raw append-only" não é literal.** Há UPDATEs em `raw_prices`, `raw_macro`, `raw_articles.resolved_url`, `v1-raw_cvm_cadastro` e `v1-raw_b3_cadastro` (seção 3.3). São reingestões e preenchimento de campo, não reescrita de histórico. O `CLAUDE.md` (seção 5) registra essa exceção.
+- **"Raw append-only" não é literal.** Há UPDATEs em `raw_prices`, `raw_macro`, `raw_articles.resolved_url`, `raw_articles.published_at`/`published_precision`/`published_time_source` (`fix-news-times`, de 2026-11-03), `v1-raw_cvm_cadastro` e `v1-raw_b3_cadastro` (seção 3.3). São reingestões e preenchimento de campo, não reescrita de histórico. O `CLAUDE.md` (seção 5) registra essa exceção.
 - **Nenhum servidor MySQL de teste.** Alterações de schema e testes com banco rodam contra o MySQL do `.env`. A paridade do
   dataset entre dois bancos, que existia com PostgreSQL, não foi reexecutada depois da migração para banco único.
 - **Números de linhas da seção 3.** Os valores vêm do ponta a ponta (T30), executado na noite de 2026-10-19 para
