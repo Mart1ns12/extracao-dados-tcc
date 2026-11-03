@@ -110,7 +110,9 @@ def intercalar_por_dominio(
 
 # Meia-noite em Los Angeles cai em 07:00 UTC (PDT) ou 08:00 UTC (PST). Serve so para
 # pre-filtrar no SQL; a conferencia exata e feita em Python, com o fuso.
-_HORAS_UTC_MEIA_NOITE_PACIFICA = ("07:00:00", "08:00:00")
+# Hora inteira, nao a string '07:00:00': no MySQL, TIME(x) IN ('07:00:00') compara como
+# numero e nao casava nenhuma linha (131.690 artigos ficaram de fora ate 2026-11-03).
+_HORAS_UTC_MEIA_NOITE_PACIFICA = (7, 8)
 
 
 @dataclass
@@ -146,7 +148,9 @@ def buscar_candidatos_hora() -> list[tuple[int, dt.datetime, str, str | None, st
                     Article.published_precision == "date",
                     and_(
                         Article.published_precision == "datetime",
-                        func.time(Article.published_at).in_(_HORAS_UTC_MEIA_NOITE_PACIFICA),
+                        func.hour(Article.published_at).in_(_HORAS_UTC_MEIA_NOITE_PACIFICA),
+                        func.minute(Article.published_at) == 0,
+                        func.second(Article.published_at) == 0,
                     ),
                 ),
             )
