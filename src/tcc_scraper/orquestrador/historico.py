@@ -558,6 +558,8 @@ class Historico:
         daquele ano ficam pendentes (nao rodam). Falha da principal aborta as duas.
         """
         ultimo_do_ano = {p.ano: p for p in passos}
+        # Passo em curso: se ele falhar, o log do painel diz qual foi.
+        em_curso: Passo | None = None
         try:
             for passo in passos:
                 if passo.depende_google:
@@ -573,10 +575,23 @@ class Historico:
                                 hist_id,
                             )
                         continue
-                if (passo.ano, passo.id_painel) not in feitos and not self._executar_passo(
-                    hist_id, passo, modo, ritmo
-                ):
-                    return
+                if (passo.ano, passo.id_painel) in feitos:
+                    self._log_passo(
+                        hist_id, trilha, passo, "pulado: já constava como concluído nesta carga"
+                    )
+                else:
+                    em_curso = passo
+                    self._log_passo(hist_id, trilha, passo, "iniciado")
+                    progresso = self._executar_passo(hist_id, passo, modo, ritmo)
+                    if progresso is None:
+                        return
+                    em_curso = None
+                    resumo = (
+                        f": {progresso.feitas} de {progresso.total} unidades"
+                        if progresso.total
+                        else ""
+                    )
+                    self._log_passo(hist_id, trilha, passo, f"concluído{resumo}")
                 if trilha == TRILHA_GOOGLE and ultimo_do_ano[passo.ano] is passo:
                     portoes[passo.ano].set()
         except Exception as exc:
@@ -592,6 +607,12 @@ class Historico:
                         self._falha = f"{type(exc).__name__}: {exc}"[:4000]
                     self._abortar.set()
                     self._acordar()
+            # Depois dos flags: falha ao gravar o log nao pode impedir a propagacao da falha.
+            if em_curso is not None:
+                self._log_passo(
+                    hist_id, trilha, em_curso, f"falhou: {type(exc).__name__}: {exc}"[:4000],
+                    nivel="erro",
+                )
         finally:
             with self._lock:
                 if trilha == TRILHA_GOOGLE:
@@ -599,6 +620,18 @@ class Historico:
                 self._vivas -= 1
                 if not (self._cancelar.is_set() or self._abortar.is_set()):
                     self._marcar_pausada_se_todas(hist_id)
+
+    def _log_passo(
+        self, hist_id: str, trilha: str, passo: Passo, situacao: str, nivel: str = "info"
+    ) -> None:
+        """Uma linha no log do painel por passo (nunca por unidade). hist_id vai em execucao_id."""
+        self._repo.log(
+            "historico",
+            nivel,
+            passo.id_painel,
+            f"passo {passo.id_painel} de {passo.ano} (trilha {trilha}) {situacao}",
+            hist_id,
+        )
 
     def _esperar_portao(self, hist_id: str, portao: threading.Event) -> bool:
         """Espera a trilha Google liberar o ano. Pausa no meio: estaciona como as demais.
@@ -615,11 +648,13 @@ class Historico:
             portao.wait(timeout=0.5)
         return True
 
-    def _executar_passo(self, hist_id: str, passo: Passo, modo: str, ritmo: _Ritmo) -> bool:
+    def _executar_passo(
+        self, hist_id: str, passo: Passo, modo: str, ritmo: _Ritmo
+    ) -> ProgressoHistorico | None:
         """Roda um passo ate o fim. Pausa no meio: espera retomar e roda o passo de novo.
 
-        Devolve False se a carga foi cancelada ou abortada (quem chama encerra), True se o passo
-        concluiu.
+        Devolve None se a carga foi cancelada ou abortada (quem chama encerra), e o progresso do
+        passo (contadores para o log) se o passo concluiu.
         """
         progresso = ProgressoHistorico(
             self._repo,
@@ -633,9 +668,9 @@ class Historico:
         )
         while True:
             if self._abortar.is_set():
-                return False
+                return None
             if (self._pausar.is_set() or self._cancelar.is_set()) and not self._aguardar(hist_id):
-                return False
+                return None
             self._repo.atualizar_historico(
                 hist_id,
                 ano_atual=passo.ano,
@@ -644,7 +679,7 @@ class Historico:
                 atualizada_em=self._agora(),
             )
             if not self._executar(passo, progresso, modo):
-                return True
+                return progresso
 
     def _executar(self, passo: Passo, progresso: ProgressoHistorico, modo: str) -> bool:
         """Roda o passo uma vez. Devolve True se o passo foi interrompido por pausa/cancelamento."""
@@ -664,6 +699,18 @@ class Historico:
             raise
         progresso.finalizar()
         interrompido = isinstance(resultado, dict) and bool(resultado.get("interrompido"))
+        # Reprocessar so refaz as unidades com erro: total 0 nao quer dizer que o ano foi coletado.
+        if (
+            modo == "reprocessar_erros"
+            and isinstance(resultado, dict)
+            and resultado.get("total") == 0
+        ):
+            progresso.log(
+                "aviso",
+                f"carga {progresso.hist_id}: {passo.ano} {passo.id_painel}: nenhuma unidade com "
+                "erro; nada reprocessado (não significa que o ano foi coletado; use o modo "
+                "pendentes)",
+            )
         # Concluido nao tem unidade em curso: o painel nao deve mostrar a ultima como "rodando".
         extra = {} if interrompido else {"unidade_atual": None}
         self._repo.atualizar_progresso_historico(

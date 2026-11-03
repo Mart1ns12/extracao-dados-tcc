@@ -841,3 +841,83 @@ def test_cancelar_com_a_google_ja_falhada_encerra_a_carga(monkeypatch):
     assert atual["status"] == "falhou"
     assert atual["erro"].startswith("trilha google")
     assert _linha_progresso(repo, 2026, "cvm_ipe")["status_segmento"] == "pendente"
+
+
+# -- log por passo ---------------------------------------------------------------------------
+def _logs_do_passo(repo, hist_id: str, etapa: str) -> list[dict]:
+    return [
+        log
+        for log in repo.logs
+        if log["origem"] == "historico" and log["execucao_id"] == hist_id and log["etapa"] == etapa
+    ]
+
+
+def test_passo_gera_linha_de_iniciado_e_concluido_com_contadores(monkeypatch):
+    repo, hist, _ = _montar(monkeypatch)
+    hist_id = hist.disparar([2026])
+    hist.join(10)
+
+    logs = _logs_do_passo(repo, hist_id, "yahoo")
+    assert [log["mensagem"] for log in logs] == [
+        "passo yahoo de 2026 (trilha principal) iniciado",
+        "passo yahoo de 2026 (trilha principal) concluído: 3 de 3 unidades",
+    ]
+    assert all(log["nivel"] == "info" for log in logs)
+
+
+def test_passo_ja_concluido_gera_linha_de_pulado(monkeypatch):
+    repo, hist, falso = _montar(monkeypatch)
+    repo.criar_historico(_registro("em_andamento", anos=[2026]))
+    _criar_linhas_do_plano(repo, [2026], {"yahoo"})
+
+    hist.recuperar_apos_reinicio()
+    hist.join(10)
+
+    logs = _logs_do_passo(repo, "hist-teste", "yahoo")
+    assert [log["mensagem"] for log in logs] == [
+        "passo yahoo de 2026 (trilha principal) pulado: já constava como concluído nesta carga",
+    ]
+    assert "yahoo" not in {c for c, _ in falso.chamadas}
+
+
+def test_passo_que_falha_gera_linha_de_erro(monkeypatch):
+    repo, hist, falso = _montar(monkeypatch)
+
+    def hook(coletor, key):
+        if coletor == "cvm_ipe":
+            raise RuntimeError("x")
+
+    falso.hook = hook
+    hist_id = hist.disparar([2026])
+    hist.join(10)
+
+    logs = _logs_do_passo(repo, hist_id, "cvm_ipe")
+    assert [(log["nivel"], log["mensagem"]) for log in logs] == [
+        ("info", "passo cvm_ipe de 2026 (trilha principal) iniciado"),
+        ("erro", "passo cvm_ipe de 2026 (trilha principal) falhou: RuntimeError: x"),
+    ]
+
+
+def test_reprocessar_sem_erros_avisa_que_nada_foi_reprocessado(monkeypatch):
+    repo, hist, falso = _montar(monkeypatch)
+    original = falso._rodar
+
+    def sem_erros(coletor, observador, *, resume):
+        if coletor == "cvm_ipe":
+            observador.plano(0)
+            return {"total": 0, "ok": 0, "erro": 0, "itens": 0}
+        return original(coletor, observador, resume=resume)
+
+    falso._rodar = sem_erros
+    hist_id = hist.disparar([2026], "reprocessar_erros")
+    hist.join(10)
+
+    avisos = [
+        log for log in _logs_do_passo(repo, hist_id, "cvm_ipe") if log["nivel"] == "aviso"
+    ]
+    assert len(avisos) == 1
+    assert avisos[0]["mensagem"] == (
+        f"carga {hist_id}: 2026 cvm_ipe: nenhuma unidade com erro; nada reprocessado "
+        "(não significa que o ano foi coletado; use o modo pendentes)"
+    )
+    assert _linha_progresso(repo, 2026, "cvm_ipe")["status_segmento"] == "concluido"

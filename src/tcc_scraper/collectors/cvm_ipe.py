@@ -70,10 +70,15 @@ class CvmIpeCollector(CvmCollector):
 
     def work_units(self) -> Iterable[WorkUnit]:
         hoje = dt.date.today().isoformat()
+        # O desde (que filtra as entregas em process) faz parte da chave: com o mesmo ano e o
+        # mesmo Last-Modified, uma carga com outro DATA_START nao pode pular a unidade ja `ok`.
+        desde = self.settings.inicio_noticias.isoformat()
         for ano in self.anos:
             url = f"{CVM_BASE}/DOC/IPE/DADOS/ipe_cia_aberta_{ano}.zip"
             lm = last_modified(self, url)
-            yield WorkUnit(key=f"ipe|{ano}|{lm or hoje}", payload={"ano": ano, "url": url})
+            yield WorkUnit(
+                key=f"ipe|{ano}|{desde}|{lm or hoje}", payload={"ano": ano, "url": url}
+            )
 
     def process(self, unit: WorkUnit) -> UnitResult:
         ano = unit.payload["ano"]

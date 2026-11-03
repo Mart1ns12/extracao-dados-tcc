@@ -19,7 +19,7 @@ from tcc_scraper.collectors.cvm_ipe import (
     parse_ipe,
     tickers_do_cd_cvm,
 )
-from tcc_scraper.config import IPE_CATEGORIAS, TICKER_CODE_CVM
+from tcc_scraper.config import IPE_CATEGORIAS, TICKER_CODE_CVM, Settings
 from tcc_scraper.db.models import Article
 from tcc_scraper.db.models_fontes import RawIpeDoc
 
@@ -116,6 +116,32 @@ def test_work_units_gera_uma_chave_por_ano(monkeypatch) -> None:
     assert len(unidades) == 2
     assert {unidade.payload["ano"] for unidade in unidades} == {2025, 2026}
     assert len({unidade.key for unidade in unidades}) == 2
+
+
+def _chave_da_unidade(monkeypatch, data_start: dt.date) -> str:
+    monkeypatch.setattr(
+        cvm_ipe, "last_modified", lambda collector, url: "Wed, 01 Jan 2026 00:00:00 GMT"
+    )
+    coletor = CvmIpeCollector(anos=[2025])
+    coletor.settings = Settings(
+        gemini_api_key="", data_start=data_start, data_fim_coleta=dt.date(2026, 10, 19)
+    )
+    return next(iter(coletor.work_units())).key
+
+
+def test_chave_muda_quando_o_desde_muda_com_o_mesmo_ano_e_last_modified(monkeypatch) -> None:
+    # Regressao: carga de 2025 com DATA_START=2025-09-01 ficou `ok` e nunca recoletou 2021-2025.
+    com_janela_curta = _chave_da_unidade(monkeypatch, dt.date(2025, 9, 1))
+    com_janela_longa = _chave_da_unidade(monkeypatch, dt.date(2021, 2, 1))
+
+    assert com_janela_curta != com_janela_longa
+
+
+def test_chave_igual_quando_o_desde_e_o_mesmo(monkeypatch) -> None:
+    primeira = _chave_da_unidade(monkeypatch, dt.date(2025, 9, 1))
+    segunda = _chave_da_unidade(monkeypatch, dt.date(2025, 9, 1))
+
+    assert primeira == segunda
 
 
 def test_process_le_o_csv_do_zip_e_persiste(monkeypatch) -> None:
