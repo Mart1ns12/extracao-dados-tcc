@@ -113,6 +113,9 @@ _DEFS = (
                aceita=frozenset({"anos"}), janela_anos=_anos_noticias),
     ColetorDef("build_entrega", "Montagem da entrega", _P + "entrega.builder:build_entrega",
                classe=False),
+    # Mesma funcao da CLI build-dataset, com os padroes dela (persist, export, sem keep_unlabeled).
+    ColetorDef("build_dataset", "Dataset 1.0 (features_dataset_v1)",
+               _P + "features.build:build_dataset_v1", classe=False, recebe_observador=False),
     # Acoes avulsas do painel: so no `coletar`, fora do daily e da carga historica (_passos).
     ColetorDef("corrigir_horas", "Corrigir horas (Google News)",
                _P + "enrich.article_fetcher:corrigir_horas_publicacao",

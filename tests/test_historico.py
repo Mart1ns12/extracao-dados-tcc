@@ -45,6 +45,7 @@ ORDEM_PRINCIPAL_ANO = [
     "finbert",
     "juiza",
     "build_entrega",
+    "build_dataset",
 ]
 # Coletores que a principal chama, na ordem (juiza aparece duas vezes, como no catalogo).
 ORDEM_PRINCIPAL_COLETORES = [
@@ -55,6 +56,7 @@ ORDEM_PRINCIPAL_COLETORES = [
     "finbert",
     "juiza",
     "build_entrega",
+    "build_dataset",
 ]
 
 
@@ -98,6 +100,15 @@ class Falso:
 
     def resolver(self, alvo: str):
         nome = alvo.split(":")[1]
+        if nome == "build_dataset_v1":
+            # Sem observador, como o de verdade: so anota a chamada e devolve um resultado.
+            def dataset(**kwargs):
+                self.chamadas.append(
+                    ("build_dataset", {"resume": True, "apenas_erros": False, "args": kwargs})
+                )
+                return {"linhas": 0}
+
+            return dataset
         if nome in self.FUNCOES:
             coletor = self.FUNCOES[nome]
 
@@ -258,7 +269,19 @@ def test_duas_trilhas_separam_google_do_resto():
 def test_so_finbert_juiza_e_entrega_dependem_do_google():
     passos = H._passos(_settings(), [2026, 2025])
     dependentes = {p.id_painel for p in passos if p.depende_google}
-    assert dependentes == {"finbert", "juiza", "build_entrega"}
+    assert dependentes == {"finbert", "juiza", "build_entrega", "build_dataset"}
+
+
+def test_build_dataset_vem_logo_depois_de_build_entrega_em_cada_segmento():
+    passos = H._passos(_settings(), [2026, 2025])
+    principal = [(p.ano, p.coletor) for p in passos if p.trilha == H.TRILHA_PRINCIPAL]
+    for ano in (2026, 2025):
+        coletores = [c for a, c in principal if a == ano]
+        assert coletores[coletores.index("build_entrega") + 1] == "build_dataset"
+        assert coletores.count("build_dataset") == 1
+    dataset = next(p for p in passos if p.coletor == "build_dataset")
+    assert dataset.args == {}
+    assert dataset.trilha == H.TRILHA_PRINCIPAL
 
 
 def test_juiza_wp_leva_origens_sem_google_e_o_ano():
@@ -756,11 +779,11 @@ def test_portao_sem_google_nao_roda_e_nao_trava(monkeypatch):
     # Nao travou: a thread terminou (sem o join com timeout ela ficaria viva).
     assert hist.ocupado is False
     assert repo.historico_atual()["status"] == "falhou"
-    # O portao de 2026 abriu: finbert, juiza e entrega de 2026 rodaram.
-    for coletor in ("finbert", "juiza", "build_entrega"):
+    # O portao de 2026 abriu: finbert, juiza, entrega e dataset de 2026 rodaram.
+    for coletor in ("finbert", "juiza", "build_entrega", "build_dataset"):
         assert _linha_progresso(repo, 2026, coletor)["status_segmento"] == "concluido"
     # O portao de 2025 nunca abriu: esses passos nao rodaram e ficam pendentes.
-    for coletor in ("finbert", "juiza", "build_entrega"):
+    for coletor in ("finbert", "juiza", "build_entrega", "build_dataset"):
         assert _linha_progresso(repo, 2025, coletor)["status_segmento"] == "pendente"
     assert [c for c, _ in falso.chamadas].count("finbert") == 1
     # A principal seguiu para o segmento de 2025 e concluiu o que nao depende da Google.

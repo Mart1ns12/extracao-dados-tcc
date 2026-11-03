@@ -344,7 +344,7 @@ def test_catalogo_tem_os_9_ids_ordem_nome_e_coletor_do_painel() -> None:
         ("enriquecimento", 5, "Corpo e sentimento", "finbert"),
         ("juiza", 6, "Juíza de qualidade", "juiza"),
         ("cadastro", 7, "Cadastro e eventos", "cvm_b3"),
-        ("entrega", 8, "Montagem das 8 tabelas", "build_entrega"),
+        ("entrega", 8, "Dataset 1.0 e as 11 tabelas da entrega", "build_entrega"),
         ("analise", 9, "Análise diária", "gemini"),
     ]
     assert [(e.id, e.ordem, e.nome, e.coletor) for e in E.ETAPAS] == esperado
@@ -600,9 +600,22 @@ def test_etapa_macro_roda_bcb_e_indices_com_o_ano_corrente(monkeypatch) -> None:
 
 
 # -- entrega e juiza -------------------------------------------------------------------
+def _dataset_falso(monkeypatch, ordem: list | None = None, erro: Exception | None = None) -> None:
+    """Troca o build_dataset_v1 (o da CLI build-dataset) por um duble: sem banco, sem arquivos."""
+
+    def falso(**kwargs):
+        if ordem is not None:
+            ordem.append("dataset")
+        if erro is not None:
+            raise erro
+
+    monkeypatch.setattr("tcc_scraper.features.build.build_dataset_v1", falso)
+
+
 def test_etapa_entrega_concluida_soma_as_tabelas_gravadas(monkeypatch) -> None:
     from tcc_scraper.db.models_entrega import COLUNAS
 
+    _dataset_falso(monkeypatch)
     chamadas: list = []
 
     def falso(**kwargs):
@@ -622,6 +635,7 @@ def test_etapa_entrega_concluida_soma_as_tabelas_gravadas(monkeypatch) -> None:
 def test_etapa_entrega_falha_quando_alguma_tabela_nao_gravou(monkeypatch) -> None:
     from tcc_scraper.db.models_entrega import COLUNAS
 
+    _dataset_falso(monkeypatch)
     sem = {"cadastro", "indices"}
 
     def parcial(**kwargs):
@@ -637,6 +651,7 @@ def test_etapa_entrega_falha_quando_alguma_tabela_nao_gravou(monkeypatch) -> Non
 
 
 def test_etapa_entrega_falha_quando_nenhuma_tabela_gravou(monkeypatch) -> None:
+    _dataset_falso(monkeypatch)
     monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", lambda **kw: {})
 
     r = E.etapa_entrega(_ctx(), _Observador())
@@ -649,10 +664,67 @@ def test_etapa_entrega_excecao_sobe_para_o_daily(monkeypatch) -> None:
     def levanta(**kwargs):
         raise RuntimeError("banco caiu")
 
+    _dataset_falso(monkeypatch)
     monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", levanta)
 
     with pytest.raises(RuntimeError, match="banco caiu"):
         E.etapa_entrega(_ctx(), _Observador())
+
+
+def test_etapa_entrega_monta_o_dataset_antes_das_tabelas(monkeypatch) -> None:
+    from tcc_scraper.db.models_entrega import COLUNAS
+
+    ordem: list[str] = []
+    _dataset_falso(monkeypatch, ordem=ordem)
+
+    def entrega(**kwargs):
+        ordem.append("entrega")
+        return {t: 1 for t in COLUNAS}
+
+    monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", entrega)
+
+    r = E.etapa_entrega(_ctx(), _Observador())
+
+    assert ordem == ["dataset", "entrega"]
+    assert r.status == "concluida"
+    assert r.erro is None
+
+
+def test_etapa_entrega_roda_as_tabelas_mesmo_se_o_dataset_falhar(monkeypatch) -> None:
+    from tcc_scraper.db.models_entrega import COLUNAS
+
+    ordem: list[str] = []
+    _dataset_falso(monkeypatch, ordem=ordem, erro=RuntimeError("sem precos"))
+
+    def entrega(**kwargs):
+        ordem.append("entrega")
+        return {t: 2 for t in COLUNAS}
+
+    monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", entrega)
+    obs = _Observador()
+
+    r = E.etapa_entrega(_ctx(), obs)
+
+    assert ordem == ["dataset", "entrega"]
+    assert r.status == "falhou"
+    assert r.itens == 2 * len(COLUNAS)
+    assert r.erro == "Dataset 1.0 falhou: sem precos"
+    assert any(nivel == "erro" for nivel, _ in obs.logs)
+
+
+def test_etapa_entrega_junta_a_falha_do_dataset_e_a_das_tabelas(monkeypatch) -> None:
+    from tcc_scraper.db.models_entrega import COLUNAS
+
+    _dataset_falso(monkeypatch, erro=RuntimeError("sem precos"))
+    monkeypatch.setattr(
+        "tcc_scraper.entrega.builder.build_entrega",
+        lambda **kw: {t: 2 for t in COLUNAS if t != "cadastro"},
+    )
+
+    r = E.etapa_entrega(_ctx(), _Observador())
+
+    assert r.status == "falhou"
+    assert r.erro == "Dataset 1.0 falhou: sem precos; tabelas com falha: cadastro"
 
 
 def _resultado_juiza(**campos):
@@ -780,6 +852,7 @@ def test_etapa_juiza_excecao_sobe_para_o_daily(monkeypatch) -> None:
 
 # -- utilitarios reaproveitaveis (usados pelo coletar) --------------------------------
 def test_montar_entrega_com_tabelas_pedidas_passa_so_essas(monkeypatch) -> None:
+    _dataset_falso(monkeypatch)
     chamadas: list = []
 
     def falso(**kwargs):
@@ -797,6 +870,7 @@ def test_montar_entrega_com_tabelas_pedidas_passa_so_essas(monkeypatch) -> None:
 
 
 def test_montar_entrega_falha_quando_uma_tabela_pedida_nao_gravou(monkeypatch) -> None:
+    _dataset_falso(monkeypatch)
     monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", lambda **kw: {"balancos": 5})
 
     r = E.montar_entrega(_Observador(), ["balancos", "precos"])

@@ -286,11 +286,37 @@ def etapa_analise(ctx: Contexto, p: Progresso) -> ResultadoEtapa:
     return ResultadoEtapa("falhou", erro=(r.erro or r.status)[:4000])
 
 
+def montar_dataset(p: Progresso) -> str | None:
+    """Monta o features_dataset_v1 (a mesma funcao da CLI build-dataset). Devolve o erro, se houver.
+
+    Nao levanta: quem chama segue com a entrega e reporta o erro junto com a dela.
+    """
+    from tcc_scraper.features.build import build_dataset_v1
+
+    try:
+        build_dataset_v1()
+    except Exception as exc:
+        logger.exception("build_dataset levantou")
+        p.log("erro", f"build_dataset levantou: {exc}"[:4000])
+        return f"Dataset 1.0 falhou: {exc}"[:4000]
+    return None
+
+
+def _junta_erros(*erros: str | None) -> str | None:
+    presentes = [e for e in erros if e]
+    return "; ".join(presentes) or None
+
+
 def montar_entrega(p: Progresso, tabelas: list[str] | None = None) -> ResultadoEtapa:
-    """Monta as tabelas pedidas (todas se None). Usado pelo daily e pelo `coletar`."""
+    """Monta o Dataset 1.0 e as tabelas pedidas (todas se None). Usado pelo daily e pelo `coletar`.
+
+    O dataset roda antes. Se ele falhar, as tabelas saem do mesmo jeito e a etapa falha com as
+    duas mensagens.
+    """
     from tcc_scraper.db.models_entrega import COLUNAS
     from tcc_scraper.entrega.builder import build_entrega
 
+    erro_dataset = montar_dataset(p)
     # O builder nao levanta por tabela: a que falha some do dict e o observador recebe ok=False.
     # Sem tabelas, a chamada fica identica a de antes (ha teste que confere os kwargs).
     if tabelas:
@@ -298,17 +324,18 @@ def montar_entrega(p: Progresso, tabelas: list[str] | None = None) -> ResultadoE
     else:
         gravadas = build_entrega(observador=p)
     if not gravadas:
-        return ResultadoEtapa("falhou", erro="todas as tabelas falharam", detalhes={"tabelas": {}})
+        return ResultadoEtapa(
+            "falhou",
+            erro=_junta_erros(erro_dataset, "todas as tabelas falharam"),
+            detalhes={"tabelas": {}},
+        )
     itens = sum(gravadas.values())
     alvo = list(tabelas) if tabelas else list(COLUNAS)
     faltam = [t for t in alvo if t not in gravadas]
-    if faltam:
-        return ResultadoEtapa(
-            "falhou",
-            itens=itens,
-            erro=f"tabelas com falha: {', '.join(faltam)}",
-            detalhes={"tabelas": gravadas},
-        )
+    erro_tabelas = f"tabelas com falha: {', '.join(faltam)}" if faltam else None
+    erro = _junta_erros(erro_dataset, erro_tabelas)
+    if erro:
+        return ResultadoEtapa("falhou", itens=itens, erro=erro, detalhes={"tabelas": gravadas})
     return ResultadoEtapa("concluida", itens=itens, detalhes={"tabelas": gravadas})
 
 
@@ -379,7 +406,9 @@ ETAPAS: tuple[EtapaDef, ...] = (
     EtapaDef("enriquecimento", 5, "Corpo e sentimento", "finbert", etapa_enriquecimento),
     EtapaDef("juiza", 6, "Juíza de qualidade", "juiza", etapa_juiza),
     EtapaDef("cadastro", 7, "Cadastro e eventos", "cvm_b3", etapa_cadastro),
-    EtapaDef("entrega", 8, "Montagem das 8 tabelas", "build_entrega", etapa_entrega),
+    EtapaDef(
+        "entrega", 8, "Dataset 1.0 e as 11 tabelas da entrega", "build_entrega", etapa_entrega
+    ),
     EtapaDef("analise", 9, "Análise diária", "gemini", etapa_analise),
 )
 

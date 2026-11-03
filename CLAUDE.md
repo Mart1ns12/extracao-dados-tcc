@@ -227,7 +227,7 @@ python -m tcc_scraper.cli collect-proventos    # proventos (B3)
 python -m tcc_scraper.cli collect-indices      # CDI e IPCA (BCB)
 python -m tcc_scraper.cli judge-news [--limite N] [--backlog [--anos A] [--orcamento-usd X]] [--status] [--concordancia N [--semente S] [--referencia MODELO]]   # juiza de noticias
 python -m tcc_scraper.cli build-entrega [--csv] [--tabela X]    # 11 tabelas da entrega
-python -m tcc_scraper.cli executor             # worker do painel (Railway): comandos, daily das 08:00 BRT, carga historica
+python -m tcc_scraper.cli executor             # worker do painel (servico NSSM na Processamento-Venturo): comandos, daily das 08:00 BRT, carga historica
 python -m tcc_scraper.cli daily [--etapa ID]   # daily de 9 etapas, sem painel (bloqueante)
 python -m tcc_scraper.cli historico --anos 2025 --anos 2026 [--modo pendentes]  # carga historica (bloqueante)
 

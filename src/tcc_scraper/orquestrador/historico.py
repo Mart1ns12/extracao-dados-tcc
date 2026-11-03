@@ -249,8 +249,9 @@ def _passos(settings: Settings, anos: list[int]) -> list[Passo]:
     """Ordem da carga: globais do primeiro (mais recente) ano, depois ano a ano, em duas trilhas.
 
     A trilha Google so coleta noticias do Google News e o corpo dos artigos. A principal faz o
-    resto. Na principal, o FinBERT e a juiza de um ano (e a entrega) esperam o portao do Google
-    desse ano (`depende_google`); a juiza de WordPress e IPE nao espera, porque essas origens
+    resto. Na principal, o FinBERT e a juiza de um ano (e a entrega e o dataset) esperam o portao
+    do Google desse ano (`depende_google`); a juiza de WordPress e IPE nao espera, porque essas
+    origens
     nao dependem do corpo do Google. O FinBERT e a juiza recebem `anos`: pontuam e julgam so o
     ano que chegou, e nao o backlog inteiro, que pontuaria pela manchete o que o enriquecimento
     da outra trilha ainda nao processou.
@@ -291,6 +292,7 @@ def _passos(settings: Settings, anos: list[int]) -> list[Passo]:
             Passo(seg.ano, "finbert", {"anos": [seg.ano]}, depende_google=True),
             Passo(seg.ano, "juiza", {"anos": [seg.ano], **juiza}, depende_google=True),
             Passo(seg.ano, "build_entrega", depende_google=True),
+            Passo(seg.ano, "build_dataset", depende_google=True),
         ]
     return passos
 

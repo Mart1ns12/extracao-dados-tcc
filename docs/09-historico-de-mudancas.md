@@ -823,3 +823,20 @@ Pendente: a verificação com carga real (ver os riscos da seção 10 de [03](03
 - Fase (b) do `fix-news-times` (hora pela página, ~15.900 páginas): opcional.
 - A regra de IFRS 17 casa só a HAPV3. Outras companhias com a mesma conta, se aparecerem, exigem revisão.
 - Os ADRs desta entrada foram gravados em `docs/ADR.md`; o registro no grafo (`manage_adr`) não foi feito.
+
+## 27. Host do executor na Processamento-Venturo, `build_dataset` no executor, painel com novas tabelas, fase (b) em lotes (2026-11-03)
+
+**O problema.** Os docs ainda tratavam o Railway como host do executor. Na prática, o executor roda como serviço Windows NSSM `tcc-executor` (conta LocalSystem) na máquina de processamento do dono, "Processamento-Venturo", e no Railway fica só a API do painel. Além disso, o dataset de 14 colunas (`features_dataset_v1`) só era montado à mão pela CLI `build-dataset`, fora do daily e da carga histórica.
+
+**O que mudou.**
+
+- **Documentação do host.** A máquina de processamento é o host real do executor. A alternativa Railway (`Dockerfile` e `railway.json`) ficou marcada como não usada, com o aviso de que a imagem exclui `data/`. O procedimento de atualização está em [08](08-operacao-e-deploy.md), seção 4.1. Arquivos: `CLAUDE.md` (seção 6), `docs/02`, `docs/03`, `docs/06`, `docs/07` (seção 12), `docs/08` (seções 2.6, 3.5, 3.6, 4, 5, 5.1, 5.2 e 6.1), `docs/README.md`, `docs/ADR.md` (decisão nova) e o comentário de cabeçalho de `scripts/coleta-completa.sh`.
+- **`build_dataset`, novo coletor.** Monta `features_dataset_v1`, igual à CLI `build-dataset`. Na etapa `entrega` do daily, roda antes das 11 tabelas da entrega; se falhar, a entrega roda mesmo assim e a etapa sai `falhou`. Na carga histórica, roda em cada ano logo depois de `build_entrega`, na trilha principal, com o mesmo portão do ano. É aceito no comando `coletar`.
+- **Painel.** Aceita as tabelas `v1-eventos_acoes` e `v1-emissores_ticker` e o coletor `build_dataset`.
+- **Fase (b) do `fix-news-times`.** Grava em lotes de 200 páginas (commit 9e6894f).
+
+**Pendências.**
+
+- A ordem difere entre os dois caminhos (daily: dataset antes da entrega; carga: depois), sem efeito: as tabelas da entrega não leem `features_dataset_v1`.
+- Na carga, uma falha do `build_dataset` deixa a carga `falhou`, como qualquer passo; no daily, a entrega roda mesmo assim. Retomar a carga no modo pendentes.
+- As DDLs de 2026-10-27 já estavam aplicadas (conferido no banco em 2026-11-03).

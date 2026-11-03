@@ -31,6 +31,7 @@ ORDEM = [
     "finbert",
     "juiza",
     "build_entrega",
+    "build_dataset",
 ]
 # Acoes avulsas do painel: so no `coletar`, nunca no daily nem na carga historica.
 AVULSOS = ["corrigir_horas", "juiza_concordancia"]
@@ -60,7 +61,7 @@ def _resolvedor_classe(registro: list):
     return resolver_falso
 
 
-def test_catalogo_tem_os_17_ids_da_carga_e_as_2_avulsas_no_fim():
+def test_catalogo_tem_os_18_ids_da_carga_e_as_2_avulsas_no_fim():
     assert list(CATALOGO) == ORDEM + AVULSOS
 
 
@@ -82,6 +83,7 @@ def test_funcoes_sao_so_as_esperadas():
         "juiza",
         "processar_wp",
         "build_entrega",
+        "build_dataset",
         "corrigir_horas",
         "juiza_concordancia",
     }
@@ -92,8 +94,29 @@ def test_acoes_avulsas_nao_recebem_observador_e_aceitam_so_o_contrato():
     assert CATALOGO["corrigir_horas"].aceita == frozenset({"aplicar", "limite"})
     assert CATALOGO["juiza_concordancia"].recebe_observador is False
     assert CATALOGO["juiza_concordancia"].aceita == frozenset({"n", "semente"})
-    # So as duas funcoes avulsas tem a flag; os demais continuam recebendo o observador.
-    assert {c for c, d in CATALOGO.items() if not d.recebe_observador} == set(AVULSOS)
+    # As duas acoes avulsas e o build_dataset (funcao sem observador) tem a flag; os demais
+    # continuam recebendo o observador.
+    assert {c for c, d in CATALOGO.items() if not d.recebe_observador} == {
+        *AVULSOS,
+        "build_dataset",
+    }
+
+
+def test_build_dataset_e_a_funcao_da_cli_chamada_sem_argumentos():
+    from tcc_scraper.features.build import build_dataset_v1
+
+    defn = CATALOGO["build_dataset"]
+    assert defn.alvo == "tcc_scraper.features.build:build_dataset_v1"
+    assert resolver(defn.alvo) is build_dataset_v1
+    assert defn.aceita == frozenset()
+    chamadas: list = []
+
+    def funcao_falsa(**kwargs):
+        chamadas.append(kwargs)
+        return None
+
+    defn.executar(object(), resolver_alvo=lambda alvo: funcao_falsa)
+    assert chamadas == [{}]
 
 
 def test_alvos_das_acoes_avulsas_sao_as_funcoes_do_cli():

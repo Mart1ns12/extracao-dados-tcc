@@ -10,7 +10,7 @@ O executor é um worker que fica em loop. Não é um cron. Ele roda com:
 python -m tcc_scraper.cli executor
 ```
 
-Esse é o `CMD` da imagem do Railway (ver seção 12). Hoje, porém, o executor roda na máquina local do dono, não no Railway. A cada ciclo, ele:
+Em produção, ele roda como serviço Windows NSSM `tcc-executor` (conta LocalSystem) na máquina de processamento do dono, "Processamento-Venturo" (ver seção 12). No Railway fica só a API do painel. A cada ciclo, ele:
 
 - busca os comandos pendentes na API do painel, a cada `EXECUTOR_POLL_S` segundos (padrão 5);
 - aplica cada comando e confirma o resultado à API (ack);
@@ -55,7 +55,7 @@ Os comandos chegam ao painel pelas rotas que o próprio painel usa:
 | Disparar a carga histórica | `POST /api/historico/disparos` com `{"anos": [2025, 2026], "modo": "pendentes"}` | `historico` |
 | Pausar, retomar ou cancelar a carga | `POST /api/historico/pausar` (`/retomar`, `/cancelar`) | `pausar`, `retomar`, `cancelar` |
 
-Em `MODO=live`, essas rotas ainda respondem `501`. Ver seção 9.
+Em `MODO=live`, a API grava o comando na fila `v1-painel_comandos`, e o executor o busca por HTTP (seção 2).
 
 ## 4. Comandos
 
@@ -123,6 +123,7 @@ Catálogo de coletores:
 | `enriquecimento` | - | - | Refaz tudo (sem checkpoint) |
 | `finbert` | - | - | Só pendentes. `refazer` não se aplica |
 | `juiza` | `anos` | do ano de `inicio_noticias` ao ano de `fim_coleta` | Só pendentes. Limitada por `JUIZA_MAX_ITENS_DIA` e pelo teto mensal em US$. `refazer` não se aplica |
+| `build_dataset` | - | - | Refaz tudo (sem checkpoint). Monta `features_dataset_v1` por upsert, igual à CLI `build-dataset` |
 | `build_entrega` | não é item: use `montar_entrega` | - | - |
 | `corrigir_horas` | `aplicar` (bool, obrigatório; `false` simula, sem gravar) e `limite` (int ≥ 1, opcional; `null` = sem limite) | - | Sem checkpoint. `refazer` não se aplica |
 | `juiza_concordancia` | `n` (int de 10 a 1000, obrigatório) e `semente` (int, opcional, padrão 42; `null` também vale 42) | - | Sem checkpoint. `refazer` não se aplica |
@@ -137,7 +138,7 @@ Os dois últimos são ações avulsas do painel (`corrigir_horas`, a mesma funç
 Regras:
 
 - **`refazer`.** `true` liga `resume = False` (equivale a `--no-resume`). Sem `refazer`, vale o padrão do catálogo, o mesmo da carga histórica. Em coletor sem checkpoint (`finbert`, `juiza`, `corrigir_horas`, `juiza_concordancia`), `refazer` não se aplica e é recusado.
-- **Ordem.** Os itens rodam na ordem enviada. A montagem (`build_entrega`) vem sempre por último.
+- **Ordem.** Os itens rodam na ordem enviada. A montagem (`build_entrega`) vem sempre por último. `build_dataset` é item como os demais: envie-o antes de `montar_entrega` quando a entrega depender do dataset novo.
 - **Coletor repetido** nos itens é recusado: a chave da etapa é o id do coletor. Junte os parâmetros num item só.
 - **Orçamento.** A execução não tem prazo: `DAILY_ORCAMENTO_MIN` não se aplica, porque itens históricos podem levar horas.
 - **Falha de item** não para os demais. O final sai `parcial`, como no daily.
@@ -244,7 +245,7 @@ Os status são strings, sem `ENUM` no banco. Os valores de ponto flutuante são 
 
 ## 9. Limitações e pontos em aberto
 
-- **A API em `MODO=live` não implementa as rotas do executor.** As rotas `/api/executor/*` respondem `501`, porque a fila de comandos e o heartbeat ainda são TODO na fonte do modo live (`interface-acompanhamento/api/app/fila.py` e `api/app/fontes/mysql.py`). Enquanto isso, o executor não recebe comandos da API live. O loop segue rodando, sem aplicar nada.
+- **A API em `MODO=live` implementa a fila do executor.** `FilaComandosMySQL` (`interface-acompanhamento/api/app/fila.py`) grava e lê `v1-painel_comandos`, e a fonte MySQL (`interface-acompanhamento/api/app/fontes/mysql.py`) atende `/api/executor/comandos`, `/ack` e `/heartbeat`. O heartbeat fica em `v1-painel_heartbeat`, gravado pelo executor.
 - **`MODO=mock` simula o executor.** Pelo contrato da API, nesse modo a própria API consome a fila e manda o heartbeat. Não aponte o executor real para uma API em `MODO=mock`: os dois disputariam a mesma fila.
 - **Um processo só.** O estado do daily e o da carga histórica ficam em memória. Não rode mais de um executor contra o mesmo banco.
 - **Reinício no meio de um daily.** A execução `em_andamento` vira `falhou`, com o motivo `interrompida por reinício do executor`. As etapas que ainda não começaram ficam `pendente`. O daily não é retomado: dispare de novo pelo painel. A carga histórica, ao contrário, é retomada sozinha (ver [03](03-carga-historica.md), seção 6).
@@ -287,18 +288,19 @@ python -m tcc_scraper.cli daily --etapa precos   # roda uma etapa sem painel
 
 - **Não há banco de desenvolvimento.** O executor local grava no MySQL do `.env`, que é o banco do TCC. Ver [06](06-banco-de-dados.md).
 - **Sem o extra `[sentiment]`**, a etapa `enriquecimento` falha e o daily sai `parcial`.
-- **Teste ponta a ponta com a API real** não é possível enquanto as rotas do executor estiverem em `501` (seção 9).
+- **Teste ponta a ponta com a API real** exige o mesmo `EXECUTOR_TOKEN` da API e um único executor ligado contra o banco. Na Processamento-Venturo, o serviço `tcc-executor` já é esse executor: não suba outro (seção 12).
 - **Alterações de schema** são aplicadas à mão, da máquina local, a partir de `sql/alteracoes/`. O usuário do executor não tem permissão de DDL (ver seção 12).
 
-## 12. Implantação no Railway
+## 12. Implantação
 
-Esta seção descreve o deploy no Railway. Hoje o executor roda na máquina local do dono, não no Railway.
+O executor roda como serviço Windows NSSM `tcc-executor` (conta LocalSystem) na máquina de processamento do dono, "Processamento-Venturo". É o nome que aparece no heartbeat do painel. No Railway (projeto `painel-coleta-tcc`) fica só a API do painel (serviço `api`).
 
-- **Serviço.** Um worker criado a partir deste repositório. O `railway.json` manda construir pelo `Dockerfile`. Não há healthcheck, porque o worker não serve HTTP. A política de reinício é `ON_FAILURE`, com até 10 tentativas.
-- **Imagem.** `python:3.12-slim`, com torch da roda CPU do PyTorch. Os modelos do FinBERT (pt e en) são baixados no build, em `/app/.hf_cache`, e por isso a subida do serviço não baixa modelo.
-- **Variáveis.** Ficam no painel do Railway, nunca no repositório. `EXECUTOR_TOKEN` tem que ser igual ao da API do painel.
-- **Alterações de schema.** Não rodam no serviço. Aplique o ALTER de `sql/alteracoes/` à mão, da máquina local, com um usuário que tem DDL e aprovação do dono. Ver [06](06-banco-de-dados.md) e [08](08-operacao-e-deploy.md).
-- **Disco efêmero.** Parquet e CSV gerados no contêiner somem no próximo deploy. Para gerar CSV, rode `build-entrega --csv` localmente.
-- **Checklist de entrada em produção.** Está em [08](08-operacao-e-deploy.md), na ordem em que deve ser feito.
+- **Host real.** A Processamento-Venturo roda o executor e tem o disco onde ficam `data/`, `exports/` e o cache do FinBERT. O `.env` do executor fica nessa máquina, nunca no repositório. `EXECUTOR_TOKEN` tem que ser igual ao da API do painel.
+- **Logs.** Os logs do serviço ficam na máquina. Quando é preciso analisar, o dono copia para `C:\Users\consu\OneDrive\Desktop\Faculdade\tcc\LOG\executor*.log`.
+- **Alterações de schema.** Não rodam no executor: o usuário dele não tem DDL. Aplique o ALTER de `sql/alteracoes/` com um usuário que tem DDL, após aprovação do dono. Ver [06](06-banco-de-dados.md).
+- **Atualizar o executor.** O procedimento está em [08](08-operacao-e-deploy.md), seção 4.1 ("Atualizar o executor na Processamento-Venturo").
+- **Checklist de entrada em produção.** Está em [08](08-operacao-e-deploy.md), na ordem em que deve ser feito: DDL, executor, API do painel, web.
+
+**Alternativa não usada: Railway com Docker.** `railway.json` e `Dockerfile` continuam no repositório, mas não são o caminho de produção, e a imagem nunca foi construída. O `Dockerfile` cria o worker com `CMD` do executor e torch CPU, e baixa os modelos do FinBERT no build. Ele exclui `data/` (`.dockerignore`), onde estão CSVs versionados que o código lê (`data/composicao_ibov`, `data/correcoes_precos`, `data/proventos_yahoo`). Um deploy em contêiner precisaria copiar `data/` para a imagem antes de funcionar. Os detalhes estão em [08](08-operacao-e-deploy.md), seção 4.2.
 
 Ver também: [02 Pipeline diária](02-pipeline-diaria.md), [03 Carga histórica](03-carga-historica.md), [06 Banco de dados](06-banco-de-dados.md), [08 Operação e deploy](08-operacao-e-deploy.md), [ADR](ADR.md).

@@ -1,4 +1,4 @@
-"""Montagem das 10 tabelas da entrega a partir das fontes raw/staging.
+"""Montagem das 11 tabelas da entrega a partir das fontes raw/staging.
 
 Cada `montar_*` e pura: recebe listas de dicts (linhas das fontes) e devolve `list[dict]` com
 as chaves de `COLUNAS`. `build_entrega` carrega as fontes, monta cada tabela, grava por upsert

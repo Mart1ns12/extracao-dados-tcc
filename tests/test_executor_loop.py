@@ -431,7 +431,7 @@ class _ColetorTrava:
 
 def _resolver_vazio(alvo: str):
     nome = alvo.split(":")[1]
-    if nome in ("score_pending", "julgar_pendentes", "build_entrega"):
+    if nome in ("score_pending", "julgar_pendentes", "build_entrega", "build_dataset_v1"):
         return lambda observador=None, **_kwargs: {"interrompido": 0}
     return lambda **_kwargs: _ColetorVazio()
 
@@ -577,6 +577,7 @@ def coletor_falso(monkeypatch):
 
     monkeypatch.setattr(coletores, "resolver", lambda alvo: _Falso)
     monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", lambda **kw: {"balancos": 3})
+    monkeypatch.setattr("tcc_scraper.features.build.build_dataset_v1", lambda **kw: None)
     return registro, trava
 
 

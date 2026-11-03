@@ -219,7 +219,7 @@ outra alteração escrita à mão (por exemplo, um `RENAME TABLE` de volta), com
 
 ### 4.3 Executor
 
-O executor no Railway não tem DDL e nunca aplica alteração de schema. Alterações saem sempre da máquina local.
+O executor (Processamento-Venturo) usa um usuário sem DDL e nunca aplica alteração de schema. Alterações saem sempre da máquina local do dono, com um usuário que tem DDL.
 
 ### 4.4 Resquícios do Alembic
 

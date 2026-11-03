@@ -315,6 +315,7 @@ def test_montar_entrega_chama_build_entrega_com_a_tabela(monkeypatch, settings) 
         return {"balancos": 3}
 
     monkeypatch.setattr("tcc_scraper.entrega.builder.build_entrega", falso)
+    monkeypatch.setattr("tcc_scraper.features.build.build_dataset_v1", lambda **kw: None)
     plano = montar_plano(
         {"itens": [{"coletor": "bcb"}], "montar_entrega": ["balancos"]}, settings
     )

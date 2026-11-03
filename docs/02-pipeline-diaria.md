@@ -8,7 +8,7 @@ Esta seção resume o que o código faz agora, de ponta a ponta. As seções 1 a
 
 ### A. Quem dispara
 
-- **Executor.** `python -m tcc_scraper.cli executor` roda em loop, sem parar. A cada `EXECUTOR_POLL_S` (5 s) busca comandos do painel, aplica, confirma e confere a agenda. Hoje ele roda na máquina do executor, não no Railway. A máquina atual é a "Processamento-Venturo": é o `host` gravado em `v1-painel_heartbeat` (conferido em 2026-10-26). No painel, o executor aparece como `EXECUTOR_HOST`. Se a variável estiver vazia, vale o nome da máquina.
+- **Executor.** `python -m tcc_scraper.cli executor` roda em loop, sem parar. A cada `EXECUTOR_POLL_S` (5 s) busca comandos do painel, aplica, confirma e confere a agenda. Ele roda como serviço Windows NSSM `tcc-executor` na máquina de processamento "Processamento-Venturo", que é o `host` gravado em `v1-painel_heartbeat` (conferido em 2026-10-26). No Railway fica só a API do painel (ver [07](07-executor-e-painel.md), seção 12). No painel, o executor aparece como `EXECUTOR_HOST`. Se a variável estiver vazia, vale o nome da máquina.
 - **Agenda (cron).** A partir de `DAILY_HORA` (08:00, no fuso `DAILY_TZ`), o executor cria um daily com origem `cron`, uma vez por dia (`executor/loop.py::_agendar_cron`). Se o executor subir depois do horário e ainda não houve cron no dia, o daily dispara na subida.
 - **Painel.** Comandos `daily` (origem `manual`), `etapa` (uma etapa), `coletar` (coleta avulsa, ver [07](07-executor-e-painel.md), seção 4.1) e `historico` (carga histórica, ver [03](03-carga-historica.md)). Pausar, retomar e cancelar valem só para a carga histórica.
 - **CLI, sem painel.** `python -m tcc_scraper.cli daily [--etapa ID]` roda no processo atual e espera o fim. Não respeita a prioridade da carga histórica.
@@ -28,7 +28,7 @@ Ordem de `orquestrador/etapas.py::ETAPAS`. As etapas rodam em sequência. Uma fa
 | 5 | `enriquecimento` | Corpo dos artigos (só veículos da allowlist) e sentimento FinBERT, local | Páginas dos veículos; FinBERT | Não |
 | 6 | `juiza` | Julga os pares (artigo, ticker) pendentes | Regra local; Jev; Anthropic `claude-haiku-5-5` | Sim (Jev e LLM) |
 | 7 | `cadastro` | Cadastro das companhias, proventos e ITR/DFP | CVM; B3 | Não |
-| 8 | `entrega` | Monta as 11 tabelas `v1-*` da entrega | Só o banco (tabelas `raw_*` e `staging_*`) | Não |
+| 8 | `entrega` | Monta `features_dataset_v1` (`build_dataset`, o dataset de 14 colunas) e depois as 11 tabelas `v1-*` da entrega | Só o banco (tabelas `raw_*` e `staging_*`) | Não |
 | 9 | `analise` | Análise diária por LLM | Gemini (hoje desligada, ver item E) | Sim, quando ligada |
 
 As tabelas gravadas por etapa, e quando cada uma sai `falhou` ou `pulada`, estão na seção 4 deste documento.
@@ -134,7 +134,7 @@ São estimativas da medição, não fatura. Tetos: juíza diária, US$ 3 por mê
 ### H. Carga histórica
 
 - **Disparo.** Pelo painel (comando `historico`) ou pela CLI (`historico --anos ... --modo ...`). Roda em thread própria. Só uma carga por vez.
-- **Passos** (`orquestrador/historico.py::_passos`). Globais, no ano mais recente: `yahoo`, `b3_indices`, `bcb`, `indices_bcb`, `cvm_cadastro`, `b3_cadastro`, `b3_proventos`, `cvm_itr_dfp`. Depois, por segmento de ano, do mais recente ao mais antigo: `google_news`, `cvm_ipe`, `enriquecimento`, `finbert`, `juiza`, `build_entrega`.
+- **Passos** (`orquestrador/historico.py::_passos`). Globais, no ano mais recente: `yahoo`, `b3_indices`, `bcb`, `indices_bcb`, `cvm_cadastro`, `b3_cadastro`, `b3_proventos`, `cvm_itr_dfp`. Depois, por segmento de ano, do mais recente ao mais antigo: `google_news`, `cvm_ipe`, `enriquecimento`, `finbert`, `juiza`, `build_entrega`, `build_dataset`.
 - **Juíza na carga.** Roda em modo `backlog` (`args_fixos`): do mais antigo para o mais recente, sem teto de itens. O limite é a verba de `JUIZA_BACKLOG_VERBA_USD` (US$ 15), cumulativa entre execuções.
 - **Fora da carga.** A análise diária (`analise`) não entra na carga histórica. A carteira do IBOV (`b3_carteira_ibov`) também não, porque é só a foto do dia.
 - Detalhes em [03](03-carga-historica.md).
@@ -207,7 +207,7 @@ Os ids, nomes e coletores são o contrato com o painel. Não renomear sem combin
 | 5 | `enriquecimento` | Corpo e sentimento | `finbert` | Página do veículo (só domínios da allowlist) e FinBERT local | Lote de artigos sem corpo; depois, bloco de textos sem sentimento | Não é preciso: só entram os pendentes |
 | 6 | `juiza` | Juíza de qualidade | `juiza` | Regra local, sem API; depois Jev (se ligado; em `JUIZA_JEV_MODO=entrega`, decide por entrega segura); depois LLM de fallback (Anthropic `claude-haiku-5-5`, OpenAI `gpt-5.6-luna` ou Gemini, conforme `JUIZA_PROVEDOR`), sem busca na web | Lote de `JUIZA_LOTE` pares (artigo, ticker) pendentes, até `JUIZA_MAX_ITENS_DIA` por dia e até o teto mensal em US$ (`JUIZA_ORCAMENTO_MENSAL_USD`) | Só entram os pendentes |
 | 7 | `cadastro` | Cadastro e eventos | `cvm_b3` | CVM (cadastro das companhias), B3 (`GetDetail` e proventos), CVM (ITR e DFP) | Quatro partes: companhia da CVM (`cad\|<Last-Modified>`), empresa da B3 (`detail\|<cd_cvm>`), empresa de proventos (`prov\|<issuing_company>`), arquivo ITR/DFP (`<tipo>\|<ano>\|<Last-Modified>`) | Só ITR/DFP (`resume=True`) |
-| 8 | `entrega` | Montagem das 8 tabelas (nome do painel; a etapa grava 11) | `build_entrega` | Tabelas `raw_*` e `staging_*` já gravadas | As 11 tabelas da entrega | Refaz as 11 tabelas a cada execução |
+| 8 | `entrega` | Montagem de `features_dataset_v1` (`build_dataset`) e depois das 11 tabelas da entrega | `build_dataset`, depois `build_entrega` | Tabelas `raw_*` e `staging_*` já gravadas | `features_dataset_v1` e as 11 tabelas da entrega | Refaz o dataset e as 11 tabelas a cada execução |
 | 9 | `analise` | Análise diária | `gemini` | Gemini, com busca Google e saída em JSON | Uma chamada, para o dia `fim_coleta` | Refaz o dia (apaga e regrava) |
 
 Ordem de execução: `precos`, `macro`, `noticias`, `ipe`, `enriquecimento`, `juiza`, `cadastro`, `entrega`, `analise`. As etapas `enriquecimento` e `juiza` vêm antes de `entrega`, então a entrega do dia já sai com as notícias julgadas.
@@ -225,7 +225,7 @@ Só as 32 tabelas criadas pela pipeline nova (fontes novas, painel e entrega) t�
 | `enriquecimento` | `raw_article_bodies`, `raw_articles` (coluna `resolved_url`), `staging_article_sentiment` | Foi interrompida, ou todas as páginas falharam, ou o FinBERT não está instalado (falta o extra `[sentiment]`). O corpo já gravado fica | Orçamento esgotado antes de começar, ou cancelamento |
 | `juiza` | `v1-staging_noticias_julgamento`, `v1-raw_llm_juiza_runs` | Foi interrompida (orçamento ou cancelamento), ou parou por `jev_sem_chave`, `erro_jev` ou `sem_credito` (ver nota abaixo) | Orçamento esgotado antes de começar, ou cancelamento. Sem a chave da LLM de fallback (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` com `JUIZA_PROVEDOR=openai`, ou `GEMINI_API_KEY` com `JUIZA_PROVEDOR=gemini`), a etapa sai `concluida` sem julgar pela LLM (ver nota abaixo) |
 | `cadastro` | `v1-raw_cvm_cadastro`, `v1-raw_b3_cadastro`, `v1-raw_b3_proventos`, `v1-raw_b3_suplemento`, `v1-raw_cvm_balancos`, `v1-raw_cvm_acoes` | Alguma parte foi interrompida, ou as quatro partes falharam | Orçamento esgotado antes de começar, ou cancelamento |
-| `entrega` | As 11 tabelas `v1-noticias` … `v1-indices`, `v1-composicao_ibov`, `v1-eventos_acoes` e `v1-emissores_ticker` (ver [05](05-entrega.md)) | Alguma das 11 tabelas falhou (a mensagem lista quais), ou nenhuma foi montada | Não é pulada pelo orçamento (ver seção 5) |
+| `entrega` | `features_dataset_v1` (por `build_dataset`), e as 11 tabelas `v1-noticias` … `v1-indices`, `v1-composicao_ibov`, `v1-eventos_acoes` e `v1-emissores_ticker` (ver [05](05-entrega.md)) | Alguma das 11 tabelas falhou (a mensagem lista quais), ou nenhuma foi montada. Também sai `falhou` se `build_dataset` falhou: a entrega roda mesmo assim | Não é pulada pelo orçamento (ver seção 5) |
 | `analise` | `raw_llm_prompts`, `raw_llm_runs`, `staging_llm_noticias_empresas`, `staging_llm_noticias_macro`, `staging_llm_acoes_sinais`, `staging_llm_mercados` | A chamada de análise não devolveu status `ok` | `ANALISE_ENABLED=false` (desligada hoje, ver a seção "Como a pipeline funciona hoje", item E) ou sem `GEMINI_API_KEY` |
 
 Regras de falha, valem para todas as etapas:

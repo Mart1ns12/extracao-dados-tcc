@@ -1,7 +1,7 @@
-# Operação e deploy: ambiente, CLI, variáveis, Railway, checklist de produção e problemas conhecidos
+# Operação e deploy: ambiente, CLI, variáveis, executor na Processamento-Venturo, API no Railway, checklist de produção e problemas conhecidos
 
 Este documento cobre como rodar o projeto no dia a dia: o ambiente de desenvolvimento, os 20 comandos do CLI com suas
-opções, todas as variáveis de ambiente, o deploy do executor no Railway, a ordem de entrada em produção e os
+opções, todas as variáveis de ambiente, a atualização do executor na Processamento-Venturo, a alternativa Railway, a ordem de entrada em produção e os
 problemas conhecidos com a solução de cada um. O banco está descrito em [Banco de dados](06-banco-de-dados.md); o
 executor e o painel, em [Executor e painel](07-executor-e-painel.md).
 
@@ -38,7 +38,7 @@ Scripts fora do CLI, em `scripts/`:
 
 | Script | Para quê |
 |---|---|
-| `scripts/coleta-completa.sh` | Roda as etapas de coleta em sequência, com log por etapa, numa máquina com acesso direto ao banco. Fora do Railway. Não rode junto com o executor no mesmo banco |
+| `scripts/coleta-completa.sh` | Roda as etapas de coleta em sequência, com log por etapa, numa máquina com acesso direto ao banco. Não rode junto com o executor no mesmo banco |
 | `scripts/gerar_mapas_b3_cvm.py` | Gera o mapa ticker para código CVM pelos endpoints da B3 (usa rede) |
 | `scripts/capturar_fixtures.py` | Recaptura as fixtures reais de CVM, B3, BCB e Yahoo usadas nos testes. As fixtures não são editadas à mão |
 
@@ -133,13 +133,13 @@ python -m tcc_scraper.cli build-entrega --csv
 python -m tcc_scraper.cli build-entrega --tabela noticias --tabela precos
 ```
 
-O CSV da entrega é gerado localmente. No Railway, o disco é efêmero: rode `build-entrega --csv` na sua máquina.
+O CSV da entrega é gerado localmente, com `build-entrega --csv`, na máquina do dono. Na alternativa Railway (seção 4.2) o disco é efêmero, por isso o CSV não sai de lá.
 
 ### 2.6 Operação do executor
 
 | Comando | Opções | O que faz |
 |---|---|---|
-| `executor` | - | Worker do painel: busca comandos, roda o `daily` e a carga histórica e confirma cada comando. Fica em loop. É o processo que roda no Railway |
+| `executor` | - | Worker do painel: busca comandos, roda o `daily` e a carga histórica e confirma cada comando. Fica em loop. É o processo que roda como serviço `tcc-executor` (NSSM) na Processamento-Venturo |
 | `daily` | `--etapa ID` (roda só uma etapa; ids em [Executor e painel](07-executor-e-painel.md), seção 5); `--origem TEXTO` (padrão `manual`) | Roda o daily agora, de forma bloqueante, e imprime o resumo. Não passa pela fila do painel |
 | `historico` | `--anos ANO` (repetível; ex.: `--anos 2026 --anos 2025`); `--modo pendentes` ou `reprocessar_erros` (padrão `pendentes`) | Carga histórica: dispara e espera, de forma bloqueante, a coleta dos anos pedidos. Roda dentro do executor |
 
@@ -225,11 +225,11 @@ ali. Os caminhos de `EXPORT_DIR`, `ENTREGA_CSV_DIR` e `HF_CACHE_DIR` são padrõ
 
 | Variável | Padrão | No `.env.example` | Uso |
 |---|---|---|---|
-| `EXPORT_DIR` | `exports/` na pasta do projeto | comentada | Pasta do Parquet e dos CSVs do dataset. Efêmera no Railway |
+| `EXPORT_DIR` | `exports/` na pasta do projeto | comentada | Pasta do Parquet e dos CSVs do dataset. Pasta persistente na Processamento-Venturo; efêmera na alternativa Railway |
 | `ENTREGA_CSV_DIR` | `exports/entrega/` | não | Pasta dos CSVs da entrega (`build-entrega --csv`) |
-| `HF_CACHE_DIR` | `.hf_cache/` na pasta do projeto | não | Cache dos modelos do FinBERT. A imagem do Railway fixa `/app/.hf_cache` |
+| `HF_CACHE_DIR` | `.hf_cache/` na pasta do projeto | não | Cache dos modelos do FinBERT. A alternativa Railway fixa `/app/.hf_cache` |
 
-**GPU para o FinBERT.** Com `SENTIMENT_DEVICE=auto` (padrão) o FinBERT usa a GPU se o torch instalado tiver CUDA; senão roda na CPU. Para ter CUDA, instale o torch antes do projeto: `pip install torch --index-url https://download.pytorch.org/whl/cu124` e depois `pip install -e ".[llm,sentiment]"`. `SENTIMENT_DEVICE` aceita `auto`, `cuda`, `cuda:N` ou `cpu`; pedir `cuda` sem GPU falha com erro, em vez de cair na CPU. `SENTIMENT_BATCH_SIZE` (padrão 32; com GPU, 128 costuma caber em 6 GB de VRAM). O Dockerfile do Railway continua CPU.
+**GPU para o FinBERT.** Com `SENTIMENT_DEVICE=auto` (padrão) o FinBERT usa a GPU se o torch instalado tiver CUDA; senão roda na CPU. Para ter CUDA, instale o torch antes do projeto: `pip install torch --index-url https://download.pytorch.org/whl/cu124` e depois `pip install -e ".[llm,sentiment]"`. `SENTIMENT_DEVICE` aceita `auto`, `cuda`, `cuda:N` ou `cpu`; pedir `cuda` sem GPU falha com erro, em vez de cair na CPU. `SENTIMENT_BATCH_SIZE` (padrão 32; com GPU, 128 costuma caber em 6 GB de VRAM). O Dockerfile da alternativa Railway continua CPU (seção 4.2).
 
 ### 3.7 Notícias WordPress
 
@@ -238,10 +238,26 @@ ali. Os caminhos de `EXPORT_DIR`, `ENTREGA_CSV_DIR` e `HF_CACHE_DIR` são padrõ
 | `WP_ENABLED` | `true` | sim | Liga a coleta WordPress (InfoMoney, Money Times, Exame) e o `processar_wp` no daily e na carga histórica. Com `false`, esses veículos voltam ao Google News |
 | `THROTTLE_WORDPRESS` | `1.0` | sim | Intervalo entre requisições à API do WordPress, em segundos. Medido sem erro em 216 requisições |
 
-## 4. Deploy no Railway
+## 4. Host do executor e deploy
 
-O scraper roda no Railway como **worker sempre ligado**: o serviço executa `python -m tcc_scraper.cli executor`. Não
-é cron e não serve HTTP.
+O executor roda como serviço Windows NSSM `tcc-executor` (conta LocalSystem) na máquina de processamento do dono,
+"Processamento-Venturo", e executa `python -m tcc_scraper.cli executor`. É um **worker sempre ligado**: não é cron e
+não serve HTTP. No Railway (projeto `painel-coleta-tcc`) fica só a API do painel (serviço `api`).
+
+### 4.1 Atualizar o executor na Processamento-Venturo
+
+1. **Aplicar antes as DDLs pendentes**, com usuário que tem DDL. A lista está no item 2 da seção 5. O executor não aplica ALTER.
+2. **Atualizar o código.** Na pasta do repositório da máquina: `git pull --ff-only origin feat/executor-painel`, e conferir com `git log -1 --oneline`.
+3. **Instalar as dependências** com o Python do venv do serviço, na pasta do repositório: `.venv\Scripts\python.exe -m pip install -e ".[llm,sentiment]"`.
+4. **Conferir as variáveis do `.env`** da máquina (o `.env` nunca vai para o repositório). Confira as novas: `JUIZA_PROVEDOR=anthropic`, `ANTHROPIC_API_KEY`, `DATA_START=2021-02-01` (janela de cinco anos), `WP_ENABLED=true` e `ANALISE_ENABLED=false`.
+5. **Reiniciar o serviço:** `nssm restart tcc-executor`. A parada pode demorar ou travar, porque o lançador `.venv\Scripts\python.exe` cria um processo filho. Se travar, pare o PID do `nssm` como administrador.
+6. **Conferir.** No painel, o heartbeat do executor tem que estar atualizado. No log do serviço não pode haver traceback. Quando for analisar, copie o log para `C:\Users\consu\OneDrive\Desktop\Faculdade\tcc\LOG\executor*.log`.
+
+A ordem de implantação completa é: DDL, executor, API do painel, web (ver seção 5).
+
+### 4.2 Alternativa não usada: Railway
+
+`railway.json` e `Dockerfile` continuam no repositório, mas não são o caminho de produção do executor, e a imagem nunca foi construída. Se a alternativa for usada, valem os itens abaixo.
 
 - **`railway.json`**: build pelo `Dockerfile`; política de reinício `ON_FAILURE`, com até 10 tentativas. Não há
   cron nem healthcheck.
@@ -253,6 +269,9 @@ O scraper roda no Railway como **worker sempre ligado**: o serviço executa `pyt
   3. Baixa os modelos do FinBERT (pt e en) no build, em `HF_CACHE_DIR=/app/.hf_cache`. Assim a subida do serviço
      não baixa cerca de 900 MB a cada deploy.
   4. `CMD ["python", "-m", "tcc_scraper.cli", "executor"]`.
+- **`data/` fica fora da imagem.** O `.dockerignore` exclui `data/`, onde estão CSVs versionados que o código lê:
+  `data/composicao_ibov`, `data/correcoes_precos` e `data/proventos_yahoo`. Um deploy em contêiner precisaria copiar
+  `data/` para a imagem antes de funcionar.
 - **Variáveis**: no painel do Railway, nunca no repositório. Pelo menos: `IP_BANCO`, `USER_BANCO`, `SENHA_BANCO`,
   `PORTA_BANCO`, `NOME_BANCO`, `PAINEL_API_URL`, `EXECUTOR_TOKEN`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `JEV_ENABLED`, `JEV_API_KEY`, `JUIZA_*`, `ANTHROPIC_*` e `OPENAI_*` (a chave da OpenAI só com `JUIZA_PROVEDOR=openai`), conforme o uso.
 - **Banco remoto para o Railway.** O worker grava no MySQL do servidor pela internet. Crie um usuário próprio para o Railway, sem DDL:
@@ -282,13 +301,17 @@ Esta é a ordem. Cada passo depende do anterior.
 1. **Confirmar o servidor.** MySQL 8.0 ou superior, banco `tcc_scraper` com `utf8mb4`. Fazer backup antes de
    qualquer DDL. Ver [Banco de dados](06-banco-de-dados.md), seções 1 e 4.
 2. **Conferir o schema.** `sql/schema.mysql.sql` tem as 46 tabelas do estado atual (14 sem prefixo e 32
-   com `v1-`). As duas alterações de 2026-11-03 (`sql/alteracoes/2026-11-03_*`) também precisam ser aplicadas à mão pelo dono. O MySQL de produção ainda não recebeu os ALTERs de 2026-10-23: são o passo 1 da seção 5.1. Confira com `python -m tcc_scraper.cli db-info`, que só lê. Para banco vazio, aplique
+   com `v1-`). Os ALTERs de 2026-10-23 são o passo 1 da seção 5.1. Confira com `python -m tcc_scraper.cli db-info`, que só lê. Para banco vazio, aplique
    `sql/schema.mysql.sql` com usuário que tem DDL. Alterações futuras seguem [06](06-banco-de-dados.md), seção 4.2.
+   **DDLs de `sql/alteracoes/` posteriores a 2026-10-23**, a aplicar à mão, em ordem, com usuário que tem DDL e backup, após aprovação do dono:
+   - `2026-10-27_historico_progresso_unidade_erro.mysql.sql` e `2026-10-27_wordpress_historias.mysql.sql`: já aplicadas (conferido no banco em 2026-11-03).
+   - `2026-11-02_acoes_base_atual_eventos.mysql.sql`: já aplicada em 2026-11-03.
+   - `2026-11-03_emissores_ticker.mysql.sql`: já aplicada em 2026-11-03.
+   - `2026-11-03_balancos_situacao.mysql.sql`: já aplicada em 2026-11-03.
 3. **Conferir o `.env` local.** Pendência do dono: remover `DB_TARGET` e `DATABASE_URL`, variáveis do antigo
    PostgreSQL. O código não as lê, mas elas confundem. O `.env` não é versionado.
-4. **Deploy do executor no Railway.** Variáveis da seção 4, com `EXECUTOR_TOKEN` igual ao da API. Confirme nos logs
-   que o worker sobe e envia heartbeat.
-5. **Bloqueio do modo live.** Antes de ligar a API em `MODO=live`: no repositório do painel (`interface-acompanhamento`), as rotas `/api/executor/*` respondem `501`, porque `FilaComandosMySQL` (`api/app/fila.py`) e `fontes/mysql.py` (`api/app/fontes/mysql.py`) ainda são TODO. Enquanto isso, o executor não recebe comandos da API live: o loop segue rodando, sem aplicar nada. Só avance quando essas duas peças estiverem implementadas do lado do painel. Detalhes em [Executor e painel](07-executor-e-painel.md), seção 9.
+4. **Atualizar o executor na Processamento-Venturo.** Procedimento da seção 4.1, com `EXECUTOR_TOKEN` igual ao da API. Confirme o heartbeat no painel e o log sem traceback. Ordem de implantação: DDL (item 2), executor (este item), API do painel (item 6), web.
+5. **Fila do painel em `MODO=live`.** A API grava os comandos em `v1-painel_comandos` e atende `/api/executor/*` (busca, ack e heartbeat), em `interface-acompanhamento/api/app/fila.py` e `fontes/mysql.py`. Confirme, com um comando de teste, que o executor busca e confirma o comando. Detalhes em [Executor e painel](07-executor-e-painel.md), seção 9.
 6. **API do painel em `MODO=live`.** Mesmo banco e mesmo `EXECUTOR_TOKEN`. Confirme `executor: ok` em
    `/api/componentes`.
 7. **Primeiro daily pelo painel.** Dispare um daily (ou só a etapa `precos`) e confirme que a execução termina em `concluida` ou
@@ -302,17 +325,17 @@ prioridade sobre o daily, e o daily espera a carga pausar ou terminar.
 Passo a passo para levar a juíza ao estado novo: julga todos os pares, com teto em US$, e filtra a entrega. Cada passo depende do anterior. O DDL é aplicado à mão, com usuário com DDL, backup e aprovação do dono ([06](06-banco-de-dados.md), seção 4.2). A partir do passo 2, tudo é feito pelo painel: as ações e a tela **Qualidade** de 2026-10-23 estão em [Executor e painel](07-executor-e-painel.md), seção 4.1.
 
 1. **Aplicar o lote de 2026-10-23 à mão** no MySQL do `.env`, da máquina local: `sql/lotes/2026-10-23_lote.mysql.sql`. Ele junta, na ordem, os três ALTERs de `sql/alteracoes/2026-10-23_*`: a coluna `raw_articles.published_time_source`, as colunas `custo_usd` e `finalidade` em `v1-raw_llm_juiza_runs` com a tabela `v1-staging_juiza_tentativas`, e a tabela `v1-composicao_ibov`. Rode uma vez só: DDL do MySQL não tem rollback. O fim do arquivo traz a conferência, que deve devolver 5 linhas.
-2. **Subir o código novo.** Só depois do passo 1. Se a juíza roda no Railway, as variáveis `JEV_*` e `JUIZA_*` vão no painel do Railway, e o executor não aplica ALTER.
+2. **Subir o código novo.** Só depois do passo 1. As variáveis `JEV_*` e `JUIZA_*` ficam no `.env` do executor, na Processamento-Venturo. O executor não aplica ALTER.
 3. **Conferir pelo painel.** Na tela **Qualidade**, o card **Status da juíza** mostra `pendentes`, `esgotados`, o gasto do mês e o do backlog contra as verbas. Se uma seção aparecer em `erros` (por exemplo, coluna ainda inexistente), o lote não foi aplicado completo.
 4. **Medir a concordância pelo painel.** Na tela **Qualidade**, o formulário "Medir concordância" (N e semente), com a confirmação de gasto com API real. Exige `JEV_ENABLED=true` e `JEV_API_KEY` no executor; sem elas, a execução falha com a mensagem `concordancia exige o Jev`. Não precisa de chave da LLM, porque a LLM não é chamada. Anote a decisão, o `limiar_recomendado`, a concordância e o kappa de `papel` e de `tipo_conteudo`, a precisão por direção e o custo do resumo. A medição não grava julgamento e não tem teto. O resultado do CLI, `python -m tcc_scraper.cli judge-news --concordancia 500`, é o mesmo e pode ser usado no lugar do painel.
 5. **Decidir o modo e o limiar (dono).** O resultado traz `decisao` e `limiar_recomendado` (seção 2.7 de [04](04-juiza-e-llm.md)). Se `decisao = entrega`, o dono define `JUIZA_JEV_LIMIAR_ENTREGA` com o `limiar_recomendado` e mantém `JUIZA_JEV_MODO=entrega`. Se `decisao = triagem`, o dono define `JUIZA_JEV_MODO=triagem`. O painel só mostra a decisão; não altera a config.
 6. **Julgar o backlog pelo painel.** Na tela **Faltantes**, a verificação "Pares sem julgamento" (`juiza_pendentes`): marque os anos e confirme. O painel envia o comando `coletar` com o item `{"coletor": "juiza", "anos": [...]}`, e a juíza roda em modo backlog, com a verba de US$ 15, que é cumulativa (o que a carga histórica já gastou conta, e o Jev e a LLM de fallback somam nela). Para conferir o custo, comece por um ano só e olhe o card **Status da juíza** antes de seguir.
 7. **Conferir.** O card **Status da juíza** mostra `pendentes`, `esgotados`, `gasto_backlog_usd` contra `verba_backlog_usd` e o gasto do mês. Repita o passo 6 até `pendentes` ficar perto de zero. Pares `esgotados` já gastaram as tentativas e saem da fila.
-8. **Ligar o filtro da entrega.** Com `pendentes` perto de zero, defina `ENTREGA_FILTRO_JUIZA=true` (variável do executor, não é ação do painel) e monte a entrega pelo painel: na tela de disparo, a etapa `entrega` monta as 11 tabelas. O CSV continua sendo gerado localmente (`build-entrega --csv`), porque o disco do Railway é efêmero. Ligar o filtro antes de julgar o backlog derruba cerca de 92% da `v1-noticias`, porque o par sem julgamento fica de fora. Por isso o padrão em código só passa a `true` depois deste passo (a troca de padrão é a última fase do plano de 2026-10-23).
+8. **Ligar o filtro da entrega.** Com `pendentes` perto de zero, defina `ENTREGA_FILTRO_JUIZA=true` (variável do executor, não é ação do painel) e monte a entrega pelo painel: na tela de disparo, a etapa `entrega` monta as 11 tabelas. O CSV continua sendo gerado na máquina do dono (`build-entrega --csv`). Ligar o filtro antes de julgar o backlog derruba cerca de 92% da `v1-noticias`, porque o par sem julgamento fica de fora. Por isso o padrão em código só passa a `true` depois deste passo (a troca de padrão é a última fase do plano de 2026-10-23).
 
 ### 5.2 Juíza: Jev por entrega segura e fallback Claude Haiku (2026-10-28)
 
-Checklist para a implantação da nova juíza. Vale na máquina do executor (ou nas variáveis do serviço no Railway). A decisão de 2026-10-26 está no ADR "Juíza: Jev decide por entrega segura; fallback OpenAI gpt-5.6-luna (effort none)", que ficou para trás como registro: desde 2026-10-28, o fallback padrão é o `claude-haiku-5-5`. O fluxo está em [04](04-juiza-e-llm.md), seções 2.3, 2.4 e 2.9; o provedor atual, na seção 3.6.
+Checklist para a implantação da nova juíza. Vale na máquina do executor (Processamento-Venturo). A decisão de 2026-10-26 está no ADR "Juíza: Jev decide por entrega segura; fallback OpenAI gpt-5.6-luna (effort none)", que ficou para trás como registro: desde 2026-10-28, o fallback padrão é o `claude-haiku-5-5`. O fluxo está em [04](04-juiza-e-llm.md), seções 2.3, 2.4 e 2.9; o provedor atual, na seção 3.6.
 
 1. **Gerar uma chave nova do Jev** e inutilizar a antiga. A chave atual vazou em uma transcrição.
 2. **Obter a chave da Anthropic** (`ANTHROPIC_API_KEY`), com crédito. Sem crédito, a juíza para com `sem_credito`. A chave da OpenAI só é necessária com `JUIZA_PROVEDOR=openai`.
@@ -333,7 +356,7 @@ Checklist para a implantação da nova juíza. Vale na máquina do executor (ou 
 | `IntegrityError` na chave de `raw_collection_runs` ao carregar dados antigos | Sequências do PostgreSQL atrás dos ids copiados | Não se aplica mais: o banco é só MySQL, com `AUTO_INCREMENT` |
 | Busca em `LIKE` traz linhas a mais | A collation `utf8mb4_0900_ai_ci` ignora acento | Use `COLLATE utf8mb4_0900_as_cs` em consulta de análise. O pipeline não usa `LIKE` |
 | Conexão cai no meio de uma coleta longa | O MySQL fecha conexão ociosa | `pool_recycle=3600` já está em `get_engine()`. Não remover |
-| `enriquecimento` falha e o daily sai `parcial` | Instalação local sem o extra `[sentiment]` | Instale `pip install -e ".[sentiment]"`. A imagem do Railway já tem o extra |
+| `enriquecimento` falha e o daily sai `parcial` | Instalação local sem o extra `[sentiment]` | Instale `pip install -e ".[sentiment]"`. O procedimento da seção 4.1 já instala o extra |
 | `daily` recusado | Já há um daily ou etapa em andamento (uma execução por vez) | Aguarde a execução atual terminar. O motivo vem no `erro` do ack |
 | Daily nasce `agendada` e não começa | Carga histórica em `em_andamento` ou `pausando` tem prioridade | Esperado. O daily começa quando a carga pausar, terminar ou for cancelada |
 | Daily virou `falhou` após reinício | O executor caiu com o daily em andamento | Dispare de novo pelo painel. A carga histórica, ao contrário, retoma sozinha |
@@ -348,7 +371,7 @@ Checklist para a implantação da nova juíza. Vale na máquina do executor (ou 
 | Juíza para com `jev_sem_chave` | `JEV_ENABLED=true` sem `JEV_API_KEY`. A LLM fica bloqueada | Defina `JEV_API_KEY`, ou `JEV_ENABLED=false` (o aviso `jev_desligado` aparece no `--status`) |
 | Juíza para com `erro_jev` | O lote do Jev falhou 2 vezes seguidas, ou todos os itens voltaram com 401, 402 ou 403 | Confira a chave e o saldo do Jev. Os pares ficam pendentes e não vão à LLM |
 | Juíza para com `sem_credito` | Anthropic sem crédito, OpenAI com 429 `insufficient_quota`, ou Gemini com 402 | Recarregue o crédito e rode de novo. Não há retry |
-| `judge-news --status` mostra `modelo_incompativel` | `JUIZA_MODELO` de outro provedor, como `gemini-...` com `JUIZA_PROVEDOR=openai` ou `anthropic` | Remova `JUIZA_MODELO` do `.env` ou do painel do Railway |
+| `judge-news --status` mostra `modelo_incompativel` | `JUIZA_MODELO` de outro provedor, como `gemini-...` com `JUIZA_PROVEDOR=openai` ou `anthropic` | Remova `JUIZA_MODELO` do `.env` do executor |
 | `sql/completo_ate_*` ou `sql/0008_*` não existem mais | Arquivos gerados pelo Alembic, removidos na descontinuação | Use `sql/schema.mysql.sql` para banco vazio, e `sql/alteracoes/` para mudanças |
 | Testes com banco apagam ou sujam dados | Eles gravam no MySQL real do `.env` | Só rode com `TCC_TESTES_COM_BANCO=1` quando aceitar essa gravação. Limpeza restrita aos prefixos de teste |
 
@@ -356,9 +379,9 @@ Checklist para a implantação da nova juíza. Vale na máquina do executor (ou 
 
 Estes pontos ficaram sem medição ou sem teste no fim do trabalho:
 
-- **`docker build` não foi executado.** A imagem do Railway está escrita, mas a construção completa não foi testada.
-- **Memória do FinBERT no Railway não foi medida.** O spike S4 previa `docker stats` e um plano B, ainda sem
+- **Alternativa Railway: `docker build` não foi executado.** A imagem está escrita, mas a construção completa não foi testada.
+- **Memória do FinBERT na alternativa Railway não foi medida.** O spike S4 previa `docker stats` e um plano B, ainda sem
   resultado.
-- **Subida do executor no Railway não foi confirmada.** O passo 5 da seção 5 é o teste real.
+- **Subida do executor como serviço NSSM não foi confirmada neste documento.** O passo 6 da seção 4.1 (heartbeat no painel e log sem traceback) é o teste.
 - **`THROTTLE_LINK_RESOLVE` (0,4 s)** foi medido em 2026-09-21, com os números registrados no `.env.example`. A
   medição não foi repetida neste trabalho.

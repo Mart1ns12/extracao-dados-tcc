@@ -30,7 +30,7 @@ Exemplo com `--anos 2025 --anos 2026` e `DATA_START=2025-09-01` (valor de `.env.
 Cada passo é uma unidade de trabalho com um coletor e um ano. Os passos globais rodam uma vez, no primeiro ano da lista (o mais recente pedido). Os passos por segmento rodam ano a ano, em **duas trilhas que correm ao mesmo tempo**:
 
 - **Trilha Google:** `google_news` e `enriquecimento` de cada segmento.
-- **Trilha principal:** os passos globais e, por segmento, `wordpress`, `processar_wp`, `cvm_ipe`, a juíza de WordPress e IPE, `finbert`, a juíza do ano e `build_entrega`.
+- **Trilha principal:** os passos globais e, por segmento, `wordpress`, `processar_wp`, `cvm_ipe`, a juíza de WordPress e IPE, `finbert`, a juíza do ano, `build_entrega` e `build_dataset`.
 
 A trilha Google começa junto com os passos globais. Os passos marcados como "espera o Google" só começam quando a trilha Google termina o último passo do ano (`enriquecimento`). Esse é o **portão do ano**.
 
@@ -53,6 +53,7 @@ A trilha Google começa junto com os passos globais. Os passos marcados como "es
 | Principal | `finbert` | Cada segmento | Sentimento dos artigos do ano que ainda não têm score (`anos`). Espera o portão do ano | Não se aplica (função) |
 | Principal | `juiza` | Cada segmento | Julga os pares do ano que faltam, em modo `backlog`: sem teto de itens, limitada pela verba `JUIZA_BACKLOG_VERBA_USD` (US$ 15), cumulativa. Espera o portão do ano | Não se aplica (função) |
 | Principal | `build_entrega` | Cada segmento | Monta as 11 tabelas da entrega. Espera o portão do ano | Não se aplica (função) |
+| Principal | `build_dataset` | Cada segmento | Monta `features_dataset_v1` (igual à CLI `build-dataset`), logo depois de `build_entrega`, com o mesmo portão do ano | Não se aplica (função) |
 
 A carga não segue a ordem do daily. Os coletores são os mesmos do daily (ver [02](02-pipeline-diaria.md), seção 3), exceto a carteira do IBOV (`b3_carteira_ibov`), que a carga não roda: ela existe só no daily e no `coletar`. A análise diária (`analise`) também não entra na carga.
 
@@ -86,7 +87,7 @@ Com os valores padrão, uma falha que não passa leva 3,5 horas de pausas (30 + 
 | Modo | O que faz |
 |---|---|
 | `pendentes` (padrão) | Roda o que falta. Coletores com `resume=True` pulam as unidades que já têm checkpoint `ok` em `raw_collection_runs`. Coletores com `resume=False` refazem tudo |
-| `reprocessar_erros` | Roda só as unidades com erro no checkpoint, nos coletores. `finbert`, `juiza` e `build_entrega` não têm checkpoint: rodam como em `pendentes` |
+| `reprocessar_erros` | Roda só as unidades com erro no checkpoint, nos coletores. `finbert`, `juiza`, `build_entrega` e `build_dataset` não têm checkpoint: rodam como em `pendentes` |
 
 ## 5. Pausar, retomar e cancelar
 
@@ -149,14 +150,14 @@ A carga disputa o mesmo banco, o mesmo throttle e as mesmas fontes que o daily (
 
 ## 10. Limitações e pontos em aberto
 
-- **Janela de cinco anos: `DATA_START=2021-02-01`** (decisão do autor, 2026-10-23). O `.env.example` traz esse valor. O default de `config.py` continua `2025-09-01`, então cada ambiente (local e Railway) precisa definir `DATA_START` no `.env` ou nas variáveis do serviço.
+- **Janela de cinco anos: `DATA_START=2021-02-01`** (decisão do autor, 2026-10-23). O `.env.example` traz esse valor. O default de `config.py` continua `2025-09-01`, então cada ambiente (local e o executor da Processamento-Venturo) precisa definir `DATA_START` no `.env` ou nas variáveis do serviço.
   - Com `2021-02-01`, as janelas derivadas ficam: notícias e IPE a partir de 2021-01-01 (`DATA_START − 31 dias`), preços a partir de 2019-12-29 (`DATA_START − 400 dias`) e balanços CVM a partir de 2020.
   - `DATA_START` também move a janela do dataset v1 (`build-dataset`). O código não separa as duas coisas.
   - Comando da carga: `historico --anos 2021 --anos 2022 --anos 2023 --anos 2024 --anos 2025 --anos 2026`. CDI e IPCA só começam em 2021 se a carga incluir `--anos 2021` (`collectors/indices.py` usa 1º de janeiro do ano pedido).
   - O Google News devolve pouco para 2021 e 2022 (cobertura validada só para cerca de 2 anos). A contagem real por ano sai de `scripts/relatorio_qualidade.py`.
 - **Anos aceitos pela API e pelo executor são diferentes.** A API aceita 2021 a 2026. O executor ignora os anos fora da faixa calculada por `DATA_START`, e recusa o comando se nenhum cair nela.
 - **Contagem de passos com `resume=False`.** Pelo código de `ProgressoHistorico.plano`, quando um passo com `resume=False` é retomado depois de uma pausa, o total passa a somar as unidades já feitas com todas as unidades de novo. Isso pode contar unidades duas vezes em `unidades_total` e `unidades_feitas`. Não foi testado com uma carga real.
-- **`reprocessar_erros` não se aplica** a `finbert`, `juiza` e `build_entrega`. Eles rodam igual a `pendentes`.
+- **`reprocessar_erros` não se aplica** a `finbert`, `juiza`, `build_entrega` e `build_dataset`. Eles rodam igual a `pendentes`.
 - **Uma carga por vez e um processo só.** Não há carga paralela, e o estado da thread fica em memória (ver [07](07-executor-e-painel.md), seção 9). As duas trilhas da carga são threads desse mesmo processo.
 - **Deadlock entre as trilhas (não medido).** `google_news` (na gravação dos artigos) e `processar_wp` gravam em `raw_articles` ao mesmo tempo. O MySQL pode abortar uma das duas com o erro 1213 (deadlock). Se cair numa unidade do `google_news`, a unidade sai com erro. Se cair no `processar_wp`, o passo falha e a carga vai a `falhou`. Nos dois casos, uma nova carga refaz o que não ficou `ok` ou `concluido`. Não há retry automático para esse erro, e não houve carga real para medir a frequência.
 - **Fronteira de ano em UTC.** O filtro `anos` do FinBERT e da juíza usa `published_at` em UTC. A agregação diária em `America/Sao_Paulo` fica para o daily. Por isso, uma notícia publicada perto da virada do ano pode cair no segmento vizinho nesta carga.

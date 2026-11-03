@@ -14,7 +14,7 @@ Comece pelo [README da raiz](../README.md) se ainda não conhece o projeto.
 | [05 - Entrega](05-entrega.md) | Quem consome as tabelas (etapa seguinte) | Para saber a origem, a chave e a regra de atualização de cada coluna das onze tabelas entregues |
 | [06 - Banco de dados](06-banco-de-dados.md) | Operador e quem consulta o banco | Para ver o dicionário de tabelas, o schema e as alterações, e as regras de tipo |
 | [07 - Executor e painel](07-executor-e-painel.md) | Operador | Para ligar o worker, entender os comandos do painel e conferir as tabelas de progresso |
-| [08 - Operação e deploy](08-operacao-e-deploy.md) | Operador | Ao preparar o ambiente, configurar variáveis, publicar no Railway ou resolver um problema conhecido |
+| [08 - Operação e deploy](08-operacao-e-deploy.md) | Operador | Ao preparar o ambiente, configurar variáveis, atualizar o executor na Processamento-Venturo, publicar a API no Railway ou resolver um problema conhecido |
 | [09 - Histórico de mudanças](09-historico-de-mudancas.md) | Orientador, banca e o próprio autor | Para saber o que foi feito, quando, por quê, e quais decisões e pendências ficaram abertas |
 
 ## Ordem sugerida de leitura
