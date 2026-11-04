@@ -300,7 +300,7 @@ Esta é a ordem. Cada passo depende do anterior.
 
 1. **Confirmar o servidor.** MySQL 8.0 ou superior, banco `tcc_scraper` com `utf8mb4`. Fazer backup antes de
    qualquer DDL. Ver [Banco de dados](06-banco-de-dados.md), seções 1 e 4.
-2. **Conferir o schema.** `sql/schema.mysql.sql` tem as 46 tabelas do estado atual (14 sem prefixo e 32
+2. **Conferir o schema.** `sql/schema.mysql.sql` tem as 47 tabelas do estado atual (14 sem prefixo e 33
    com `v1-`). Os ALTERs de 2026-10-23 são o passo 1 da seção 5.1. Confira com `python -m tcc_scraper.cli db-info`, que só lê. Para banco vazio, aplique
    `sql/schema.mysql.sql` com usuário que tem DDL. Alterações futuras seguem [06](06-banco-de-dados.md), seção 4.2.
    **DDLs de `sql/alteracoes/` posteriores a 2026-10-23**, a aplicar à mão, em ordem, com usuário que tem DDL e backup, após aprovação do dono:

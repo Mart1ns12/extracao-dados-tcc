@@ -188,9 +188,9 @@ o que se perdeu com isso.**
 - **Deduplicação por `url_hash`**, nunca pela URL crua (querystrings de tracking variam).
 - **Alteração de schema é manual:** muda o model em `src/tcc_scraper/db/`, atualiza `sql/schema.mysql.sql` e escreve o ALTER em `sql/alteracoes/AAAA-MM-DD_descricao.mysql.sql`. Quem aplica é o dono, com usuário com DDL, após aprovação. Nada de `CREATE TABLE` solto.
 - **Prefixo `v1-` só nas tabelas criadas pela pipeline nova** (`PREFIXO_TABELA` em `db/models.py`):
-  as que nasceram nas antigas migrations 0004–0007 e nas alterações depois delas (32 tabelas: `painel_*`,
+  as que nasceram nas antigas migrations 0004–0007 e nas alterações depois delas (33 tabelas: `painel_*`,
   fontes/juíza, as 11 de entrega, sendo a 9ª `v1-composicao_ibov`, de 2026-10-23, a 10ª `v1-eventos_acoes`, de 2026-11-02, e a 11ª `v1-emissores_ticker`, de 2026-11-03, e as 3 da coleta WordPress,
-  de 2026-10-27: `v1-raw_wp_posts`, `v1-staging_historias` e `v1-staging_wp_processamento`). O nome real é `v1-painel_logs`, `v1-raw_ipe_docs`, `v1-noticias` … `v1-indices` (o CSV
+  de 2026-10-27: `v1-raw_wp_posts`, `v1-staging_historias` e `v1-staging_wp_processamento`; e a de referência `v1-ref_instituicoes_financeiras`, de 2026-11-04, com os bancos e seguradoras, na camada `ref_`, preenchida só por `sql/alteracoes/`). O nome real é `v1-painel_logs`, `v1-raw_ipe_docs`, `v1-noticias` … `v1-indices` (o CSV
   continua com o nome da spec). As 14 antigas mantêm o nome, inclusive `raw_articles`, `raw_prices` e
   `raw_llm_runs`; ficam sem prefixo também `features_dataset_v1`. O hífen exige
   crase em SQL escrito à mão: `` `v1-raw_ipe_docs` ``.

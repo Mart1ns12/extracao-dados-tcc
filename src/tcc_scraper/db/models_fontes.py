@@ -1,4 +1,5 @@
-"""Tabelas raw_/staging_ das fontes novas (CVM, B3) e da juíza.
+"""Tabelas raw_/staging_ das fontes novas (CVM, B3) e da juíza, e a referência `ref_` de
+bancos e seguradoras.
 
 Fontes: IPE (CVM dados abertos), balanços e ações da CVM, cadastro e proventos da B3
 (listedCompaniesProxy) e a juíza de notícias (LLM que classifica cada artigo por ticker).
@@ -13,6 +14,7 @@ import datetime as dt
 from sqlalchemy import (
     JSON,
     BigInteger,
+    CheckConstraint,
     Date,
     Double,
     ForeignKey,
@@ -104,6 +106,30 @@ class RawCvmCadastro(Base):
     sit: Mapped[str | None] = mapped_column(String(32))
     setor_ativ: Mapped[str | None] = mapped_column(Text)
     fetched_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, nullable=False)
+
+
+class RefInstituicaoFinanceira(Base):
+    """Banco ou seguradora, pelo codigo CVM: a entrega deixa em branco lucro bruto, EBIT, D&A,
+    emprestimos, caixa e aplicacoes (spec). Curada a mao, preenchida so por sql/alteracoes/.
+
+    Lida pelo builder (balancos) e pelo indicador balancos_contas_novas do painel. Lista explicita
+    porque a descricao da conta nao basta: BBSE3 e IRBR3 tem "Caixa e Equivalentes de Caixa" como
+    a industria, e PSSA3 usa o plano industrial inteiro (ITR 2025 da CVM). ITSA4 (holding) e
+    B3SA3 (bolsa) usam o plano industrial e ficam de fora.
+    """
+
+    __tablename__ = f"{PREFIXO_TABELA}ref_instituicoes_financeiras"
+    __table_args__ = (
+        CheckConstraint(
+            "tipo IN ('banco', 'seguradora')", name="ck_ref_instituicoes_financeiras_tipo"
+        ),
+    )
+
+    cd_cvm: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    empresa: Mapped[str] = mapped_column(String(128), nullable=False)
+    tipo: Mapped[str] = mapped_column(String(16), nullable=False)
+    motivo: Mapped[str] = mapped_column(String(255), nullable=False)
+    incluido_em: Mapped[dt.date] = mapped_column(Date, nullable=False)
 
 
 class RawB3Cadastro(Base):

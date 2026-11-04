@@ -1,4 +1,4 @@
-# Banco de dados: MySQL 8 único, dicionário das 46 tabelas e schema
+# Banco de dados: MySQL 8 único, dicionário das 47 tabelas e schema
 
 Este documento cobre o banco do projeto: o servidor, o dicionário de todas as tabelas, o schema e as alterações de
 schema, as regras de tipo e de escrita e os testes que gravam no banco. Absorve o antigo roteiro de migração MySQL, que foi removido.
@@ -51,10 +51,11 @@ As camadas são **prefixo no nome da tabela**, não schema: no MySQL, "schema" e
 | `staging_` | Derivado da raw por modelo ou regra | `staging_article_sentiment` |
 | `features_` | Dataset materializado (v1 congelado) | `features_dataset_v1` |
 | `painel_` | Estado do executor e da carga, lido pelo painel | `painel_logs` |
+| `ref_` | Referência curada à mão, lida pelo pipeline e pelo painel; preenchida só por `sql/alteracoes/` | `ref_instituicoes_financeiras` (com `v1-`) |
 | sem prefixo de camada | Tabelas de entrega, com nomes fixos pela spec | `noticias` (com `v1-`) |
 
-O prefixo `v1-` (`PREFIXO_TABELA` em `db/models.py`) marca as **32 tabelas criadas pela pipeline nova**
-(criadas nas antigas migrations 0004 a 0007 e nas alterações posteriores), por pedido do dono: 8 `painel_*`, 13 de fontes, juíza e coleta WordPress e as 11 de entrega (incluindo `v1-composicao_ibov`, `v1-eventos_acoes` e `v1-emissores_ticker`).
+O prefixo `v1-` (`PREFIXO_TABELA` em `db/models.py`) marca as **33 tabelas criadas pela pipeline nova**
+(criadas nas antigas migrations 0004 a 0007 e nas alterações posteriores), por pedido do dono: 8 `painel_*`, 13 de fontes, juíza e coleta WordPress e as 11 de entrega (incluindo `v1-composicao_ibov`, `v1-eventos_acoes` e `v1-emissores_ticker`), e 1 de referência (`v1-ref_instituicoes_financeiras`).
 As 14 tabelas que já existiam (antigas migrations 0001 a 0003) mantêm o nome original. `features_dataset_v1` também não
 recebe o prefixo.
 
@@ -67,7 +68,7 @@ SELECT * FROM `v1-painel_logs` ORDER BY ts DESC LIMIT 20;
 A função `tabela_do_projeto(name)` (`db/models.py`) diz se uma tabela pertence ao projeto. Ela tira o `v1-` antes de
 comparar o prefixo de camada.
 
-## 3. Dicionário das 46 tabelas
+## 3. Dicionário das 47 tabelas
 
 Chave primária (PK) segundo o modelo SQLAlchemy. "Escreve" aponta o módulo que grava a tabela. "Linhas" aparece
 só onde o ledger do trabalho registra um número; caso contrário, `-`.
@@ -91,7 +92,7 @@ só onde o ledger do trabalho registra um número; caso contrário, `-`.
 | `staging_llm_acoes_sinais` | staging (LLM) | `llm/job.py`, substituída por dia | `data_referencia`, `ticker` | 0003 | - |
 | `staging_llm_mercados` | staging (LLM) | `llm/job.py`, substituída por dia | `data_referencia`, `nome` | 0003 | - |
 
-### 3.2 Tabelas com prefixo `v1-` (32)
+### 3.2 Tabelas com prefixo `v1-` (33)
 
 Painel (migration 0004). Quem escreve é o executor, salvo `v1-painel_comandos`, que a API do painel cria e confirma.
 
@@ -140,6 +141,12 @@ Carga histórica: unidade em curso e último erro por (ano, coletor) (alteraçã
 | `v1-painel_historico_progresso` (colunas novas `unidade_atual`, `ultimo_erro_unidade`, `ultimo_erro_mensagem`) | `orquestrador/historico.py` (`ProgressoHistorico`): a unidade em processamento e o último erro de cada passo | `ano`, `coletor` | 2026-10-27 (aplicada em 2026-10-27) | - |
 
 As duas trilhas paralelas da carga (Google e principal) precisam de uma posição por (ano, coletor): a posição única de `v1-painel_historico` não basta.
+
+Referência (alteração de 2026-11-04, `sql/alteracoes/2026-11-04_instituicoes_financeiras.mysql.sql`, aplicada em 2026-11-04):
+
+| Tabela | Escreve | Chave (PK) | Migration | Linhas |
+|---|---|---|---|---|
+| `v1-ref_instituicoes_financeiras` | ninguém no pipeline: o dono, por `sql/alteracoes/`. Lida por `entrega/builder.py` (balancos) e pelo indicador `balancos_contas_novas` do painel | `cd_cvm` | 2026-11-04 | 8 (semente) |
 
 Entrega (migration 0006). Os nomes e as colunas seguem a spec em `spec-entrega-etapa-seguinte.md`. Quem escreve é
 `entrega/builder.py`, que faz upsert e, em `v1-noticias`, remove as reprovadas. `v1-composicao_ibov` (alteração de 2026-10-23, `sql/alteracoes/2026-10-23_composicao_ibov.mysql.sql`) é escrita pelo builder e pelo coletor `b3_carteira_ibov`, na etapa `precos` do daily.
@@ -197,7 +204,7 @@ descontinuado: o schema atual fica em um arquivo SQL, e cada alteração é escr
 
 ### 4.1 Banco vazio
 
-`sql/schema.mysql.sql` tem o schema completo do estado atual, com as 46 tabelas. Para criar um banco vazio, aplique esse
+`sql/schema.mysql.sql` tem o schema completo do estado atual, com as 47 tabelas. Para criar um banco vazio, aplique esse
 arquivo com um usuário que tem DDL. Ele não cria a tabela `alembic_version`. Banco que já tem as tabelas não precisa dele.
 
 ### 4.2 Alterar o schema

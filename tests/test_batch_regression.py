@@ -141,6 +141,7 @@ TABELAS_COM_V1 = {
     "v1-composicao_ibov", "v1-emissores_ticker",
     "v1-acoes_emitidas", "v1-eventos_acoes", "v1-proventos", "v1-indices",
     "v1-raw_wp_posts", "v1-staging_historias", "v1-staging_wp_processamento",
+    "v1-ref_instituicoes_financeiras",
 }
 TABELAS_SEM_V1 = {
     "raw_articles", "raw_article_bodies", "raw_prices", "raw_macro", "raw_collection_runs",
@@ -150,11 +151,11 @@ TABELAS_SEM_V1 = {
 }
 
 
-def test_prefixo_v1_so_nas_32_tabelas_da_pipeline_nova() -> None:
+def test_prefixo_v1_so_nas_33_tabelas_da_pipeline_nova() -> None:
     from tcc_scraper.db import models_entrega, models_fontes, models_painel  # noqa: F401
 
     nomes = set(Base.metadata.tables)
-    assert len(TABELAS_COM_V1) == 32
+    assert len(TABELAS_COM_V1) == 33
     assert len(TABELAS_SEM_V1) == 14
     assert {n for n in nomes if n.startswith("v1-")} == TABELAS_COM_V1
     assert nomes >= TABELAS_SEM_V1

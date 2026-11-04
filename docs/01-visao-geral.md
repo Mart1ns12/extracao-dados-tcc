@@ -165,7 +165,7 @@ Os intervalos de cada fonte vêm de `config.py` (`throttle_*`). Toda requisiçã
 | Carga histórica | Coleta de anos passados, feita por coletor e por ano. Pode ser pausada, cancelada e retomada. |
 | Fim rolante | Data final da coleta diária, que avança até hoje. É diferente da janela fixa do v1. |
 | Aquecimento | Dias de cotação coletados antes de `DATA_START` (`PRICE_WARMUP_DAYS`, padrão 400). Assim as janelas de 20 pregões já estão cheias no primeiro dia do dataset. |
-| `v1-` | Prefixo das 32 tabelas criadas pela pipeline nova, incluindo as 11 de entrega. As tabelas do dataset v1 mantêm o nome antigo. |
+| `v1-` | Prefixo das 33 tabelas criadas pela pipeline nova, incluindo as 11 de entrega. As tabelas do dataset v1 mantêm o nome antigo. |
 | Upsert | Gravação que cria a linha se a chave não existe e atualiza se ela existe. Uma chave repetida nunca gera linha duplicada. |
 
 ## 7. Limitações conhecidas

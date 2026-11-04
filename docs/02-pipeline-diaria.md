@@ -214,7 +214,7 @@ Ordem de execução: `precos`, `macro`, `noticias`, `ipe`, `enriquecimento`, `ju
 
 ## 4. Tabelas gravadas e regra de falha
 
-Só as 32 tabelas criadas pela pipeline nova (fontes novas, painel e entrega) têm o prefixo `v1-`. As demais mantêm o nome de camada (`raw_prices`, `raw_articles` etc.). Ver [06](06-banco-de-dados.md).
+Só as 33 tabelas criadas pela pipeline nova (fontes novas, painel, entrega e a referência de bancos e seguradoras) têm o prefixo `v1-`. As demais mantêm o nome de camada (`raw_prices`, `raw_articles` etc.). Ver [06](06-banco-de-dados.md).
 
 | Etapa | Tabelas que grava | Sai `falhou` quando | Sai `pulada` quando |
 |---|---|---|---|

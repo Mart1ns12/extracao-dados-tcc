@@ -8,10 +8,8 @@ from pydantic import ValidationError
 
 from tcc_scraper.config import (
     APELIDOS,
-    CD_CVM_BANCOS_SEGURADORAS,
     CONTAS_CVM,
     DOMINIOS_WP,
-    IBOV_SECTORS,
     IBOV_TICKERS,
     MUDANCAS_TICKER,
     NOMES_EMPRESA,
@@ -104,25 +102,6 @@ FALTANDO_CVM = sorted(set(universo_coleta()) - set(TICKER_CODE_CVM))
 )
 def test_todo_ticker_do_universo_tem_codigo_cvm():
     assert not FALTANDO_CVM
-
-
-def test_codigos_de_bancos_e_seguradoras_existem_em_ticker_code_cvm():
-    assert set(TICKER_CODE_CVM.values()) >= CD_CVM_BANCOS_SEGURADORAS
-
-
-def test_todo_seguro_do_ibov_esta_na_lista_de_bancos_e_seguradoras():
-    for ticker, setor in IBOV_SECTORS.items():
-        if setor == "seguros":
-            assert TICKER_CODE_CVM.get(ticker) in CD_CVM_BANCOS_SEGURADORAS, ticker
-
-
-def test_todo_banco_do_ibov_esta_na_lista_exceto_b3_e_itausa():
-    for ticker, setor in IBOV_SECTORS.items():
-        if setor == "bancos_financeiro" and ticker not in {"B3SA3", "ITSA4"}:
-            cd = TICKER_CODE_CVM.get(ticker)
-            if cd is None:
-                continue
-            assert cd in CD_CVM_BANCOS_SEGURADORAS, ticker
 
 
 def test_conta_ajuste_dfc_so_aceita_o_quarto_nivel_de_6_01_01():

@@ -47,7 +47,8 @@ PREFIXO_TABELA = "v1-"
 # `Text` e TEXT de 64 KB no MySQL: uma resposta de ~15 mil tokens passa de 60 KB e seria
 # truncada (ou rejeitada em modo estrito). LONGTEXT onde o tamanho e imprevisivel.
 LongText = mysql.LONGTEXT()
-TABLE_PREFIXES = ("raw_", "staging_", "features_", "painel_")
+# ref_: referencia curada a mao (ex.: bancos e seguradoras), preenchida so por sql/alteracoes/.
+TABLE_PREFIXES = ("raw_", "staging_", "features_", "painel_", "ref_")
 # Tabelas de entrega: nomes fixos pela spec da etapa seguinte do TCC, sem prefixo de camada
 # (o prefixo PREFIXO_TABELA continua valendo para elas no banco).
 _ENTREGA_SEM_PREFIXO = (

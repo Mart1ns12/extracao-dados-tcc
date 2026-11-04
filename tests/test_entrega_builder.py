@@ -9,17 +9,20 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from tcc_scraper.config import MUDANCAS_TICKER, NOMES_EMPRESA
+from tcc_scraper.config import MUDANCAS_TICKER, NOMES_EMPRESA, TICKER_CODE_CVM
 from tcc_scraper.db.models_entrega import COLUNAS
 from tcc_scraper.entrega import builder as B
 from tcc_scraper.entrega.filtros import Julgamento, aprovado_para_entrega
 
 FIXTURES = Path(__file__).parent / "fixtures"
+RAIZ = Path(__file__).resolve().parent.parent
 SP = ZoneInfo("America/Sao_Paulo")
 UTC = dt.UTC
 PT = "lucas-leme/FinBERT-PT-BR"
@@ -879,7 +882,7 @@ def test_banco_e_seguradora_saem_em_branco() -> None:
         _dfp_2024("2.03", "Patrimônio Líquido Consolidado", 800.0, cd_cvm=16659),
         _dfp_2024("1.01.01", "Caixa e Equivalentes de Caixa", 50.0, demo="BPA", cd_cvm=16659),
         _dfp_2024("6.01.01.03", "Depreciações", 10.0, demo="DFC", cd_cvm=16659),
-    ])
+    ], {16659})
     for coluna in B.COLUNAS_SEM_FINANCEIRAS:
         assert linha[coluna] is None, coluna
     assert linha["receita_liquida"] == 1000000.0
@@ -893,9 +896,72 @@ def test_banco_sem_plano_industrial_nao_preenche_ebit_nem_caixa() -> None:
         _dfp_2024("3.05", "Resultado Antes dos Tributos sobre o Lucro", 300.0, demo="DRE",
                   cd_cvm=19348),
         _dfp_2024("1.01.01", "Caixa", 50.0, demo="BPA", cd_cvm=19348),
-    ])
+    ], {19348})
     assert linha["ebit"] is None
     assert linha["caixa"] is None
+
+
+def _seguradora_2024() -> list[dict]:
+    return [
+        _dfp_2024("3.01", "Receita de vendas", 1000.0, demo="DRE", cd_cvm=16659),
+        _dfp_2024("3.03", "Resultado Bruto", 400.0, demo="DRE", cd_cvm=16659),
+        _dfp_2024("1.01.01", "Caixa e Equivalentes de Caixa", 50.0, demo="BPA", cd_cvm=16659),
+    ]
+
+
+def test_sem_a_lista_seguradora_sai_com_as_colunas_industriais() -> None:
+    (linha,) = B.montar_balancos(_seguradora_2024())
+    assert linha["caixa"] is not None
+    assert linha["lucro_bruto"] is not None
+
+
+def test_montar_balancos_usa_as_financeiras_lidas_do_banco() -> None:
+    fontes = SimpleNamespace(
+        balancos=_seguradora_2024(), instituicoes_financeiras=frozenset({16659})
+    )
+    (linha,) = B._montar("balancos", fontes, False, MODELOS)
+    assert linha["caixa"] is None and linha["lucro_bruto"] is None
+
+
+def test_instituicoes_financeiras_le_a_tabela_ref(monkeypatch) -> None:
+    capturadas = []
+    monkeypatch.setattr(
+        B, "_consulta",
+        lambda stmt: capturadas.append(stmt) or [{"cd_cvm": 19348}, {"cd_cvm": 16659}],
+    )
+    assert B._Fontes(dt.date(2026, 1, 1)).instituicoes_financeiras == frozenset({19348, 16659})
+    assert "v1-ref_instituicoes_financeiras" in str(capturadas[0].compile())
+
+
+def test_instituicoes_financeiras_vazia_falha_alto(monkeypatch) -> None:
+    monkeypatch.setattr(B, "_consulta", lambda stmt: [])
+    with pytest.raises(RuntimeError, match="v1-ref_instituicoes_financeiras"):
+        _ = B._Fontes(dt.date(2026, 1, 1)).instituicoes_financeiras
+
+
+def test_financeiras_sem_cadastro_aponta_banco_do_ibov_fora_da_tabela() -> None:
+    setores = {"ITUB4": "bancos_financeiro", "B3SA3": "bancos_financeiro",
+               "PSSA3": "seguros", "PETR4": "petroleo"}
+    codigos = {"ITUB4": 19348, "B3SA3": 21610, "PSSA3": 16659, "PETR4": 9512}
+    assert B.financeiras_sem_cadastro(frozenset({19348}), setores, codigos) == ["PSSA3"]
+    assert B.financeiras_sem_cadastro(frozenset({19348, 16659}), setores, codigos) == []
+
+
+def _semente_financeiras(caminho: Path) -> set[int]:
+    texto = caminho.read_text(encoding="utf-8")
+    bloco = texto.split("INSERT INTO `v1-ref_instituicoes_financeiras`", 1)[1].split(";", 1)[0]
+    return {int(n) for n in re.findall(r"^\s*\((\d+),", bloco, flags=re.MULTILINE)}
+
+
+def test_semente_das_financeiras_cobre_bancos_e_seguros_do_ibov() -> None:
+    # Substitui os testes de config.py: a lista agora mora no banco, e a semente e o SQL versionado.
+    alteracao = _semente_financeiras(
+        RAIZ / "sql" / "alteracoes" / "2026-11-04_instituicoes_financeiras.mysql.sql"
+    )
+    assert alteracao == _semente_financeiras(RAIZ / "sql" / "schema.mysql.sql")
+    assert len(alteracao) == 8
+    assert alteracao <= set(TICKER_CODE_CVM.values())
+    assert B.financeiras_sem_cadastro(frozenset(alteracao)) == []
 
 
 def test_dfp_preenche_d_a_no_periodo_anual() -> None:

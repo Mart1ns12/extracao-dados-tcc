@@ -14,7 +14,7 @@ import re
 import statistics
 import unicodedata
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 from functools import cached_property
@@ -30,8 +30,8 @@ from tcc_scraper.collectors.cvm_demonstracoes import conta_subreceita_dre
 from tcc_scraper.config import (
     ACOES_CVM_ANULADAS,
     BENCHMARK_TICKER,
-    CD_CVM_BANCOS_SEGURADORAS,
     CONTAS_CVM,
+    IBOV_SECTORS,
     INDICES_YAHOO,
     MACRO_ENTREGA,
     MUDANCAS_TICKER,
@@ -71,6 +71,7 @@ from tcc_scraper.db.models_fontes import (
     RawCvmBalanco,
     RawCvmCadastro,
     RawIpeDoc,
+    RefInstituicaoFinanceira,
     StagingHistoria,
     StagingNoticiaJulgamento,
 )
@@ -113,6 +114,10 @@ COLUNAS_SEM_FINANCEIRAS = (
     "lucro_bruto", "ebit", "depreciacao_amortizacao", "emprestimos_curto_prazo",
     "emprestimos_longo_prazo", "caixa", "aplicacoes_financeiras",
 )
+# Setores do IBOV conferidos contra v1-ref_instituicoes_financeiras (so aviso). B3SA3 (bolsa) e
+# ITSA4 (holding) sao do setor financeiro mas usam o plano industrial: ficam fora da tabela.
+SETORES_FINANCEIROS = frozenset({"seguros", "bancos_financeiro"})
+FINANCEIRAS_PLANO_INDUSTRIAL = frozenset({"B3SA3", "ITSA4"})
 # D&A na DFC indireta: termos que entram e falsos positivos reais da CVM que saem
 # (custo de transacao, captacao, juros, "custo amortizado" de ativo financeiro etc.).
 _DA_INCLUI = ("deprecia", "amortiz", "exaust", "deplec")
@@ -722,10 +727,29 @@ def _corrigir_escala_balancos(balancos: list[dict]) -> list[dict]:
     ]
 
 
-def montar_balancos(balancos: list[dict]) -> list[dict]:
+def financeiras_sem_cadastro(
+    financeiras: Collection[int],
+    setores: dict[str, str] = IBOV_SECTORS,
+    codigos: dict[str, int] = TICKER_CODE_CVM,
+) -> list[str]:
+    """Tickers de banco ou seguradora do IBOV cujo codigo CVM nao esta em `financeiras`."""
+    return sorted(
+        t
+        for t, setor in setores.items()
+        if setor in SETORES_FINANCEIROS
+        and t not in FINANCEIRAS_PLANO_INDUSTRIAL
+        and codigos.get(t) is not None
+        and codigos[t] not in financeiras
+    )
+
+
+def montar_balancos(
+    balancos: list[dict], financeiras: Collection[int] = frozenset()
+) -> list[dict]:
     """Uma linha por (cnpj, tipo, inicio, fim) da DRE. PL, caixa, aplicacoes e emprestimos
     do mesmo dt_refer valem para todas as linhas do documento; a D&A segue o periodo.
-    Bancos e seguradoras (CD_CVM_BANCOS_SEGURADORAS) saem em branco nas colunas da spec.
+    Bancos e seguradoras (codigos CVM em financeiras, lidos de v1-ref_instituicoes_financeiras
+    por _Fontes) saem em branco nas colunas da spec.
     Linha de emissor que ainda nao valia na data de entrega (EMISSORES_POR_PERIODO) sai antes
     de tudo, inclusive dos comparativos (PENULTIMO), que tem o proprio dt_receb."""
     balancos = [
@@ -823,7 +847,7 @@ def montar_balancos(balancos: list[dict]) -> list[dict]:
         bpa = [r for r in itens if r["demonstracao"] == "BPA" and r["dt_fim_exerc"] == refer]
         bpp = [r for r in itens if r["demonstracao"] == "BPP" and r["dt_fim_exerc"] == refer]
         inicios_dfc = {r["dt_ini_exerc"] for r in itens if r["demonstracao"] == "DFC"}
-        financeira = itens[0].get("cd_cvm") in CD_CVM_BANCOS_SEGURADORAS
+        financeira = itens[0].get("cd_cvm") in financeiras
         patrimonio = _valor_da_conta(bpp, "BPP", "patrimonio_liquido")
         # Posicoes no fim do periodo: copiadas para todas as linhas da DRE (como o PL).
         posicoes = {
@@ -1615,6 +1639,27 @@ class _Fontes:
         )
 
     @cached_property
+    def instituicoes_financeiras(self) -> frozenset[int]:
+        """Codigos CVM de bancos e seguradoras. Vazia e erro: sem ela, banco sairia com as
+        colunas do plano industrial preenchidas."""
+        tabela = RefInstituicaoFinanceira.__tablename__
+        codigos = frozenset(
+            r["cd_cvm"] for r in _consulta(select(RefInstituicaoFinanceira.cd_cvm))
+        )
+        if not codigos:
+            raise RuntimeError(
+                f"{tabela} vazia: aplique "
+                "sql/alteracoes/2026-11-04_instituicoes_financeiras.mysql.sql"
+            )
+        faltando = financeiras_sem_cadastro(codigos)
+        if faltando:
+            logger.warning(
+                "entrega: balancos: banco ou seguradora do IBOV fora de %s: %s",
+                tabela, ", ".join(faltando),
+            )
+        return codigos
+
+    @cached_property
     def acoes(self) -> list[dict]:
         return _consulta(
             select(
@@ -1668,7 +1713,8 @@ def _montar(tabela: str, f: _Fontes, exigir_juiza: bool, modelos: dict[str, str]
     if tabela == "mudancas_ticker":
         return montar_mudancas()
     if tabela == "balancos":
-        return montar_balancos(f.balancos)
+        financeiras = f.instituicoes_financeiras
+        return montar_balancos(f.balancos, financeiras)
     if tabela == "acoes_emitidas":
         cadastro = montar_cadastro(f.b3_cadastro, f.cvm_cadastro, universo_coleta())
         return montar_acoes_emitidas(

@@ -1247,21 +1247,6 @@ def conta_ajuste_dfc(cd_conta: str) -> bool:
     return cd_conta.startswith(PREFIXO_AJUSTES_DFC) and cd_conta.count(".") == 3
 
 
-# Bancos e seguradoras (codigo CVM): ebit, D&A, emprestimos, caixa, aplicacoes e lucro_bruto
-# ficam em branco (spec). Lista explicita porque a descricao nao basta: BBSE3 e IRBR3 tem
-# "Caixa e Equivalentes de Caixa" como a industria, e PSSA3 usa o plano industrial inteiro
-# (conferido no ITR 2025 da CVM). ITSA4 (holding) e B3SA3 (bolsa) usam o plano industrial.
-CD_CVM_BANCOS_SEGURADORAS: frozenset[int] = frozenset({
-    906,    # BBDC3/BBDC4 Bradesco
-    1023,   # BBAS3 Banco do Brasil
-    19348,  # ITUB4 Itau Unibanco
-    20532,  # SANB11 Santander
-    22616,  # BPAC11 BTG Pactual
-    23159,  # BBSE3 BB Seguridade
-    16659,  # PSSA3 Porto Seguro
-    24180,  # IRBR3 IRB
-})
-
 # Categorias de documentos IPE (CVM) que entram na entrega.
 IPE_CATEGORIAS = frozenset({"Fato Relevante", "Comunicado ao Mercado", "Aviso aos Acionistas"})
 

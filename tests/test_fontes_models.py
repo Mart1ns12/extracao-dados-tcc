@@ -26,6 +26,7 @@ TABELAS_FONTES = {
     "v1-raw_wp_posts",
     "v1-staging_historias",
     "v1-staging_wp_processamento",
+    "v1-ref_instituicoes_financeiras",
 }
 
 PKS_ESPERADAS = {
@@ -45,6 +46,7 @@ PKS_ESPERADAS = {
     "v1-raw_wp_posts": ["site", "wp_id"],
     "v1-staging_historias": ["article_id"],
     "v1-staging_wp_processamento": ["site", "wp_id"],
+    "v1-ref_instituicoes_financeiras": ["cd_cvm"],
 }
 
 
@@ -146,3 +148,10 @@ def test_processamento_aponta_para_o_post_com_fk_composta() -> None:
     assert len(composta) == 1
     assert tabela.c.article_id.nullable
     assert {fk.column.table.name for fk in tabela.c.article_id.foreign_keys} == {"raw_articles"}
+
+
+def test_ref_instituicoes_financeiras_restringe_o_tipo() -> None:
+    tabela = Base.metadata.tables["v1-ref_instituicoes_financeiras"]
+    assert not tabela.c.cd_cvm.autoincrement
+    checks = [c for c in tabela.constraints if c.name == "ck_ref_instituicoes_financeiras_tipo"]
+    assert len(checks) == 1

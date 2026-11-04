@@ -781,3 +781,23 @@ CREATE INDEX ix_emissores_ticker_cnpj ON `v1-emissores_ticker` (cnpj);
 ALTER TABLE `v1-balancos`
     ADD COLUMN situacao VARCHAR(16) NOT NULL DEFAULT 'ok' AFTER aplicacoes_financeiras;
 
+-- Etapa 0016: bancos e seguradoras, referencia ref_ (ver sql/alteracoes/2026-11-04_instituicoes_financeiras.mysql.sql). Unico INSERT do arquivo: dado de referencia sem o qual balancos falha.
+CREATE TABLE `v1-ref_instituicoes_financeiras` (
+    cd_cvm INTEGER NOT NULL,
+    empresa VARCHAR(128) NOT NULL,
+    tipo VARCHAR(16) NOT NULL,
+    motivo VARCHAR(255) NOT NULL,
+    incluido_em DATE NOT NULL,
+    CONSTRAINT pk_ref_instituicoes_financeiras PRIMARY KEY (cd_cvm),
+    CONSTRAINT ck_ref_instituicoes_financeiras_tipo CHECK (tipo IN ('banco', 'seguradora'))
+);
+
+INSERT INTO `v1-ref_instituicoes_financeiras` (cd_cvm, empresa, tipo, motivo, incluido_em) VALUES
+    (906, 'Bradesco (BBDC3, BBDC4)', 'banco', 'Plano de contas de banco da CVM, sem lucro bruto, EBIT nem caixa do plano industrial', '2026-10-20'),
+    (1023, 'Banco do Brasil (BBAS3)', 'banco', 'Plano de contas de banco da CVM, sem lucro bruto, EBIT nem caixa do plano industrial', '2026-10-20'),
+    (19348, 'Itau Unibanco (ITUB4)', 'banco', 'Plano de contas de banco da CVM, sem 1.01.01 e 1.01.02 no BPA', '2026-10-20'),
+    (20532, 'Santander (SANB11)', 'banco', 'Plano de contas de banco da CVM, sem 1.01.01 e 1.01.02 no BPA ate 2025-03', '2026-10-20'),
+    (22616, 'BTG Pactual (BPAC11)', 'banco', 'Plano de contas de banco da CVM, sem 1.01.01 e 1.01.02 no BPA', '2026-10-20'),
+    (23159, 'BB Seguridade (BBSE3)', 'seguradora', 'Tem Caixa e Equivalentes de Caixa como a industria, mas a spec deixa em branco', '2026-10-20'),
+    (16659, 'Porto Seguro (PSSA3)', 'seguradora', 'Usa o plano industrial inteiro (ITR 2025 da CVM), a descricao nao separa', '2026-10-20'),
+    (24180, 'IRB Brasil RE (IRBR3)', 'seguradora', 'Resseguradora com Caixa e Equivalentes de Caixa como a industria, a spec deixa em branco', '2026-10-20');

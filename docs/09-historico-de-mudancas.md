@@ -845,3 +845,18 @@ Pendente: a verificação com carga real (ver os riscos da seção 10 de [03](03
 - A ordem difere entre os dois caminhos (daily: dataset antes da entrega; carga: depois), sem efeito: as tabelas da entrega não leem `features_dataset_v1`.
 - Na carga, uma falha do `build_dataset` deixa a carga `falhou`, como qualquer passo; no daily, a entrega roda mesmo assim. Retomar a carga no modo pendentes.
 - As DDLs de 2026-10-27 já estavam aplicadas (conferido no banco em 2026-11-03).
+
+## 28. Bancos e seguradoras no banco (`v1-ref_instituicoes_financeiras`) e indicador de balanços do painel (2026-11-04)
+
+**O problema.** O indicador "Contas novas" do painel contava Itaú (19348), BTG (22616) e Santander até 2025-03 (20532) como faltando. Recoletar não mudava nada, porque esses bancos não publicam 1.01.01/1.01.02 no BPA consolidado da CVM (conferido no ITR 2025), e a spec já deixa essas colunas em branco para bancos e seguradoras.
+
+**O que mudou.**
+
+- Tabela `v1-ref_instituicoes_financeiras` (camada nova `ref_`) com os 8 códigos. Ela substitui `CD_CVM_BANCOS_SEGURADORAS`, que saiu de `config.py`. Quem grava é o dono, por `sql/alteracoes/2026-11-04_instituicoes_financeiras.mysql.sql`.
+- O builder lê a tabela no `build-entrega` e falha a montagem de `balancos` se ela estiver vazia. O log avisa quando um banco ou seguradora do IBOV (`IBOV_SECTORS`, fora B3SA3 e ITSA4) não está na tabela.
+- A SQL e o texto do card no painel excluem esses códigos do total e do faltando.
+
+**Pendências.**
+
+- Resolvido em 2026-11-04: `sql/alteracoes/2026-11-04_instituicoes_financeiras.mysql.sql` aplicado (8 linhas) e ADR regravado no grafo. No banco real, a consulta nova do indicador deu `faltando = 0` em todos os anos (2020 a 2026).
+- Falta atualizar o executor na Processamento-Venturo. Sem o código novo, ele continua usando a lista antiga, com o mesmo resultado.
