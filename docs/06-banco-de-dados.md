@@ -112,7 +112,7 @@ Fontes oficiais e juíza (migration 0005).
 | Tabela | Escreve | Chave (PK) | Migration | Linhas |
 |---|---|---|---|---|
 | `v1-raw_ipe_docs` | `collectors/cvm_ipe.py` (IPE da CVM) | `protocolo_entrega` | 0005; larguras na 0007 | 2.714 |
-| `v1-raw_cvm_balancos` | `collectors/cvm_demonstracoes.py` (ITR e DFP, demonstrações; desde 2026-11-03 guarda também `ORDEM_EXERC` PENÚLTIMO, o comparativo reapresentado, e as subcontas `3.01.NN`, sem DDL; o raw cerca de dobra) | `cnpj`, `tipo_documento`, `dt_refer`, `versao`, `demonstracao`, `cd_conta`, `dt_ini_exerc`, `dt_fim_exerc` | 0005 | - |
+| `v1-raw_cvm_balancos` | `collectors/cvm_demonstracoes.py` (ITR e DFP, demonstrações consolidadas (`_con_`) e, desde 2026-11-09, individuais (`_ind_`, com `consolidacao` = `ind`); desde 2026-11-03 guarda também `ORDEM_EXERC` PENÚLTIMO, o comparativo reapresentado, e as subcontas `3.01.NN`, sem DDL; o raw cerca de dobra) | `cnpj`, `tipo_documento`, `dt_refer`, `versao`, `consolidacao`, `demonstracao`, `cd_conta`, `dt_ini_exerc`, `dt_fim_exerc` | 0005; `consolidacao` em 2026-11-09 | - |
 | `v1-raw_cvm_acoes` | `collectors/cvm_demonstracoes.py` (composição do capital) | `cnpj`, `tipo_documento`, `dt_refer`, `versao` | 0005 | - |
 | `v1-raw_cvm_cadastro` | `collectors/cvm_cadastro.py` (cad_cia_aberta) | `cnpj` | 0005 | - |
 | `v1-raw_b3_cadastro` | `collectors/b3_cadastro.py` (GetDetail por código CVM) | `cd_cvm` | 0005 | - |
@@ -173,6 +173,10 @@ Alterações de 2026-11-03 (a aplicação no banco de produção é feita à mã
 - `sql/alteracoes/2026-11-03_emissores_ticker.mysql.sql` cria `v1-emissores_ticker`, a 11ª tabela da entrega (dicionário de emissor por período, ver [Entrega](05-entrega.md), seção 12). É gravada pelo builder, na etapa `entrega`.
 - `sql/alteracoes/2026-11-03_balancos_situacao.mysql.sql` acrescenta a coluna `situacao` em `v1-balancos` (`ok`, `ajuste_ifrs17` ou `reapresentado`).
 
+Alteração de 2026-11-09 (aplicada pelo dono antes do código novo):
+
+- `sql/alteracoes/2026-11-09_raw_cvm_balancos_consolidacao.mysql.sql` acrescenta `consolidacao` (`con` = consolidada, `ind` = individual) em `v1-raw_cvm_balancos` e a põe na chave primária, depois de `versao`. A coluna tem `DEFAULT 'con'`, então as ~148 mil linhas já gravadas ficam `con`, e o código antigo continua funcionando. A recoleta só acrescenta linhas, por isso essa tabela não entra na exceção de UPDATE da seção 3.3. Ordem de implantação: [08-operacao-e-deploy.md](08-operacao-e-deploy.md), seção 5.3.
+
 A entrega passa a apagar, além das linhas reprovadas de `v1-noticias`, as linhas obsoletas de `v1-balancos`, `v1-acoes_emitidas`, `v1-proventos` e `v1-emissores_ticker`, mas só quando a montagem produz linhas para a tabela.
 
 As regras de origem de cada coluna das 11 tabelas estão em [Entrega](05-entrega.md).
@@ -184,7 +188,7 @@ Por padrão, o `bulk_upsert` (seção 5) grava só linhas novas: com `update_col
 
 | Tabela | O que é atualizado |
 |---|---|
-| `raw_prices` | `open`, `high`, `low`, `close`, `adj_close`, `volume`, `source` |
+| `raw_prices` | `open`, `high`, `low`, `close`, `adj_close`, `volume`, `source`. Em `source`, `yahoo` é o padrão; `b3_cotahist` vem das correções e das lacunas de papéis, e `b3` das lacunas do `^BVSP` (lacunas desde 2026-11-09) |
 | `raw_macro` | `value` |
 | `raw_articles` | `resolved_url`, por UPDATE em `enrich/article_fetcher.py`; `published_at`, `published_precision` e `published_time_source`, por UPDATE do `fix-news-times` (`corrigir_horas_publicacao`, de 2026-11-03: remarca a hora falsa de 00:00 do Pacífico como `date`; a fase (b), opcional, grava a hora da página) |
 | `raw_cvm_cadastro` | `cd_cvm`, `denom_social`, `sit`, `setor_ativ`, `fetched_at` |

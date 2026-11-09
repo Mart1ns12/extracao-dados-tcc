@@ -860,3 +860,36 @@ Pendente: a verificação com carga real (ver os riscos da seção 10 de [03](03
 
 - Resolvido em 2026-11-04: `sql/alteracoes/2026-11-04_instituicoes_financeiras.mysql.sql` aplicado (8 linhas) e ADR regravado no grafo. No banco real, a consulta nova do indicador deu `faltando = 0` em todos os anos (2020 a 2026).
 - Falta atualizar o executor na Processamento-Venturo. Sem o código novo, ele continua usando a lista antiga, com o mesmo resultado.
+
+## 29. Notícias órfãs, Raízen em lote, lacunas de preço, balanços individuais e D&A na entrega (2026-11-09)
+
+**O problema.** Pedido do consumidor da entrega, em cinco frentes independentes. **(A)** `v1-noticias` tinha 18.136 linhas órfãs: republicações gravadas antes do agrupamento de histórias, que a remontagem não apagava. **(B)** Copel (CPLE): o desdobramento 10:1 de 2021-03-11 só gerava evento para CPLE3, e a base dava 5,77 vezes a quantidade real. **(C)** Raízen (RAIZ4): desde 2026-11-03 a B3 cota RAIZ55 por lote de 100, e o Yahoo repete o preço do lote em RAIZ4. Além disso, 76 pregões de 2020 a 2026 não existem no Yahoo. **(D)** Balanços: a CVM não traz a consolidada em alguns documentos, e a entrega ficava com dado zerado ou ausente; a regra de PL, lucro, dívida e D&A também tinha lacunas. **(E)** Proventos: `data_pagamento` só existe desde 2025, e a unidade do JBSS32 depois de 2025-06-09 não está confirmada.
+
+**O que mudou.**
+
+- **A. Notícias.** `_Fontes.fora_da_montagem` → `_Poda.sem_linha` → `_ids_a_apagar`: a remontagem apaga as linhas de artigos que viraram republicação (`article_id` ≠ `historia_article_id` em `v1-staging_historias`) e as de artigos sem título, inclusive fora da janela. `montar_noticias` não gera linha sem título. O coletor do Google News descarta o item cujo título fica vazio depois de tirar o sufixo da fonte (3 casos "Página 3"). As horas corrigidas pelo `fix-news-times` chegam a `v1-noticias` só na remontagem.
+- **B. Ações e eventos.** `SUFIXO_ISIN` ganha PA (PNA, classe 5) e PB (PNB, classe 6); o desdobramento da Copel gera eventos de CPLE3, CPLE5 e CPLE6. `qtd_pn_base_atual` fica NULL nas linhas anteriores à troca PN → ON de `MUDANCAS_TICKER` (AZUL4 → AZUL3, CPLE6 → CPLE3, ELET6 → AXIA3). O fator do grupamento da Azul (0,0000066667) é gravado sem arredondar.
+- **C. Preços.** `FATORES_COTACAO_YAHOO` (RAIZ4, fator 100, a partir de 2026-11-03), aplicado por `aplicar_fator_cotacao`, com trava de salto de 50%. `MUDANCAS_TICKER` ganha RAIZ4 → RAIZ55. Lacunas do Yahoo: `gerar-lacunas-precos` gera `data/lacunas_precos/lacunas.csv` (COTAHIST para papéis, IBOV da B3 para `^BVSP`), e `completar_lacunas` aplica o CSV na coleta, com escala pela razão mediana dos vizinhos.
+- **D. Balanços (CVM).** Coleta das demonstrações individuais (`_ind_`), com a coluna `consolidacao` na PK de `v1-raw_cvm_balancos` (`sql/alteracoes/2026-11-09_raw_cvm_balancos_consolidacao.mysql.sql`). Escolha por documento em `_escolher_consolidacao`, com `situacao` = `individual`. Lucro aceita o rótulo de banco e a conta 3.13 das seguradoras. PL pela conta de nível 2 com rótulo "Patrimônio Líquido". Dívida em "Outros" da Allos (`conta_divida_em_outros`). Sai do filtro o período de 1 mês (LREN3 e RECV3 no ITR 1T21). `_DA_EXCLUI` passa a excluir "equivalência patrimonial" (falso positivo da EQTL3). Acumulado anterior de outro documento só por `CNPJ_ACUMULADO_ANTERIOR`.
+- **E. Proventos.** Só documentação; sem mudança de código.
+
+**Decisões do dono.**
+
+- Base PN de classe extinta fica NULL nas trocas PN → ON (AZUL4, CPLE6 e ELET6). A conversão não é modelada como evento, e a empresa é a do ticker ON novo. É limitação para o TCC.
+- D&A sem comparativo de documento posterior (PENÚLTIMO), porque o valor só ficou público depois da `data_entrega` da linha. Por isso ficam em branco GMAT3 (2020 e 2021), AURE3 (2021 e 2022), BRAV3 no 2T20, TIM no 2T22 e SBSP3 no 3T23.
+- Sem ajuste do ex-direito de subscrição da Raízen (09/11/2026). O efeito máximo é de cerca de 11%.
+
+**Respostas sem mudança.** BBSE3 tem receita 0 porque a CVM publica a `3.01` zerada em todos os documentos. NATU3 no 1T25 está no CNPJ da holding 32785497000197, emissora de NATU3 até 2025-07-01.
+
+**Arquivos alterados.** Código e testes, conforme o `git status` de 2026-11-09: `src/tcc_scraper/config.py`, `collectors/prices_yahoo.py`, `collectors/b3_cotahist.py`, `collectors/cvm_demonstracoes.py`, `collectors/google_news.py`, `cli.py`, `db/models_fontes.py`, `entrega/builder.py`, `orquestrador/historico.py`, `sql/schema.mysql.sql` e os testes em `tests/` (novos: `test_b3_cotahist_lacunas.py`, `test_prices_yahoo_fator_cotacao.py`, `test_prices_yahoo_lacunas.py`). SQL: `sql/alteracoes/2026-11-09_raw_cvm_balancos_consolidacao.mysql.sql` (novo, aplicado pelo dono). Documentação: `docs/01`, `docs/05` (seções 2.3, 3, 5, 6, 7, 8, 11 e 14), `docs/06` (seções 3.2 e 3.3), `docs/08` (seções 2.2, 5 e 5.3), `docs/ADR.md` (cinco decisões) e `CLAUDE.md` (seções 2 e 6).
+
+**Verificação.** Esta entrada só documenta. Os testes novos e a suíte completa não foram rodados ao escrevê-la. Medições registradas: 18.136 linhas órfãs; 76 lacunas (75 em 2020-11-20 e IVVB11 em 2025-10-24); 5,77 vezes na Copel; BTG 4T20, Vivo 1T25 e WEG 1T21 como casos em que o documento já traz a base nova.
+
+**Pendências.**
+
+- Rodar `pytest` com os testes novos antes do commit.
+- Recoletar a CVM (`collect-cvm --no-resume`) e remontar a entrega no banco real, na ordem da [08-operacao-e-deploy.md](08-operacao-e-deploy.md), seção 5.3.
+- Gerar e commitar `data/lacunas_precos/lacunas.csv`. O diretório ainda não existe no repositório.
+- Encerrar a janela da Raízen quando a B3 voltar a cotar RAIZ4 por ação.
+- Confirmar a unidade do JBSS32 depois de 2025-06-09 pelo aviso oficial.
+- O registro das decisões no grafo (`manage_adr`) não foi feito. A cópia de referência é `docs/ADR.md`, e o `manage_adr update` envia o arquivo inteiro.

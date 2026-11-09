@@ -49,14 +49,14 @@ uma fonte rejeitada sem antes provar, com uma chamada real, que a limitação mu
 
 | Fonte | Papel | Por quê |
 |---|---|---|
-| **Yahoo Finance chart API** | Preço **primário** | 5 anos com `adjclose`, sem chave. Cobre ações `.SA`, `^BVSP`, `BZ=F` (Brent), `USDBRL=X` |
+| **Yahoo Finance chart API** | Preço **primário** | 5 anos com `adjclose`, sem chave. Cobre ações `.SA`, `^BVSP`, `BZ=F` (Brent), `USDBRL=X`. RAIZ4 desde 2026-11-03: preço do lote RAIZ55 ÷ 100 (`FATORES_COTACAO_YAHOO`) |
 | **API REST do WordPress** (InfoMoney, Money Times, Exame) | Notícias **históricas e correntes** desses 3 veículos, com `date_gmt` exato e o HTML do corpo | Pública, sem chave: `/wp-json/wp/v2/posts`, 100 posts por página, throttle de 1,0 s. Substitui o Google News nesses domínios (`WP_ENABLED=true`) |
 | **Google News RSS** | Notícias **históricas** dos demais veículos | Único caminho grátis para 2 anos de histórico fora da API WordPress. Aceita `after:`/`before:`. Descarta os 3 domínios WordPress quando `WP_ENABLED=true` |
 | **RSS nativos dos veículos** | Notícias **correntes** de veículos fora da API WordPress (sem coletor implementado) | InfoMoney e Money Times já estão cobertos pela API WordPress, com histórico |
 | **BCB SGS série 432** | Selic | Oficial, sem chave, sem limite |
 | **BCB PTAX** | Dólar | Oficial, sem chave. Usar `cotacaoVenda` |
 | **Brapi** | *Fallback* de preço (sem coletor implementado) | Funciona sem token; free = 15.000 req/mês. Só 1 ano de histórico |
-| **B3 COTAHIST** | Correção de preço por lista explícita (`CORRECOES_PRECO_B3`; hoje AZUL3 de 2026-01-13 a 2026-04-17, e as emendas de troca de código JBSS32 (série JBSS3 até 2025-06-06, fator 0,5) e NATU3 (série NTCO3 de 2019-12-18 a 2025-07-01), de 2026-11-03) | Oficial, sem chave. O Yahoo emenda papéis nessa janela (AZUL53 cotada por lote de 1 milhão). CSV versionado em `data/correcoes_precos/`, aplicado pelo coletor do Yahoo |
+| **B3 COTAHIST** | Correção de preço por lista explícita (`CORRECOES_PRECO_B3`; hoje AZUL3 de 2026-01-13 a 2026-04-17, e as emendas de troca de código JBSS32 (série JBSS3 até 2025-06-06, fator 0,5) e NATU3 (série NTCO3 de 2019-12-18 a 2025-07-01), de 2026-11-03), e pregões que o Yahoo não tem (`data/lacunas_precos/`, `gerar-lacunas-precos`; ^BVSP do dia pelo IBOV da B3) | Oficial, sem chave. O Yahoo emenda papéis nessa janela (AZUL53 cotada por lote de 1 milhão). CSV versionado em `data/correcoes_precos/`, aplicado pelo coletor do Yahoo |
 
 **API WordPress, medida em 2026-03.** O Google News era lento para cobrir esses 3 veículos (throttle de 2,0 s, sequencial, ~9.010 consultas/ano, mais de 30 h para 5 anos). O WordPress entregou 11.306 posts no mês em 122 requisições, sem erro. A API cobre 862 de 865 (99,7%) do que o Google trouxe desses sites (faltaram 2 de conteúdo de marca e 1 renomeado), e a normalização de URL acertou 100%. Republicação entre veículos (106 pares/mês) conta como 1 notícia, a "história", com o representante no `date_gmt` mais antigo (decisão do dono). Posts por ano nos 3 sites: 89,5 mil (2021), 93,8 mil (2022), 83,6 mil (2023), 84,6 mil (2024) e 106,1 mil (2025).
 
@@ -213,6 +213,7 @@ python -m tcc_scraper.cli validate-cadastro    # ticker -> codigo CVM -> B3
 python -m tcc_scraper.cli collect-prices       # Yahoo: acoes, Ibovespa, Brent, dolar
 python -m tcc_scraper.cli collect-macro        # Selic e PTAX (BCB)
 python -m tcc_scraper.cli gerar-correcao-precos  # COTAHIST da B3 -> data/correcoes_precos/*.csv (so quando CORRECOES_PRECO_B3 mudar)
+python -m tcc_scraper.cli gerar-lacunas-precos  # COTAHIST + IBOV da B3 -> data/lacunas_precos/lacunas.csv (quando o Yahoo nao tiver um pregao)
 python -m tcc_scraper.cli collect-news         # Google News (retomavel; ~7,5 h por ano, so pt-BR; sem os 3 dominios WordPress se WP_ENABLED=true)
 python -m tcc_scraper.cli collect-wp           # API WordPress: InfoMoney, Money Times e Exame, so candidatos a ticker (--desde/--ate)
 python -m tcc_scraper.cli processar-wp         # casa tickers, agrupa historias e classifica por codigo (sem rede; --desde/--ate/--refazer)

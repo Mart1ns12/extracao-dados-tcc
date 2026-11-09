@@ -66,7 +66,8 @@ python -m tcc_scraper.cli validate-cadastro
 | Comando | Opções | O que faz |
 |---|---|---|
 | `collect-prices` | `--resume` / `--no-resume` (padrão: resume); `--limit N` | Preços do Yahoo: ações, Ibovespa, Brent e dólar. Grava `raw_prices`. `--limit N` coleta só os N primeiros, para testar |
-| `gerar-correcao-precos` | - | Baixa o COTAHIST da B3 dos anos da janela de `CORRECOES_PRECO_B3` (hoje só AZUL3) e grava `data/correcoes_precos/<TICKER>.csv`. Lê o suplemento no banco e não grava no banco. Rode de novo só se a lista mudar |
+| `gerar-correcao-precos` | - | Baixa o COTAHIST da B3 dos anos da janela de `CORRECOES_PRECO_B3` (hoje AZUL3, JBSS32 e NATU3) e grava `data/correcoes_precos/<TICKER>.csv`. Lê o suplemento no banco e não grava no banco. Rode de novo só se a lista mudar |
+| `gerar-lacunas-precos` | - | Pregões que o Yahoo não tem: papéis pelo COTAHIST da B3 (`source` = `b3_cotahist`) e o `^BVSP` pelo IBOV da B3 (`source` = `b3`). Grava `data/lacunas_precos/lacunas.csv`, que `collect-prices` aplica. Lê `raw_prices` só para medir a escala e não grava no banco. Idempotente: rode de novo quando surgir lacuna nova, e faça commit do CSV |
 | `collect-macro` | `--resume` / `--no-resume` | Selic (SGS 432) e dólar PTAX do Banco Central. Grava `raw_macro` |
 | `collect-news` | `--resume` / `--no-resume`; `--limit N` (janelas); `--ticker T`; `--desde AAAA-MM-DD` e `--ate AAAA-MM-DD` (fim exclusivo) | Notícias históricas pelo Google News RSS. Na carga completa, dura cerca de 7,5 h por ano de notícias (só pt-BR, a ~6 s por unidade; ver [03](03-carga-historica.md), seção 9) e é retomável. `--desde` e `--ate` devem ser usados juntos. Com `WP_ENABLED=true`, InfoMoney, Money Times e Exame saem daqui (ver `collect-wp`) |
 | `collect-wp` | `--resume` / `--no-resume`; `--desde AAAA-MM-DD` e `--ate AAAA-MM-DD` (fim exclusivo) | Posts de InfoMoney, Money Times e Exame pela API do WordPress, só os candidatos a ticker. Grava `v1-raw_wp_posts`. Throttle de `THROTTLE_WORDPRESS` (1,0 s). Se o total de um mês fechado divergir, a unidade falha |
@@ -308,6 +309,7 @@ Esta é a ordem. Cada passo depende do anterior.
    - `2026-11-02_acoes_base_atual_eventos.mysql.sql`: já aplicada em 2026-11-03.
    - `2026-11-03_emissores_ticker.mysql.sql`: já aplicada em 2026-11-03.
    - `2026-11-03_balancos_situacao.mysql.sql`: já aplicada em 2026-11-03.
+   - `2026-11-09_raw_cvm_balancos_consolidacao.mysql.sql`: aplicada pelo dono antes do código novo (seção 5.3).
 3. **Conferir o `.env` local.** Pendência do dono: remover `DB_TARGET` e `DATABASE_URL`, variáveis do antigo
    PostgreSQL. O código não as lê, mas elas confundem. O `.env` não é versionado.
 4. **Atualizar o executor na Processamento-Venturo.** Procedimento da seção 4.1, com `EXECUTOR_TOKEN` igual ao da API. Confirme o heartbeat no painel e o log sem traceback. Ordem de implantação: DDL (item 2), executor (este item), API do painel (item 6), web.
@@ -346,6 +348,34 @@ Checklist para a implantação da nova juíza. Vale na máquina do executor (Pro
 7. **Conferir `JUIZA_JEV_LIMIAR_ENTREGA`** com o `limiar_recomendado` (dono). Medido em 2026-10-26: 0,9, que é o padrão, então não precisa mudar. Se `decisao = triagem`, use `JUIZA_JEV_MODO=triagem`.
 8. **Conferir com `judge-news --status`.** Jev ligado, chave do Jev presente, modo `entrega`, limiar, trecho 1500, provedor `anthropic`, modelo `claude-haiku-5-5`, chave da Anthropic presente e nenhum aviso.
 9. **Retomar o backlog** pelo passo 6 da seção 5.1.
+
+### 5.3 Correções de 2026-11-09: ordem de implantação
+
+Cada passo depende do anterior. Os passos 1 e 2 mudam schema e código. Os passos 3 a 5 recoletam e remontam a entrega.
+
+1. **DDL antes do código.** `sql/alteracoes/2026-11-09_raw_cvm_balancos_consolidacao.mysql.sql`, com usuário que tem DDL e backup. O dono já aplicou, antes do código novo. Sem a coluna `consolidacao`, o coletor novo não grava. Confira que a chave primária de `v1-raw_cvm_balancos` inclui `consolidacao`.
+2. **Subir o código novo** no executor da Processamento-Venturo, como na seção 4.1.
+3. **Recoletar a CVM.** Só a recoleta traz as demonstrações individuais (`_ind_`) para o raw. A recoleta só acrescenta linhas; as antigas ficam `con`.
+
+   ```bash
+   python -m tcc_scraper.cli collect-cvm --anos 2020 --anos 2021 --anos 2022 --anos 2023 --anos 2024 --anos 2025 --anos 2026 --no-resume
+   ```
+
+4. **Recoletar os preços.** O `--resume` (padrão) pula os tickers já coletados. Por isso usa-se `--no-resume`, que aplica a janela da Raízen e as lacunas.
+
+   ```bash
+   python -m tcc_scraper.cli collect-prices --no-resume
+   ```
+
+5. **Remontar a entrega.** Sem `--tabela`, o comando remonta as 11 tabelas. Em `v1-noticias`, a remontagem apaga as linhas órfãs e só então leva as horas corrigidas pelo `fix-news-times`.
+
+   ```bash
+   python -m tcc_scraper.cli build-entrega --csv
+   ```
+
+**Encerrar a janela da Raízen (RAIZ4).** Quando a B3 voltar a cotar RAIZ4 por ação, preencha `fim` em `FATORES_COTACAO_YAHOO` (`config.py`) com o último pregão por lote. Depois rode `collect-prices --no-resume` e confira a série de RAIZ4 em volta da data de fim.
+
+**Lacunas do Yahoo.** Quando um pregão não existir no Yahoo, rode `gerar-lacunas-precos` (ver a seção 2.2). Faça commit de `data/lacunas_precos/lacunas.csv`, porque é o CSV que a coleta lê, e rode `collect-prices --no-resume` para aplicá-lo. O comando é idempotente.
 
 ## 6. Problemas conhecidos e soluções
 
