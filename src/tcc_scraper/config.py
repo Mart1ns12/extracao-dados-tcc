@@ -768,6 +768,9 @@ def universo_coleta() -> list[str]:
 #   ELET6 -> AXIA6 (2025-11-10) -> AXIA3 (2026-06-08, conversao 1,1 ON por PN)
 #   CPLE6 -> CPLE5 (2025-11-10) -> CPLE3 (2025-12-22, migracao ao Novo Mercado)
 #   AZUL4 -> AZUL54/AZUL53 (jan/2026) -> AZUL3 (2026-04-20, grupamento 150.000:1)
+# Codigo de cotacao por lote tambem fica fora: RAIZ55 (desde 2026-11-03, lote de 100) e a
+# Raizen negociada, mas a chave da entrega segue RAIZ4, por acao (FATORES_COTACAO_YAHOO).
+# O consumidor le ticker_novo como a chave de todas as tabelas (2026-11-09).
 MUDANCAS_TICKER: list[tuple[str, str, date | None]] = [
     ("EMBR3", "EMBJ3", date(2025, 11, 3)),
     ("ELET3", "AXIA3", date(2025, 11, 10)),
@@ -779,8 +782,6 @@ MUDANCAS_TICKER: list[tuple[str, str, date | None]] = [
     ("AZUL4", "AZUL3", date(2026, 4, 20)),
     ("PETZ3", "AUAU3", date(2026, 1, 5)),
     ("CCRO3", "MOTV3", date(2025, 5, 2)),
-    # codigo negociado; a chave da entrega segue RAIZ4 (FATORES_COTACAO_YAHOO)
-    ("RAIZ4", "RAIZ55", date(2026, 11, 3)),
 ]
 
 # Codigos negociados cuja serie o Yahoo emenda sob o ticker atual e que nao estao em

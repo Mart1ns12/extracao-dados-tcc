@@ -528,7 +528,9 @@ def test_emissores_ignora_ticker_sem_codigo_cvm() -> None:
 
 
 def test_tabelas_completas_sao_tabelas_da_entrega() -> None:
-    esperadas = {"balancos", "acoes_emitidas", "proventos", "emissores_ticker"}
+    esperadas = {
+        "balancos", "acoes_emitidas", "proventos", "emissores_ticker", "mudancas_ticker",
+    }
     assert esperadas == B.TABELAS_COMPLETAS
     assert set(COLUNAS) >= B.TABELAS_COMPLETAS
 

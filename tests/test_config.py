@@ -61,12 +61,16 @@ def test_universo_coleta_contem_ibov_e_removidos_sem_duplicatas():
 
 def test_mudancas_ticker_apontam_para_o_universo():
     universo = set(universo_coleta())
-    for antigo, novo, _data in MUDANCAS_TICKER:
-        # Troca de codigo negociado (RAIZ4 -> RAIZ55): o novo nao esta no universo; a chave
-        # segue o antigo, e o codigo da B3 e o codigo_b3 de FATORES_COTACAO_YAHOO.
-        fator = FATORES_COTACAO_YAHOO.get(antigo)
-        codigo_b3 = fator.codigo_b3 if fator else None
-        assert novo in universo or novo == codigo_b3, novo
+    for _antigo, novo, _data in MUDANCAS_TICKER:
+        # O consumidor le ticker_novo como a chave de todas as tabelas da entrega.
+        assert novo in universo, novo
+
+
+def test_codigo_de_cotacao_por_lote_nao_vira_troca_de_ticker():
+    # RAIZ55 (lote de 100) e so o codigo negociado: a chave segue RAIZ4, por acao.
+    trocas = {(antigo, novo) for antigo, novo, _data in MUDANCAS_TICKER}
+    for ticker, fator in FATORES_COTACAO_YAHOO.items():
+        assert (ticker, fator.codigo_b3) not in trocas, ticker
 
 
 def test_mudancas_ticker_tem_data():

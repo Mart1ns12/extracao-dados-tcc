@@ -893,3 +893,19 @@ Pendente: a verificação com carga real (ver os riscos da seção 10 de [03](03
 - Encerrar a janela da Raízen quando a B3 voltar a cotar RAIZ4 por ação.
 - Confirmar a unidade do JBSS32 depois de 2025-06-09 pelo aviso oficial.
 - O registro das decisões no grafo (`manage_adr`) não foi feito. A cópia de referência é `docs/ADR.md`, e o `manage_adr update` envia o arquivo inteiro.
+
+## 30. Raízen fora de `v1-mudancas_ticker` (2026-11-09)
+
+**O problema.** O consumidor lê `ticker_novo` de `v1-mudancas_ticker` como a chave de todas as tabelas da entrega. Na troca ELET3 → AXIA3, por exemplo, cadastro, preços e notícias só têm AXIA3. A troca RAIZ4 → RAIZ55, que entrou na entrada 29, quebrava essa leitura: a entrega inteira segue RAIZ4, e o cadastro não tem RAIZ55. Com isso a Raízen sumia do histórico do consumidor, cerca de 250 linhas por ano de 2023 a 2025.
+
+**O que mudou.** `MUDANCAS_TICKER` perde RAIZ4 → RAIZ55. O comentário passa a dizer que código de cotação por lote fica fora da tabela, como os códigos intermediários (AZUL54/AZUL53). `mudancas_ticker` entra em `TABELAS_COMPLETAS`, para que a troca retirada do config saia da tabela na remontagem. Teste novo: `test_codigo_de_cotacao_por_lote_nao_vira_troca_de_ticker`.
+
+**Decisão do dono.** Desfazer a troca, em vez de adotar RAIZ55 como chave. O RAIZ55 é código de cotação por lote de 100 (Ofício Circular B3 022/2026-VPE), provavelmente temporário. Se a Raízen trocar de código de vez (grupamento ou units), a troca entra com a data dessa troca.
+
+**Respostas sem mudança de código.**
+
+- Aumento de capital privado da Raízen (ex-direito em 09/11/2026): não entra em `v1-eventos_acoes`, que só tem desdobramento, grupamento e bonificação. A subscrição não multiplica as ações de quem já é acionista. As ações novas aparecem em `v1-acoes_emitidas` no primeiro ITR ou DFP depois da homologação.
+- MGLU3 3T20 e IRB 4T22: o documento já traz a quantidade depois do evento (desdobramento 4:1 de 2020-10-13 e grupamento 30:1 de 2023-01-24). `_fator_pendente` reconhece o caso pela razão com o trimestre anterior, e `qtd_*_base_atual` sai certa.
+- NATU3 3T24: a D&A acumulada de 9 meses de 2024 (682,0 mi) é menor que a do primeiro semestre (799,2 mi), e o comparativo de 2023 encolheu do mesmo jeito. A subtração dá negativa e a linha fica NULL. O semestre reapresentado só sai em documento posterior, que a regra de D&A não usa.
+
+**Verificação.** `pytest`: 1269 passed, 40 skipped, 1 xfailed. `ruff` sem achados novos.

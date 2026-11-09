@@ -158,7 +158,9 @@ CHAVES: dict[str, list[str]] = {
 }
 # Tabelas que a montagem produz por inteiro (sem janela de datas): o que deixa de sair e apagado
 # depois do upsert (ver `_apagar_obsoletas`). Tabela montada por janela nao entra aqui.
-TABELAS_COMPLETAS = {"balancos", "acoes_emitidas", "proventos", "emissores_ticker"}
+TABELAS_COMPLETAS = {
+    "balancos", "acoes_emitidas", "proventos", "emissores_ticker", "mudancas_ticker",
+}
 MODELOS = {
     "noticias": Noticia,
     "precos": Preco,

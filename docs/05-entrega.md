@@ -156,12 +156,11 @@ Chave: (`ticker_antigo`). Fonte: `MUDANCAS_TICKER` em `config.py`.
 | AZUL4 | AZUL3 |
 | PETZ3 | AUAU3 |
 | CCRO3 | MOTV3 |
-| RAIZ4 | RAIZ55 |
 
 - A tabela registra troca de código, não fusão. A fusão BRF + Marfrig que gerou MBRF3 fica de fora, porque não renomeia um ticker.
 - `data_mudanca` é o primeiro pregão com o código novo, levantado em 2026-10-23 nos comunicados das companhias e avisos da B3.
 - Três trocas passaram por código intermediário, que não entra na tabela: ELET6 → AXIA6 → AXIA3, CPLE6 → CPLE5 → CPLE3 e AZUL4 → AZUL54/AZUL53 → AZUL3. A data registrada é a da chegada ao código final. O detalhe está no comentário de `MUDANCAS_TICKER`.
-- `RAIZ4` → `RAIZ55` (2026-11-03) é troca de classe da mesma companhia, com cotação por lote de 100. A chave de `v1-precos` segue `RAIZ4`, pela janela de `FATORES_COTACAO_YAHOO` (seção 3).
+- `ticker_novo` é a chave do ticker em todas as tabelas da entrega (cadastro, preços, notícias, proventos). Por isso código de cotação por lote não entra: desde 2026-11-03 a B3 negocia a Raízen como `RAIZ55`, por lote de 100, mas a entrega segue `RAIZ4`, por ação, pela janela de `FATORES_COTACAO_YAHOO` (seção 3). A troca RAIZ4 → RAIZ55 esteve na tabela só em 2026-11-09 e saiu no mesmo dia. Se a Raízen trocar de código de vez (grupamento ou units), a troca entra com a data dessa troca.
 
 ## 6. Balanços: `v1-balancos`
 
@@ -386,7 +385,7 @@ Os dois tickers com mais de um emissor:
 
 - **Ticker sempre o atual.** As linhas da entrega saem com `NATU3` ou `JBSS32`, mesmo quando o documento foi publicado sob o código antigo.
 - **Balanços** (seção 6) e **ações emitidas** (seção 7) só entram se o CNPJ era o emissor na data de entrega. **Proventos** (seção 8) são convertidos para o ticker atual. **Notícias do IPE** (seção 2.3) só ficam no ticker se o emissor valia na data.
-- **Gravação.** A etapa `entrega` apaga as linhas obsoletas de `v1-balancos`, `v1-acoes_emitidas`, `v1-proventos` e `v1-emissores_ticker`, mas só quando a montagem produz linhas para a tabela. Montagem vazia não apaga nada.
+- **Gravação.** A etapa `entrega` apaga as linhas obsoletas de `v1-balancos`, `v1-acoes_emitidas`, `v1-proventos`, `v1-emissores_ticker` e `v1-mudancas_ticker`, mas só quando a montagem produz linhas para a tabela. Montagem vazia não apaga nada.
 
 **Preço.** O histórico de `JBSS32` e `NATU3` em `v1-precos` vem das emendas de troca de código da COTAHIST (seção 3). A alta falsa de +100% do JBSS32 em 2025-06-09 e os quatro dias de NATU3 a R$ 36,86 saem corrigidos.
 
