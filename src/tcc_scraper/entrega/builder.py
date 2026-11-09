@@ -30,6 +30,7 @@ from tcc_scraper.collectors.cvm_demonstracoes import conta_subreceita_dre
 from tcc_scraper.config import (
     ACOES_CVM_ANULADAS,
     BENCHMARK_TICKER,
+    CNPJ_ACUMULADO_ANTERIOR,
     CONTAS_CVM,
     IBOV_SECTORS,
     INDICES_YAHOO,
@@ -40,6 +41,8 @@ from tcc_scraper.config import (
     UNITS,
     cnpj_do_ticker_em,
     conta_ajuste_dfc,
+    conta_divida_em_outros,
+    conta_pl_por_rotulo,
     emissor_vale,
     emissores_do_ticker,
     fator_emissor,
@@ -107,8 +110,11 @@ TIPO_ACAO_POR_SUFIXO = {
 # Eventos em acoes do suplemento que ajustam o valor por acao (desenho 5.7).
 ROTULOS_AJUSTE = frozenset({"DESDOBRAMENTO", "BONIFICACAO", "GRUPAMENTO"})
 # Sufixo do ISIN de cada classe, usado quando o ISIN nao esta em otherCodes do cadastro.
-SUFIXO_ISIN = (("OR", "3"), ("PR", "4"), ("CDAM", "11"))
-PREFIXOS_LUCRO = ("lucro/prejuizo consolidado do periodo", "lucro/prejuizo do periodo")
+SUFIXO_ISIN = (("OR", "3"), ("PR", "4"), ("PA", "5"), ("PB", "6"), ("CDAM", "11"))
+PREFIXOS_LUCRO = (
+    "lucro/prejuizo consolidado do periodo", "lucro/prejuizo do periodo",
+    "lucro ou prejuizo liquido consolidado do periodo", "lucro ou prejuizo liquido do periodo",
+)
 # Em branco para bancos e seguradoras (spec): contas operacionais, de divida e de caixa.
 COLUNAS_SEM_FINANCEIRAS = (
     "lucro_bruto", "ebit", "depreciacao_amortizacao", "emprestimos_curto_prazo",
@@ -124,7 +130,7 @@ _DA_INCLUI = ("deprecia", "amortiz", "exaust", "deplec")
 _DA_EXCLUI = (
     "custo de transacao", "custos de transacao", "captacao", "emprestimo", "debenture",
     "juros", "encargos", "amortizado", "despesas antecipadas", "estoque",
-    "custo de aquisicao",
+    "custo de aquisicao", "equivalencia patrimonial",
 )
 TOLERANCIA_TAXA = 1e-6
 # Escala das acoes na CVM: janela do giro (pregoes) e minimo de pregoes com volume para ter giro.
@@ -282,6 +288,8 @@ def montar_noticias(
         artigo = por_id.get(article_id)
         if artigo is None:
             continue
+        if not artigo["title"].strip():
+            continue  # sem manchete: nao ha noticia para entregar (ver `_Poda.sem_linha`)
         origem = artigo["origem"]
         if not aprovado_para_entrega(julgamento, origem, exigir_juiza):
             continue
@@ -546,6 +554,15 @@ def _valor_da_conta(linhas: list[dict], demonstracao: str, coluna: str) -> float
     return None
 
 
+def _patrimonio_liquido(bpp: list[dict]) -> float | None:
+    """PL pelo rotulo, nao pelo codigo: 2.07 nos bancos, 2.03 nas demais (2.03 e Provisoes nos
+    bancos). Linhas de bpp ja sao so ULTIMO."""
+    for linha in bpp:
+        if conta_pl_por_rotulo(linha["cd_conta"], linha["ds_conta"]):
+            return linha["valor"]
+    return None
+
+
 def _soma(valores: list[float]) -> float | None:
     """Soma em Decimal (sem erro de ponto flutuante); None se nao houver valor."""
     if not valores:
@@ -603,6 +620,7 @@ class _Comparativo:
     refer: dt.date
     dre: list[dict]
     dfc: list[dict]
+    consolidacao: str
 
 
 # Conta-pai e arrendamento (.03) de cada prazo: usados quando as subcontas vem zeradas.
@@ -617,7 +635,9 @@ def _emprestimos(bpp: list[dict], coluna: str) -> float | None:
     Senao, a conta-pai menos o arrendamento (.03): CSN, Sabesp, Rede D'Or, Magalu e CMIN
     lancam a divida so no pai. O arrendamento fica fora, como pede a spec. Limitacao da
     fonte: se a empresa preenche so o pai e deixa o .03 em 0, o valor pode incluir
-    arrendamento, que a CVM nao separa."""
+    arrendamento, que a CVM nao separa.
+    Se o pai tambem vem zerado ou ausente, somam-se as contas de 5 niveis da divida em
+    "Outros" (Allos, 2.01.05.02.NN e 2.02.02.02.NN), que valem quando somam > 0."""
     soma = _soma_das_contas(bpp, "BPP", coluna)
     if soma is not None and soma > 0:
         return soma
@@ -627,6 +647,12 @@ def _emprestimos(bpp: list[dict], coluna: str) -> float | None:
         if linha["cd_conta"] == pai and _aceita_conta(coluna, linha["ds_conta"])
     ])
     if total is None or total == 0:
+        outros = _soma([
+            linha["valor"] for linha in bpp
+            if conta_divida_em_outros(linha["cd_conta"], linha["ds_conta"]) == coluna
+        ])
+        if outros is not None and outros > 0:
+            return outros
         return soma
     arrendado = _soma([linha["valor"] for linha in bpp if linha["cd_conta"] == arrendamento])
     return float(Decimal(str(total)) - Decimal(str(arrendado or 0.0)))
@@ -646,20 +672,89 @@ def _depreciacao_amortizacao(linhas_dfc: list[dict]) -> float | None:
     return abs(total) if total is not None else None
 
 
+def _da_acumulada_bruta(
+    balancos: list[dict], invalidos: set[tuple],
+) -> dict[tuple, tuple[float | None, dt.date | None]]:
+    """D&A acumulada de todos os documentos, ANTES do filtro do emissor: so ULTIMO, so a maior
+    versao e sem os documentos invalidos. Chave (cnpj, consolidacao, inicio, fim); valor
+    (D&A, dt_receb). Serve so de acumulado do antecessor (CNPJ_ACUMULADO_ANTERIOR)."""
+    corrigidas = [dict(r, valor=_valor_escalado(r)) for r in _corrigir_escala_balancos(balancos)]
+    maior: dict[tuple, int] = {}
+    for r in corrigidas:
+        chave = (r["cnpj"], r["tipo_documento"], r["dt_refer"])
+        maior[chave] = max(maior.get(chave, r["versao"]), r["versao"])
+    grupos: dict[tuple, list[dict]] = defaultdict(list)
+    for r in corrigidas:
+        chave = (r["cnpj"], r["tipo_documento"], r["dt_refer"])
+        if (
+            r["demonstracao"] == "DFC" and _ultimo(r["ordem_exerc"])
+            and r["versao"] == maior[chave] and chave not in invalidos
+        ):
+            grupos[(
+                r["cnpj"], r["tipo_documento"], r["dt_refer"], r["consolidacao"],
+                r["dt_ini_exerc"], r["dt_fim_exerc"],
+            )].append(r)
+    da_bruta: dict[tuple, tuple[float | None, dt.date | None]] = {}
+    for (cnpj, _tipo, refer, consolidacao, inicio, fim), linhas in grupos.items():
+        chave = (cnpj, consolidacao, inicio, fim)
+        # Mesma regra de da_acumulada: o documento cuja data de referencia e o fim do periodo.
+        if chave not in da_bruta or fim == refer:
+            da_bruta[chave] = (_depreciacao_amortizacao(linhas), linhas[0]["dt_receb"])
+    return da_bruta
+
+
+def _acumulado_antecessor(
+    da_bruta: dict[tuple, tuple[float | None, dt.date | None]],
+    cnpj: str, consolidacao: str, inicio: dt.date, fim: dt.date, data_entrega: dt.date | None,
+) -> float | None:
+    """D&A acumulada do antecessor de CNPJ_ACUMULADO_ANTERIOR. So vale se o antecessor foi
+    entregue ate a data_entrega da linha: depois disso seria vazamento temporal."""
+    antecessor = CNPJ_ACUMULADO_ANTERIOR.get(cnpj)
+    if antecessor is None or data_entrega is None:
+        return None
+    achado = da_bruta.get((antecessor, consolidacao, inicio, fim))
+    if achado is None:
+        return None
+    valor, recebido = achado
+    if recebido is None or recebido > data_entrega:
+        return None
+    return valor
+
+
+def _acumulado_da(
+    da_acumulada: dict[tuple, float | None],
+    da_bruta: dict[tuple, tuple[float | None, dt.date | None]],
+    cnpj: str, consolidacao: str, inicio: dt.date, fim: dt.date, data_entrega: dt.date | None,
+) -> float | None:
+    """Acumulado de D&A (cnpj, consolidacao, inicio, fim): o do proprio documento; se ele nao
+    existe, o do antecessor."""
+    chave = (cnpj, consolidacao, inicio, fim)
+    if chave in da_acumulada:
+        return da_acumulada[chave]
+    return _acumulado_antecessor(da_bruta, cnpj, consolidacao, inicio, fim, data_entrega)
+
+
 def _da_do_periodo(
     da_acumulada: dict[tuple, float | None],
-    cnpj: str, inicio: dt.date, fim: dt.date, inicios_dfc: set[dt.date],
+    da_bruta: dict[tuple, tuple[float | None, dt.date | None]],
+    cnpj: str, consolidacao: str, inicio: dt.date, fim: dt.date,
+    inicios_dfc: set[dt.date], data_entrega: dt.date | None,
 ) -> float | None:
-    """D&A do periodo da linha. Igual ao da DFC quando o periodo bate; no trimestre do
-    ITR, acumulado ate o fim menos acumulado ate a vespera do inicio (D5). None se faltar
-    um dos dois ou se a diferenca sair negativa (reapresentacao)."""
-    if (cnpj, inicio, fim) in da_acumulada:
-        return da_acumulada[(cnpj, inicio, fim)]
+    """D&A do periodo da linha. Igual ao acumulado quando o periodo bate (do proprio documento
+    ou do antecessor, sem vazamento). Senao, no trimestre do ITR, acumulado ate o fim menos
+    acumulado ate a vespera do inicio (D5). None se faltar um dos dois ou se a diferenca sair
+    negativa (reapresentacao)."""
+    def acumulado(ini: dt.date, fi: dt.date) -> float | None:
+        return _acumulado_da(da_acumulada, da_bruta, cnpj, consolidacao, ini, fi, data_entrega)
+
+    direto = acumulado(inicio, fim)
+    if direto is not None or (cnpj, consolidacao, inicio, fim) in da_acumulada:
+        return direto
     for inicio_ano in inicios_dfc:
         if inicio_ano >= inicio:
             continue
-        ate_fim = da_acumulada.get((cnpj, inicio_ano, fim))
-        ate_vespera = da_acumulada.get((cnpj, inicio_ano, inicio - dt.timedelta(days=1)))
+        ate_fim = acumulado(inicio_ano, fim)
+        ate_vespera = acumulado(inicio_ano, inicio - dt.timedelta(days=1))
         if ate_fim is None or ate_vespera is None:
             continue
         diferenca = float(Decimal(str(ate_fim)) - Decimal(str(ate_vespera)))
@@ -727,6 +822,39 @@ def _corrigir_escala_balancos(balancos: list[dict]) -> list[dict]:
     ]
 
 
+def _escolher_consolidacao(balancos: list[dict]) -> list[dict]:
+    """Uma demonstracao por documento. A consolidada vale se alguma linha ULTIMO dela tem
+    valor diferente de zero (TIM publicou 2024 e 2025 com a consolidada zerada). Se nao vale
+    e existe individual, o documento usa so a individual; senao, so a consolidada. Linha sem
+    `consolidacao` (raw antigo) conta como consolidada. Devolve copias."""
+    grupos: dict[tuple, list[dict]] = defaultdict(list)
+    for r in balancos:
+        grupos[(r["cnpj"], r["tipo_documento"], r["dt_refer"], r["versao"])].append(
+            {**r, "consolidacao": r.get("consolidacao") or "con"}
+        )
+    saida: list[dict] = []
+    for linhas in grupos.values():
+        con = [r for r in linhas if r["consolidacao"] == "con"]
+        ind = [r for r in linhas if r["consolidacao"] == "ind"]
+        con_vale = any(_ultimo(r["ordem_exerc"]) and r["vl_conta"] for r in con)
+        saida.extend(ind if ind and not con_vale else con)
+    return saida
+
+
+def _meses(ini: dt.date, fim: dt.date) -> int:
+    """Quantos meses o periodo cobre (3 no trimestre, 12 no ano)."""
+    return (fim.year - ini.year) * 12 + fim.month - ini.month + 1
+
+
+def _periodos_validos(dre: list[dict]) -> set[tuple]:
+    """Periodos da DRE que valem: o acumulado do ano (o de inicio mais antigo do documento) e
+    os de 3 meses. O periodo de 1 mes que a LREN3 e a RECV3 trazem junto do trimestre do ITR
+    1T21 sai daqui, com receita zero."""
+    periodos = {(r["dt_ini_exerc"], r["dt_fim_exerc"]) for r in dre}
+    primeiro = min(ini for ini, _fim in periodos)
+    return {(ini, fim) for ini, fim in periodos if ini == primeiro or _meses(ini, fim) == 3}
+
+
 def financeiras_sem_cadastro(
     financeiras: Collection[int],
     setores: dict[str, str] = IBOV_SECTORS,
@@ -751,7 +879,12 @@ def montar_balancos(
     Bancos e seguradoras (codigos CVM em financeiras, lidos de v1-ref_instituicoes_financeiras
     por _Fontes) saem em branco nas colunas da spec.
     Linha de emissor que ainda nao valia na data de entrega (EMISSORES_POR_PERIODO) sai antes
-    de tudo, inclusive dos comparativos (PENULTIMO), que tem o proprio dt_receb."""
+    de tudo, inclusive dos comparativos (PENULTIMO), que tem o proprio dt_receb.
+    Cada documento sai na consolidada, ou na individual quando a consolidada vem zerada."""
+    balancos = _escolher_consolidacao(balancos)
+    # Antes do filtro do emissor: o acumulado do antecessor pode estar em documento que nao
+    # vira linha (Natura Cosmeticos, 1T25).
+    antecessores = balancos
     balancos = [
         r for r in balancos
         if emissor_vale(r.get("cd_cvm"), r.get("dt_receb") or r["dt_refer"])
@@ -771,8 +904,28 @@ def montar_balancos(
         chave = (r["cnpj"], r["tipo_documento"], r["dt_refer"])
         if r["versao"] == maior[chave]:
             por_documento[chave].append(r)
+    # Periodo de 1 mes fora do acumulado e do trimestre (LREN3 e RECV3, ITR 1T21): a DRE do
+    # documento fica so com os periodos validos. O aviso traz cnpj, tipo e periodo.
+    for chave in list(por_documento):
+        itens = por_documento[chave]
+        dre = [r for r in itens if r["demonstracao"] == "DRE"]
+        if not dre:
+            continue
+        periodos = {(r["dt_ini_exerc"], r["dt_fim_exerc"]) for r in dre}
+        validos_doc = _periodos_validos(dre)
+        for ini, fim in sorted(periodos - validos_doc):
+            logger.warning(
+                "entrega: balancos: periodo fora do acumulado e do trimestre descartado "
+                "(cnpj %s, %s, dt_refer %s, %s..%s)",
+                chave[0], chave[1], chave[2], ini, fim,
+            )
+        por_documento[chave] = [
+            r for r in itens
+            if r["demonstracao"] != "DRE" or (r["dt_ini_exerc"], r["dt_fim_exerc"]) in validos_doc
+        ]
 
-    # Periodos que cada remessa traz como comparativo (PENULTIMO da maior versao).
+    # Periodos que cada remessa traz como comparativo (PENULTIMO da maior versao). A chave
+    # tem a consolidacao: uma individual nunca substitui uma consolidada, nem o contrario.
     comparativos_doc: dict[tuple, list[dict]] = defaultdict(list)
     for r in todas:
         chave = (r["cnpj"], r["tipo_documento"], r["dt_refer"])
@@ -789,8 +942,11 @@ def montar_balancos(
             elif r["demonstracao"] == "DFC":
                 dfc_doc[periodo].append(r)
         for (inicio, fim), dre in dre_doc.items():
-            comparativos[(cnpj, tipo, inicio, fim)].append(
-                _Comparativo(dre[0]["dt_receb"], refer, dre, dfc_doc.get((inicio, fim), []))
+            consolidacao = dre[0]["consolidacao"]
+            comparativos[(cnpj, tipo, inicio, fim, consolidacao)].append(
+                _Comparativo(
+                    dre[0]["dt_receb"], refer, dre, dfc_doc.get((inicio, fim), []), consolidacao
+                )
             )
 
     # Reapresentacao (JBS, 1T25): o ULTIMO traz receita zero ou ausente e uma remessa
@@ -799,6 +955,7 @@ def montar_balancos(
     substituicoes: dict[tuple, _Comparativo] = {}
     invalidos: set[tuple] = set()
     for (cnpj, tipo, refer), itens in por_documento.items():
+        consolidacao = itens[0]["consolidacao"]
         grupos_doc: dict[tuple, list[dict]] = defaultdict(list)
         for r in itens:
             if r["demonstracao"] == "DRE":
@@ -808,7 +965,7 @@ def montar_balancos(
                 continue
             original = grupo[0]["dt_receb"]
             candidatos = [
-                c for c in comparativos.get((cnpj, tipo, inicio, fim), [])
+                c for c in comparativos.get((cnpj, tipo, inicio, fim, consolidacao), [])
                 if c.dt_receb is not None
                 and (original is None or c.dt_receb > original)
                 and _receita_liquida(c.dre) not in (None, 0.0)
@@ -824,8 +981,10 @@ def montar_balancos(
                 cnpj, tipo, refer, inicio, fim, escolhido.dt_receb, escolhido.refer,
             )
 
-    # D&A acumulada no ano por (cnpj, inicio, fim), de cada documento. Serve para derivar
-    # o trimestre do ITR: a CVM so publica a DFC acumulada (D5).
+    # D&A acumulada no ano por (cnpj, consolidacao, inicio, fim), de cada documento. Serve para
+    # derivar o trimestre do ITR: a CVM so publica a DFC acumulada (D5). A consolidacao entra na
+    # chave: o trimestre nunca mistura consolidada com individual.
+    da_bruta = _da_acumulada_bruta(antecessores, invalidos)
     da_acumulada: dict[tuple, float | None] = {}
     for (cnpj, _tipo, refer), itens in por_documento.items():
         if (cnpj, _tipo, refer) in invalidos:
@@ -835,7 +994,7 @@ def montar_balancos(
             if r["demonstracao"] == "DFC":
                 dfc_doc[(r["dt_ini_exerc"], r["dt_fim_exerc"])].append(r)
         for (inicio, fim), linhas in dfc_doc.items():
-            chave = (cnpj, inicio, fim)
+            chave = (cnpj, itens[0]["consolidacao"], inicio, fim)
             # O documento cuja data de referencia e o fim do periodo e o dono do numero.
             if chave not in da_acumulada or fim == refer:
                 da_acumulada[chave] = _depreciacao_amortizacao(linhas)
@@ -843,12 +1002,13 @@ def montar_balancos(
     saida: dict[tuple, dict] = {}
     for (cnpj, tipo, refer), itens in por_documento.items():
         invalido = (cnpj, tipo, refer) in invalidos
+        consolidacao = itens[0]["consolidacao"]
         dre = [r for r in itens if r["demonstracao"] == "DRE"]
         bpa = [r for r in itens if r["demonstracao"] == "BPA" and r["dt_fim_exerc"] == refer]
         bpp = [r for r in itens if r["demonstracao"] == "BPP" and r["dt_fim_exerc"] == refer]
         inicios_dfc = {r["dt_ini_exerc"] for r in itens if r["demonstracao"] == "DFC"}
         financeira = itens[0].get("cd_cvm") in financeiras
-        patrimonio = _valor_da_conta(bpp, "BPP", "patrimonio_liquido")
+        patrimonio = _patrimonio_liquido(bpp)
         # Posicoes no fim do periodo: copiadas para todas as linhas da DRE (como o PL).
         posicoes = {
             "emprestimos_curto_prazo": _emprestimos(bpp, "emprestimos_curto_prazo"),
@@ -868,14 +1028,22 @@ def montar_balancos(
             if substituta is None:
                 colunas = _colunas_dre(grupo)
                 data_entrega = grupo[0]["dt_receb"]
-                depreciacao = _da_do_periodo(da_acumulada, cnpj, inicio, fim, inicios_dfc)
+                depreciacao = _da_do_periodo(
+                    da_acumulada, da_bruta, cnpj, consolidacao, inicio, fim, inicios_dfc,
+                    data_entrega,
+                )
             else:
                 colunas = _colunas_dre(substituta.dre)
                 data_entrega = substituta.dt_receb
                 depreciacao = (
                     _depreciacao_amortizacao(substituta.dfc) if substituta.dfc else None
                 )
-            if substituta is not None:
+            individual = consolidacao == "ind" or (
+                substituta is not None and substituta.consolidacao == "ind"
+            )
+            if individual:
+                situacao = "individual"
+            elif substituta is not None:
                 situacao = "reapresentado"
             elif _despesa_de_seguro_na_receita(grupo) not in (None, 0.0):
                 situacao = "ajuste_ifrs17"
@@ -1163,11 +1331,39 @@ def _base_atual(serie: list[dict], eventos_cnpj: list[dict] | None) -> None:
                 anterior = qtd
 
 
+def _trocas_pn_para_on(
+    mudancas: list[tuple[str, str, dt.date | None]], raw_cvm_acoes: list[dict]
+) -> list[tuple[str, dt.date]]:
+    """(CNPJ, data da troca) de cada troca de ticker PN para ON, por exemplo AZUL4 -> AZUL3: a
+    classe PN foi extinta e a conversao nao e evento. A empresa e a do ticker novo (troca de
+    codigo, mesma companhia); o CNPJ sai do codigo CVM do periodo dele (`emissores_do_ticker`)
+    nas linhas da CVM. Troca sem data fica de fora."""
+    cnpj_por_cd: dict[int, str] = {}
+    for r in raw_cvm_acoes:
+        if r.get("cd_cvm") is not None and r.get("cnpj"):
+            cnpj_por_cd.setdefault(r["cd_cvm"], r["cnpj"])
+    trocas: list[tuple[str, dt.date]] = []
+    for antigo, novo, data in mudancas:
+        if data is None or _tipo_acao(antigo) != "PN" or _tipo_acao(novo) != "ON":
+            continue
+        cnpjs = {
+            periodo.cnpj or cnpj_por_cd.get(periodo.cd_cvm)
+            for periodo in emissores_do_ticker(novo)
+        }
+        cnpjs.discard(None)
+        if not cnpjs:
+            logger.warning("entrega: acoes_emitidas: troca %s -> %s sem CNPJ na CVM; base PN "
+                           "nao zerada", antigo, novo)
+        trocas.extend((cnpj, data) for cnpj in cnpjs)
+    return trocas
+
+
 def montar_acoes_emitidas(
     raw_cvm_acoes: list[dict],
     volumes: dict[str, dict[dt.date, float]] | None = None,
     eventos: list[dict] | None = None,
     anuladas: dict[tuple[str, dt.date], str] | None = None,
+    mudancas: list[tuple[str, str, dt.date | None]] | None = None,
 ) -> list[dict]:
     """Maior versao por (cnpj, dt_refer); na mesma data, a DFP vence o ITR.
 
@@ -1176,6 +1372,8 @@ def montar_acoes_emitidas(
     ACOES_CVM_ANULADAS), corrige erro de digito 10x/100x entre vizinhos que concordam e marca
     valor isolado como 'suspeito'. Com `eventos` (ver `montar_eventos_acoes`), converte a
     quantidade para a base atual (`qtd_*_base_atual`); sem ele, a base atual e a propria quantidade.
+    Sempre: `qtd_pn_base_atual` vira None antes da data de cada troca de ticker PN para ON de
+    `mudancas` (padrao MUDANCAS_TICKER), porque a classe PN foi extinta e a conversao nao e evento.
     """
     melhor: dict[tuple, tuple[tuple, dict]] = {}
     for r in raw_cvm_acoes:
@@ -1209,6 +1407,12 @@ def montar_acoes_emitidas(
                 if r[base] is not None:
                     r[base] = round(r[base] * fator)
     escolhidas = [r for serie in por_cnpj.values() for r in serie]
+    for cnpj, data_troca in _trocas_pn_para_on(
+        MUDANCAS_TICKER if mudancas is None else mudancas, raw_cvm_acoes
+    ):
+        for r in escolhidas:
+            if r["cnpj"] == cnpj and r["dt_refer"] < data_troca:
+                r["base_pn"] = None
     return [
         {
             "cnpj": r["cnpj"],
@@ -1534,6 +1738,13 @@ def _consulta(stmt: Any) -> list[dict]:
         return [dict(linha) for linha in session.execute(stmt).mappings()]
 
 
+def _stmt_republicados() -> Any:
+    """article_id de staging_historias que nao e o representante da historia (republicacao)."""
+    return select(StagingHistoria.article_id).where(
+        StagingHistoria.article_id != StagingHistoria.historia_article_id
+    )
+
+
 class _Fontes:
     """Le cada fonte uma vez, no primeiro uso. Consultas simples; a montagem fica nas funcoes."""
 
@@ -1551,14 +1762,30 @@ class _Fontes:
             Article.published_precision, Article.lang, Article.collected_at, Article.origem,
         ).where(Article.published_at >= self._limite)
         # Republicacao entre veiculos conta como 1 noticia: sai o que nao e representante
-        # da historia.
-        duplicados = select(StagingHistoria.article_id).where(
-            StagingHistoria.article_id != StagingHistoria.historia_article_id
-        )
-        consulta = consulta.where(Article.id.not_in(duplicados))
+        # da historia (ver `_stmt_republicados`).
+        consulta = consulta.where(Article.id.not_in(_stmt_republicados()))
         if self._somente_ids is not None:
             consulta = consulta.where(Article.id.in_(sorted(self._somente_ids)))
         return _consulta(consulta)
+
+    @cached_property
+    def fora_da_montagem(self) -> set[int]:
+        """Artigos que a montagem nunca transforma em linha, em qualquer data.
+
+        Republicacao (que nao e representante) e artigo sem titulo (vazio ou so espacos).
+        A poda de `noticias` usa este conjunto (`_Poda.sem_linha`): a linha antiga sai mesmo
+        quando o artigo ja nao esta na janela de datas. Com `somente_ids`, fica restrito a eles.
+        """
+        republicados = {r["article_id"] for r in _consulta(_stmt_republicados())}
+        sem_titulo = {
+            r["id"] for r in _consulta(
+                select(Article.id).where(Article.title.regexp_match(r"^[[:space:]]*$"))
+            )
+        }
+        ids = republicados | sem_titulo
+        if self._somente_ids is not None:
+            ids &= self._somente_ids
+        return ids
 
     @cached_property
     def vinculos(self) -> list[dict]:
@@ -1634,7 +1861,7 @@ class _Fontes:
                 RawCvmBalanco.versao, RawCvmBalanco.demonstracao, RawCvmBalanco.cd_conta,
                 RawCvmBalanco.dt_ini_exerc, RawCvmBalanco.dt_fim_exerc, RawCvmBalanco.ds_conta,
                 RawCvmBalanco.ordem_exerc, RawCvmBalanco.escala_moeda, RawCvmBalanco.vl_conta,
-                RawCvmBalanco.dt_receb, RawCvmBalanco.cd_cvm,
+                RawCvmBalanco.dt_receb, RawCvmBalanco.cd_cvm, RawCvmBalanco.consolidacao,
             )
         )
 
@@ -1753,17 +1980,21 @@ class _Poda:
     julgados: set[int]  # artigos com julgamento na versao vigente do prompt da juiza
     exigir_juiza: bool  # entrega_filtro_juiza
     ipe: set[int]  # artigos de origem cvm_ipe da janela
+    # republicados e sem titulo (`_Fontes.fora_da_montagem`): a montagem nunca gera linha deles,
+    # entao a linha gravada antes sai, mesmo fora da janela de datas
+    sem_linha: frozenset[int] = frozenset()
 
 
 def _ids_a_apagar(poda: _Poda, com_aprovada: set[str]) -> set[str]:
     """Codigos de noticia que saem de `noticias` por inteiro, com todas as linhas.
 
+    Artigo republicado ou sem titulo (`sem_linha`) sai sempre: a montagem nunca o produz.
     Artigo IPE sem nenhum par aprovado sai sempre: o IPE entra sem julgamento, entao so fica
     sem par quando o ticker deixou de ser o emissor do documento (`montar_noticias`). Com a
     juiza exigida, tambem sai o artigo julgado sem par aprovado. Artigo sem julgamento que nao
     e do IPE nao sai por id.
     """
-    apagar = {id_noticia(a) for a in poda.ipe}
+    apagar = {id_noticia(a) for a in poda.ipe | poda.sem_linha}
     if poda.exigir_juiza:
         apagar |= {id_noticia(a) for a in poda.janela & poda.julgados}
     return apagar - com_aprovada
@@ -1890,6 +2121,7 @@ def build_entrega(
                     },
                     exigir_juiza=settings.entrega_filtro_juiza,
                     ipe={a["id"] for a in fontes.artigos if a["origem"] == "cvm_ipe"},
+                    sem_linha=frozenset(fontes.fora_da_montagem),
                 )
             _gravar(tabela, linhas, poda)
             if csv:

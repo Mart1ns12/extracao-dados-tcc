@@ -801,3 +801,11 @@ INSERT INTO `v1-ref_instituicoes_financeiras` (cd_cvm, empresa, tipo, motivo, in
     (23159, 'BB Seguridade (BBSE3)', 'seguradora', 'Tem Caixa e Equivalentes de Caixa como a industria, mas a spec deixa em branco', '2026-10-20'),
     (16659, 'Porto Seguro (PSSA3)', 'seguradora', 'Usa o plano industrial inteiro (ITR 2025 da CVM), a descricao nao separa', '2026-10-20'),
     (24180, 'IRB Brasil RE (IRBR3)', 'seguradora', 'Resseguradora com Caixa e Equivalentes de Caixa como a industria, a spec deixa em branco', '2026-10-20');
+
+-- Etapa 0017: demonstracoes individuais (_ind_) em v1-raw_cvm_balancos (ver sql/alteracoes/2026-11-09_raw_cvm_balancos_consolidacao.mysql.sql)
+ALTER TABLE `v1-raw_cvm_balancos`
+    ADD COLUMN consolidacao VARCHAR(3) NOT NULL DEFAULT 'con' AFTER versao,
+    DROP PRIMARY KEY,
+    ADD PRIMARY KEY (cnpj, tipo_documento, dt_refer, versao, consolidacao, demonstracao, cd_conta,
+                     dt_ini_exerc, dt_fim_exerc),
+    ADD CONSTRAINT ck_raw_cvm_balancos_consolidacao CHECK (consolidacao IN ('con', 'ind'));

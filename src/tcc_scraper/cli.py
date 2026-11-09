@@ -514,6 +514,15 @@ def gerar_correcao_precos() -> None:
     _report("correcao de precos (B3 COTAHIST)", gerar_correcoes())
 
 
+@app.command("gerar-lacunas-precos")
+def gerar_lacunas_precos() -> None:
+    """Pregoes que o Yahoo nao tem (IBOV da B3 e COTAHIST) -> data/lacunas_precos/lacunas.csv."""
+    _setup_logging()
+    from tcc_scraper.collectors.b3_cotahist import gerar_lacunas
+
+    _report("lacunas de precos (B3 COTAHIST + IBOV)", gerar_lacunas())
+
+
 @app.command("validate-cadastro")
 def validate_cadastro() -> None:
     """Confere se cada ticker do universo tem codigo CVM e aparece na B3 desse mesmo codigo."""

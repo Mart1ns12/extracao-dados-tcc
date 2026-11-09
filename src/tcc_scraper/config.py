@@ -13,6 +13,7 @@ Duas janelas de tempo convivem aqui e nao se misturam:
 from __future__ import annotations
 
 import socket
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from functools import lru_cache
@@ -595,6 +596,23 @@ CORRECOES_PRECO_B3: dict[str, CorrecaoPrecoB3] = {
 }
 
 
+@dataclass(frozen=True)
+class FatorCotacaoYahoo:
+    """Janela em que a B3 cota o papel por lote (FATCOT) e o Yahoo repete o preco do lote."""
+
+    codigo_b3: str
+    fator: int
+    inicio: date
+    fim: date | None = None  # None: janela aberta
+
+
+# RAIZ4: desde 2026-11-03 a B3 cota RAIZ55 (PN classe A) por lote de 100 (FATCOT 100,
+# COTAHIST 2026); o Yahoo segue em RAIZ4.SA com o preco do lote. Volume ja vem em acoes.
+FATORES_COTACAO_YAHOO: dict[str, FatorCotacaoYahoo] = {
+    "RAIZ4": FatorCotacaoYahoo(codigo_b3="RAIZ55", fator=100, inicio=date(2026, 11, 3)),
+}
+
+
 # Linhas de raw_cvm_acoes que a entrega anula (qtd NULL, situacao 'anulado'). Conferido no
 # banco em 2026-11-02. Chave: (cnpj, dt_refer). Erro de digito 10x/100x NAO entra aqui
 # (correcao automatica).
@@ -761,7 +779,16 @@ MUDANCAS_TICKER: list[tuple[str, str, date | None]] = [
     ("AZUL4", "AZUL3", date(2026, 4, 20)),
     ("PETZ3", "AUAU3", date(2026, 1, 5)),
     ("CCRO3", "MOTV3", date(2025, 5, 2)),
+    # codigo negociado; a chave da entrega segue RAIZ4 (FATORES_COTACAO_YAHOO)
+    ("RAIZ4", "RAIZ55", date(2026, 11, 3)),
 ]
+
+# Codigos negociados cuja serie o Yahoo emenda sob o ticker atual e que nao estao em
+# MUDANCAS_TICKER (renomeacoes anteriores ou fusoes). Medido contra o Yahoo em 2026-11-09.
+CODIGOS_ANTERIORES_COTAHIST: dict[str, tuple[str, ...]] = {
+    "ALOS3": ("ALSO3",), "AZZA3": ("ARZZ3",), "BRAV3": ("RRRP3",),
+    "ISAE4": ("TRPL4",), "VBBR3": ("BRDT3",), "MBRF3": ("MRFG3",),
+}
 
 
 @dataclass(frozen=True)
@@ -836,6 +863,14 @@ EMISSORES_POR_PERIODO: dict[str, tuple[EmissorPeriodo, ...]] = {
             fim=None,
         ),
     ),
+}
+
+# D&A trimestral: acumulado anterior vindo de outro documento, so para a D&A (nunca vira linha).
+# JBS N.V. continua as contas da JBS S.A. (receita 6M25 N.V. - 2T25 = 1T25 S.A., medido 2026-11-09);
+# Natura Cosmeticos usa o proprio 1T25, entregue quando a NATU3 ainda era da holding.
+CNPJ_ACUMULADO_ANTERIOR: dict[str, str] = {
+    "49115815000105": "02916265000160",
+    "71673990000177": "71673990000177",
 }
 
 
@@ -1209,9 +1244,11 @@ INDICES_BCB: dict[str, int] = {"cdi": 12, "ipca": 433}
 MACRO_ENTREGA: dict[str, str] = {"^BVSP": "IBOV", "USDBRL=X": "USDBRL", "BZ=F": "BRENT"}
 
 # Contas das demonstracoes CVM usadas na entrega: demonstracao -> codigo -> coluna.
-# Bancos usam outro plano: lucro em 3.09 (3.11 nao existe) e PL em 2.08 (2.03 sao passivos).
-# Qual codigo vale para cada coluna e decidido pela descricao (builder.py). Emprestimos somam
-# emprestimos (.01) e debentures (.02); o arrendamento (.03) fica fora, como pede a spec.
+# Bancos usam outro plano: o lucro esta em 3.09, 3.11 ou 3.13 conforme a empresa, e o PL na
+# conta de nivel 2 com rotulo "Patrimonio Liquido" (2.03, 2.05, 2.07 ou 2.08), ver
+# conta_pl_por_rotulo. Por isso lucro e PL sao escolhidos pelo rotulo (builder.py), nao so pelo
+# codigo. Qual codigo vale para cada coluna e decidido pela descricao (builder.py). Emprestimos
+# somam emprestimos (.01) e debentures (.02); o arrendamento (.03) fica fora, como pede a spec.
 CONTAS_CVM: dict[str, dict[str, str]] = {
     "DRE": {
         "3.01": "receita_liquida",
@@ -1219,6 +1256,7 @@ CONTAS_CVM: dict[str, dict[str, str]] = {
         "3.05": "ebit",
         "3.09": "lucro_liquido",
         "3.11": "lucro_liquido",
+        "3.13": "lucro_liquido",
     },
     "BPA": {"1.01.01": "caixa", "1.01.02": "aplicacoes_financeiras"},
     "BPP": {
@@ -1245,6 +1283,53 @@ PREFIXO_AJUSTES_DFC = "6.01.01."
 def conta_ajuste_dfc(cd_conta: str) -> bool:
     """True para 6.01.01.NN (4 niveis): as linhas de ajuste ao lucro da DFC indireta."""
     return cd_conta.startswith(PREFIXO_AJUSTES_DFC) and cd_conta.count(".") == 3
+
+
+def normalizar_descricao(texto: str | None) -> str:
+    """Minusculas, sem acento e com espacos colapsados. Para comparar descricoes da CVM/B3."""
+    if not texto:
+        return ""
+    sem_acento = "".join(
+        c for c in unicodedata.normalize("NFKD", texto) if not unicodedata.combining(c)
+    )
+    return " ".join(sem_acento.lower().split())
+
+
+def conta_pl_por_rotulo(cd_conta: str, ds_conta: str | None) -> bool:
+    """True para a conta de nivel 2 cujo rotulo e Patrimonio Liquido (2.03, 2.05, 2.07, 2.08).
+
+    Todo documento tem exatamente uma: bancos a lancam em 2.07 ou 2.08, seguradoras e nao
+    financeiras em 2.03, e as individuais em 2.03, 2.05 ou 2.07.
+    """
+    return (
+        cd_conta.startswith("2.")
+        and cd_conta.count(".") == 1
+        and normalizar_descricao(ds_conta).startswith("patrimonio liquido")
+    )
+
+
+# Allos lanca a divida em "Outros", em contas de 5 niveis (consolidada e individual).
+DIVIDA_EM_OUTROS: dict[str, str] = {
+    "2.01.05.02.": "emprestimos_curto_prazo",
+    "2.02.02.02.": "emprestimos_longo_prazo",
+}
+
+
+def conta_divida_em_outros(cd_conta: str, ds_conta: str | None) -> str | None:
+    """Coluna de divida para a conta de 5 niveis da Allos, ou None.
+
+    "Emprestimo compulsorio" (Eletrobras) nao casa: o rotulo precisa comecar por
+    "emprestimos" ou "debentures" (a palavra inteira, com o 's').
+    """
+    if cd_conta.count(".") != 4:
+        return None
+    descricao = normalizar_descricao(ds_conta)
+    if not descricao.startswith(("emprestimos", "debentures")):
+        return None
+    for prefixo, coluna in DIVIDA_EM_OUTROS.items():
+        if cd_conta.startswith(prefixo):
+            return coluna
+    return None
 
 
 # Categorias de documentos IPE (CVM) que entram na entrega.

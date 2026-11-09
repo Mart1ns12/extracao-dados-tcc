@@ -178,10 +178,14 @@ def parse_rss(xml: str | bytes, *, estrito: bool = False) -> list[NewsItem]:
         source_node = node.find("source")
         source_name = (source_node.text or "").strip() if source_node is not None else None
         source_url = source_node.get("url") if source_node is not None else None
+        titulo = _clean_title(title, source_name)
+        if not titulo:
+            # So o sufixo da fonte (ex.: " - Pagina 3"): sem manchete, nao ha o que gravar.
+            continue
 
         items.append(
             NewsItem(
-                title=_clean_title(title, source_name),
+                title=titulo,
                 google_url=link.strip(),
                 google_id=link.rstrip("/").split("/")[-1].split("?")[0],
                 published_at=published,

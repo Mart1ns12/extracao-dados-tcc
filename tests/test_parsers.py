@@ -69,6 +69,32 @@ def test_parse_rss_vazio_nao_quebra() -> None:
     assert parse_rss("<rss><channel></channel></rss>") == []
 
 
+def _rss_com_titulos(*titulos_e_fontes: tuple[str, str | None]) -> str:
+    itens = []
+    for n, (titulo, fonte) in enumerate(titulos_e_fontes):
+        fonte_xml = f'<source url="https://veja.abril.com.br">{fonte}</source>' if fonte else ""
+        itens.append(
+            "<item>"
+            f"<title>{titulo}</title>"
+            f"<link>https://news.google.com/rss/articles/ITEM{n}</link>"
+            "<pubDate>Wed, 15 Jul 2026 15:30:00 GMT</pubDate>"
+            f"{fonte_xml}"
+            "</item>"
+        )
+    return "<rss><channel>" + "".join(itens) + "</channel></rss>"
+
+
+@pytest.mark.parametrize(
+    ("titulo", "fonte"),
+    [(" - P?gina 3", None), (" - Veja", "Veja"), ("   ", None)],
+)
+def test_parse_rss_descarta_titulo_vazio_apos_limpeza(titulo, fonte) -> None:
+    """Titulo so com o sufixo da fonte vira '' em _clean_title: o item nao entra."""
+    xml = _rss_com_titulos((titulo, fonte), ("Vale anuncia dividendos - Veja", "Veja"))
+
+    assert [i.title for i in parse_rss(xml)] == ["Vale anuncia dividendos"]
+
+
 # --------------------------------------------------------------------------------------
 # Yahoo chart
 # --------------------------------------------------------------------------------------

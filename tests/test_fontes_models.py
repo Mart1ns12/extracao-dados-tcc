@@ -32,7 +32,7 @@ TABELAS_FONTES = {
 PKS_ESPERADAS = {
     "v1-raw_ipe_docs": ["protocolo_entrega"],
     "v1-raw_cvm_balancos": [
-        "cnpj", "tipo_documento", "dt_refer", "versao", "demonstracao",
+        "cnpj", "tipo_documento", "dt_refer", "versao", "consolidacao", "demonstracao",
         "cd_conta", "dt_ini_exerc", "dt_fim_exerc",
     ],
     "v1-raw_cvm_acoes": ["cnpj", "tipo_documento", "dt_refer", "versao"],

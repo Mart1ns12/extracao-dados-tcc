@@ -10,6 +10,7 @@ from tcc_scraper.config import (
     APELIDOS,
     CONTAS_CVM,
     DOMINIOS_WP,
+    FATORES_COTACAO_YAHOO,
     IBOV_TICKERS,
     MUDANCAS_TICKER,
     NOMES_EMPRESA,
@@ -19,6 +20,8 @@ from tcc_scraper.config import (
     WP_SITES,
     Settings,
     conta_ajuste_dfc,
+    conta_divida_em_outros,
+    conta_pl_por_rotulo,
     universo_coleta,
 )
 
@@ -58,8 +61,12 @@ def test_universo_coleta_contem_ibov_e_removidos_sem_duplicatas():
 
 def test_mudancas_ticker_apontam_para_o_universo():
     universo = set(universo_coleta())
-    for _antigo, novo, _data in MUDANCAS_TICKER:
-        assert novo in universo, novo
+    for antigo, novo, _data in MUDANCAS_TICKER:
+        # Troca de codigo negociado (RAIZ4 -> RAIZ55): o novo nao esta no universo; a chave
+        # segue o antigo, e o codigo da B3 e o codigo_b3 de FATORES_COTACAO_YAHOO.
+        fator = FATORES_COTACAO_YAHOO.get(antigo)
+        codigo_b3 = fator.codigo_b3 if fator else None
+        assert novo in universo or novo == codigo_b3, novo
 
 
 def test_mudancas_ticker_tem_data():
@@ -114,6 +121,28 @@ def test_contas_cvm_tem_bpa_e_os_quatro_codigos_de_emprestimo():
     assert CONTAS_CVM["BPA"] == {"1.01.01": "caixa", "1.01.02": "aplicacoes_financeiras"}
     emprestimos = {"2.01.04.01", "2.01.04.02", "2.02.01.01", "2.02.01.02"}
     assert emprestimos <= set(CONTAS_CVM["BPP"])
+
+
+def test_conta_pl_por_rotulo_casa_o_patrimonio_liquido_de_nivel_2():
+    assert conta_pl_por_rotulo("2.07", "Patrimônio Líquido Consolidado")
+    assert conta_pl_por_rotulo("2.05", "Patrimônio Líquido")
+    assert not conta_pl_por_rotulo("2.03", "Provisões")
+    assert not conta_pl_por_rotulo("2.03.01", "Capital Social Realizado")
+
+
+def test_conta_divida_em_outros_casa_so_emprestimos_e_debentures_da_allos():
+    assert (
+        conta_divida_em_outros("2.02.02.02.07", "Empréstimos, financiamentos e debêntures")
+        == "emprestimos_longo_prazo"
+    )
+    rotulo_allos = "Empréstimos e financiamentos, CCI/CRI's e debêntures"
+    assert conta_divida_em_outros("2.01.05.02.05", rotulo_allos) == "emprestimos_curto_prazo"
+    assert conta_divida_em_outros("2.01.05.02.05", "Empréstimo compulsório") is None
+    assert conta_divida_em_outros("2.01.05.02.08", "Financiamento por compra de ativos") is None
+
+
+def test_contas_cvm_dre_tem_o_lucro_em_3_13():
+    assert "3.13" in CONTAS_CVM["DRE"]
 
 
 # Juiza: modo do Jev, modelo e chave por provedor. Limpa o ambiente para nao herdar

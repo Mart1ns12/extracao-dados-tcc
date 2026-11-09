@@ -1,9 +1,10 @@
 """Demonstracoes (ITR/DFP) e quantidade de acoes da CVM, por companhia e data de referencia.
 
-Cada zip anual de ITR/DFP traz seis CSVs que a entrega usa: o principal (data de
-recebimento de cada documento), DRE, BPA, BPP e DFC (metodo indireto, so o MI) consolidados
-e a composicao do capital. O parser e puro; o coletor baixa o zip, filtra pelo universo e
-grava em lote, append-only.
+Cada zip anual de ITR/DFP traz dez CSVs que a entrega usa: o principal (data de recebimento
+de cada documento), DRE, BPA, BPP e DFC (metodo indireto, so o MI), cada um consolidado e
+individual (controladora), e a composicao do capital. O parser e puro; o coletor baixa o zip,
+filtra pelo universo e grava em lote, append-only. A consolidada e a individual vao ao raw com
+a coluna consolidacao; o builder escolhe qual usar.
 
 Ficam no raw as linhas ULTIMO e PENULTIMO. O PENULTIMO e o comparativo do exercicio anterior,
 reapresentado pela companhia; o builder usa so o ULTIMO. Na DRE, as subcontas 3.01.NN entram
@@ -35,24 +36,48 @@ from tcc_scraper.config import (
     CONTAS_CVM_AUXILIARES,
     codigos_cvm_universo,
     conta_ajuste_dfc,
+    conta_divida_em_outros,
+    conta_pl_por_rotulo,
 )
 from tcc_scraper.db.models_fontes import RawCvmAcoes, RawCvmBalanco
 from tcc_scraper.db.session import session_scope
 from tcc_scraper.db.upsert import bulk_upsert
 
 # Sufixos dos CSVs dentro do zip (o principal depende do ano e e montado no process).
+# _con_ e a consolidada; _ind_ e a individual (controladora).
 _SUFIXO_DRE = "_DRE_con_"
 _SUFIXO_BPA = "_BPA_con_"
 _SUFIXO_BPP = "_BPP_con_"
 _SUFIXO_DFC_MI = "_DFC_MI_con_"
+_SUFIXO_DRE_IND = "_DRE_ind_"
+_SUFIXO_BPA_IND = "_BPA_ind_"
+_SUFIXO_BPP_IND = "_BPP_ind_"
+_SUFIXO_DFC_MI_IND = "_DFC_MI_ind_"
 _SUFIXO_COMPOSICAO = "_composicao_capital_"
 
+# Demonstracao gravada para cada sufixo de demonstracao (consolidada e individual).
+_DEMONSTRACAO_POR_SUFIXO = {
+    _SUFIXO_DRE: "DRE",
+    _SUFIXO_DRE_IND: "DRE",
+    _SUFIXO_BPA: "BPA",
+    _SUFIXO_BPA_IND: "BPA",
+    _SUFIXO_BPP: "BPP",
+    _SUFIXO_BPP_IND: "BPP",
+    _SUFIXO_DFC_MI: "DFC",
+    _SUFIXO_DFC_MI_IND: "DFC",
+}
+
 # Chaves do dict que parse_demonstracoes recebe: papel do CSV, independente do nome no zip.
+# As chaves sem _IND sao a consolidada; as com _IND, a individual.
 CHAVE_PRINCIPAL = "principal"
 CHAVE_DRE = "DRE"
 CHAVE_BPA = "BPA"
 CHAVE_BPP = "BPP"
 CHAVE_DFC = "DFC"
+CHAVE_DRE_IND = "DRE_ind"
+CHAVE_BPA_IND = "BPA_ind"
+CHAVE_BPP_IND = "BPP_ind"
+CHAVE_DFC_IND = "DFC_ind"
 CHAVE_COMPOSICAO = "composicao"
 
 # DRE e DFC sao fluxo de um periodo (inicio e fim). BPA e BPP sao saldo em uma data.
@@ -64,6 +89,7 @@ _PK_BALANCO = (
     "tipo_documento",
     "dt_refer",
     "versao",
+    "consolidacao",
     "demonstracao",
     "cd_conta",
     "dt_ini_exerc",
@@ -112,10 +138,33 @@ def conta_subreceita_dre(cd_conta: str) -> bool:
     return cd_conta.startswith("3.01.") and cd_conta.count(".") == 2
 
 
+def conta_coletada(demonstracao: str, cd_conta: str, ds_conta: str | None) -> bool:
+    """True se a conta vai ao raw: as contas de CONTAS_CVM e, no BPP, as achadas pelo rotulo.
+
+    O PL (2.07 em banco, 2.05 em individual) e a divida em "Outros" (Allos) so casam pela
+    descricao; o codigo sozinho nao basta.
+    """
+    if demonstracao == "DRE":
+        return cd_conta in CONTAS_CVM["DRE"] or conta_subreceita_dre(cd_conta)
+    if demonstracao == "BPA":
+        return cd_conta in CONTAS_CVM["BPA"]
+    if demonstracao == "BPP":
+        return (
+            cd_conta in CONTAS_CVM["BPP"]
+            or cd_conta in CONTAS_CVM_AUXILIARES["BPP"]
+            or conta_pl_por_rotulo(cd_conta, ds_conta)
+            or conta_divida_em_outros(cd_conta, ds_conta) is not None
+        )
+    if demonstracao == "DFC":
+        return conta_ajuste_dfc(cd_conta)
+    return False
+
+
 def _balanco(
     r: dict,
     tipo: str,
     demonstracao: str,
+    consolidacao: str,
     universo: set[int],
     recebimento: dict[tuple[str, dt.date | None, int | None], dt.date | None],
 ) -> dict | None:
@@ -136,6 +185,7 @@ def _balanco(
         "tipo_documento": tipo,
         "dt_refer": dt_refer,
         "versao": versao,
+        "consolidacao": consolidacao,
         "demonstracao": demonstracao,
         "cd_conta": r["CD_CONTA"],
         "dt_ini_exerc": dt_ini,
@@ -154,8 +204,9 @@ def parse_demonstracoes(
 ) -> tuple[list[dict], list[dict]]:
     """Converte os CSVs de um zip ITR/DFP em linhas de v1-raw_cvm_balancos e v1-raw_cvm_acoes.
 
-    csvs usa as chaves CHAVE_PRINCIPAL, CHAVE_DRE, CHAVE_BPA, CHAVE_BPP, CHAVE_DFC e
-    CHAVE_COMPOSICAO (chave ausente conta como lista vazia). So entram companhias de
+    csvs usa as chaves CHAVE_PRINCIPAL, CHAVE_DRE, CHAVE_BPA, CHAVE_BPP, CHAVE_DFC, as de
+    CHAVE_DRE_IND a CHAVE_DFC_IND (individuais) e CHAVE_COMPOSICAO (chave ausente conta como
+    lista vazia). So entram companhias de
     cd_cvm_universo. Entram ORDEM_EXERC ULTIMO e PENULTIMO (o PENULTIMO e o comparativo
     reapresentado). Linha repetida na mesma chave primaria: vale a ultima, exceto que um
     PENULTIMO nao sobrescreve um ULTIMO. Na DRE, as subcontas 3.01.NN tambem entram (IFRS 17).
@@ -171,19 +222,22 @@ def parse_demonstracoes(
         recebimento[chave] = data_cvm(r.get("DT_RECEB"))
 
     balancos: dict[tuple, dict] = {}
-    for chave, demonstracao, aceita in (
-        (CHAVE_DRE, "DRE", lambda cd: cd in CONTAS_CVM["DRE"] or conta_subreceita_dre(cd)),
-        (CHAVE_BPA, "BPA", lambda cd: cd in CONTAS_CVM["BPA"]),
-        (
-            CHAVE_BPP, "BPP",
-            lambda cd: cd in CONTAS_CVM["BPP"] or cd in CONTAS_CVM_AUXILIARES["BPP"],
-        ),
-        (CHAVE_DFC, "DFC", conta_ajuste_dfc),
+    for chave, demonstracao, consolidacao in (
+        (CHAVE_DRE, "DRE", "con"),
+        (CHAVE_BPA, "BPA", "con"),
+        (CHAVE_BPP, "BPP", "con"),
+        (CHAVE_DFC, "DFC", "con"),
+        (CHAVE_DRE_IND, "DRE", "ind"),
+        (CHAVE_BPA_IND, "BPA", "ind"),
+        (CHAVE_BPP_IND, "BPP", "ind"),
+        (CHAVE_DFC_IND, "DFC", "ind"),
     ):
         for r in csvs.get(chave, []):
-            if not _exercicio_aceito(r.get("ORDEM_EXERC")) or not aceita(r.get("CD_CONTA") or ""):
+            if not _exercicio_aceito(r.get("ORDEM_EXERC")):
                 continue
-            linha = _balanco(r, tipo, demonstracao, cd_cvm_universo, recebimento)
+            if not conta_coletada(demonstracao, r.get("CD_CONTA") or "", r.get("DS_CONTA")):
+                continue
+            linha = _balanco(r, tipo, demonstracao, consolidacao, cd_cvm_universo, recebimento)
             if linha is None:
                 continue
             k = tuple(linha[c] for c in _PK_BALANCO)
@@ -251,13 +305,34 @@ class CvmDemonstracoesCollector(CvmCollector):
         tipo, ano, url = unit.payload["tipo"], unit.payload["ano"], unit.payload["url"]
         principal = f"{tipo.lower()}_cia_aberta_{ano}.csv"
         universo = codigos_cvm_universo()
+
+        def manter(sufixo: str, r: dict) -> bool:
+            # A composicao nao tem CD_CVM (filtrada pelo CNPJ no parser); o resto, pelo universo.
+            if sufixo == _SUFIXO_COMPOSICAO:
+                return True
+            if _inteiro(r.get("CD_CVM")) not in universo:
+                return False
+            demonstracao = _DEMONSTRACAO_POR_SUFIXO.get(sufixo)
+            # Demonstracao: so a conta que o parser usaria (o CSV individual e grande).
+            if demonstracao is None:
+                return True
+            return conta_coletada(demonstracao, r.get("CD_CONTA") or "", r.get("DS_CONTA"))
+
         brutos = ler_csvs_do_zip(
             self.baixar_zip(url),
-            (principal, _SUFIXO_DRE, _SUFIXO_BPA, _SUFIXO_BPP, _SUFIXO_DFC_MI, _SUFIXO_COMPOSICAO),
-            # A composicao nao tem CD_CVM (filtrada pelo CNPJ no parser); o resto, pelo universo.
-            manter=lambda sufixo, r: (
-                sufixo == _SUFIXO_COMPOSICAO or _inteiro(r.get("CD_CVM")) in universo
+            (
+                principal,
+                _SUFIXO_DRE,
+                _SUFIXO_BPA,
+                _SUFIXO_BPP,
+                _SUFIXO_DFC_MI,
+                _SUFIXO_DRE_IND,
+                _SUFIXO_BPA_IND,
+                _SUFIXO_BPP_IND,
+                _SUFIXO_DFC_MI_IND,
+                _SUFIXO_COMPOSICAO,
             ),
+            manter=manter,
         )
         csvs = {
             CHAVE_PRINCIPAL: brutos[principal],
@@ -265,6 +340,10 @@ class CvmDemonstracoesCollector(CvmCollector):
             CHAVE_BPA: brutos[_SUFIXO_BPA],
             CHAVE_BPP: brutos[_SUFIXO_BPP],
             CHAVE_DFC: brutos[_SUFIXO_DFC_MI],
+            CHAVE_DRE_IND: brutos[_SUFIXO_DRE_IND],
+            CHAVE_BPA_IND: brutos[_SUFIXO_BPA_IND],
+            CHAVE_BPP_IND: brutos[_SUFIXO_BPP_IND],
+            CHAVE_DFC_IND: brutos[_SUFIXO_DFC_MI_IND],
             CHAVE_COMPOSICAO: brutos[_SUFIXO_COMPOSICAO],
         }
         balancos, acoes = parse_demonstracoes(csvs, tipo, cd_cvm_universo=universo)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import statistics
 import urllib.parse
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
@@ -17,8 +18,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from tcc_scraper.collectors.base import Collector, UnitResult, WorkUnit
 from tcc_scraper.config import (
     BENCHMARK_TICKER,
+    FATORES_COTACAO_YAHOO,
     IVVB11,
     MACRO_YAHOO,
+    FatorCotacaoYahoo,
     get_settings,
     universo_coleta,
     yahoo_symbol,
@@ -43,6 +46,25 @@ class PriceRow:
     adj_close: float | None
     volume: int | None
     source: str = "yahoo"
+
+
+@dataclass(frozen=True)
+class LacunaPreco:
+    """Pregao que o Yahoo nao tem, com o preco por acao da B3 (sem ajuste) e os vizinhos."""
+
+    ticker: str
+    date: dt.date
+    codneg: str
+    open: float | None
+    high: float | None
+    low: float | None
+    close: float
+    volume: int | None
+    fonte: str  # "b3_cotahist" (papel) ou "b3" (^BVSP, IBOV da B3)
+    ref_anterior: dt.date | None = None
+    ant: tuple[float | None, ...] = (None, None, None, None)  # O, H, L, C da B3
+    ref_seguinte: dt.date | None = None
+    seg: tuple[float | None, ...] = (None, None, None, None)
 
 
 def parse_chart(payload: dict, ticker: str) -> list[PriceRow]:
@@ -161,6 +183,73 @@ def _emendar_base_de_ajuste(
     ]
 
 
+# Salto relativo maximo entre o ultimo close antes da janela e o primeiro dentro dela. Acima
+# dele o Yahoo ainda cota por lote (27,10 / 0,30 = 90x); abaixo, ja cota por acao.
+SALTO_MAXIMO_FATOR = 0.5
+
+
+def aplicar_fator_cotacao(
+    rows: list[PriceRow],
+    fatores: dict[str, FatorCotacaoYahoo],
+    ticker: str | None = None,
+) -> list[PriceRow]:
+    """Divide por lote o preco do Yahoo na janela em que a B3 cota o papel por lote.
+
+    open, high, low, close e adj_close da janela saem divididos pelo fator. O volume nao muda:
+    o Yahoo ja o entrega em acoes. Se o close do primeiro pregao da janela esta perto do ultimo
+    antes dela, o Yahoo ja cota por acao: nada muda, com aviso. `ticker` segue a regra de
+    aplicar_correcoes.
+    """
+    alvo = ticker or (rows[0].ticker if rows else None)
+    regra = fatores.get(alvo) if alvo else None
+    if regra is None:
+        return rows
+    inicio = regra.inicio
+    fim = regra.fim
+
+    def na_janela(r: PriceRow) -> bool:
+        return r.date >= inicio and (fim is None or r.date <= fim)
+
+    antes = max(
+        (r for r in rows if r.date < inicio and r.close),
+        key=lambda r: r.date,
+        default=None,
+    )
+    dentro = min(
+        (r for r in rows if na_janela(r) and r.close),
+        key=lambda r: r.date,
+        default=None,
+    )
+    if antes and dentro:
+        salto = dentro.close / antes.close
+        if abs(salto - 1) <= SALTO_MAXIMO_FATOR:
+            logger.warning(
+                "%s: preco de %s ja por acao no Yahoo (salto %.2fx); fator %d nao aplicado",
+                alvo,
+                dentro.date,
+                salto,
+                regra.fator,
+            )
+            return rows
+
+    def dividir(valor: float | None) -> float | None:
+        return valor / regra.fator if valor is not None else None
+
+    return [
+        replace(
+            r,
+            open=dividir(r.open),
+            high=dividir(r.high),
+            low=dividir(r.low),
+            close=dividir(r.close),
+            adj_close=dividir(r.adj_close),
+        )
+        if na_janela(r)
+        else r
+        for r in rows
+    ]
+
+
 def aplicar_correcoes(
     rows: list[PriceRow],
     correcoes: dict[str, list[PriceRow]],
@@ -182,6 +271,102 @@ def aplicar_correcoes(
     mantidas = [r for r in rows if not inicio <= r.date <= fim]
     correcao = _emendar_base_de_ajuste(correcao, rows, fim)
     return sorted([*mantidas, *correcao], key=lambda r: r.date)
+
+
+# Quanto a razao Yahoo/B3 pode variar entre o pregao antes e o depois da lacuna. Acima disso
+# a escala nao e estavel e a lacuna fica de fora.
+TOLERANCIA_RAZAO_LACUNA = 0.003
+
+
+def razao_mediana(yahoo: Iterable[float | None], b3: Iterable[float | None]) -> float | None:
+    """Mediana de y/b nos pares em que os dois existem e b > 0. Sem pares, None."""
+    razoes = [
+        y / b for y, b in zip(yahoo, b3, strict=True) if y is not None and b is not None and b > 0
+    ]
+    return statistics.median(razoes) if razoes else None
+
+
+def _ohlc(r: PriceRow) -> tuple[float | None, ...]:
+    return (r.open, r.high, r.low, r.close)
+
+
+def _escala_da_lacuna(
+    lacuna: LacunaPreco, por_data: dict[dt.date, PriceRow], alvo: str | None
+) -> tuple[float, float] | None:
+    """(razao Yahoo/B3, fator de ajuste) medidos nos vizinhos; None se nao der para medir."""
+    y_ant = por_data.get(lacuna.ref_anterior)
+    y_seg = por_data.get(lacuna.ref_seguinte)
+    if y_ant is None or y_seg is None:
+        logger.warning("%s %s: falta pregao vizinho no Yahoo; lacuna pulada", alvo, lacuna.date)
+        return None
+    r_ant = razao_mediana(_ohlc(y_ant), lacuna.ant)
+    r_seg = razao_mediana(_ohlc(y_seg), lacuna.seg)
+    if not r_ant or not r_seg or abs(r_ant / r_seg - 1) > TOLERANCIA_RAZAO_LACUNA:
+        logger.warning(
+            "%s %s: razao Yahoo/B3 instavel (%s, %s); lacuna pulada",
+            alvo, lacuna.date, r_ant, r_seg,
+        )
+        return None
+    fator_adj = 1.0
+    if y_seg.adj_close is not None and y_seg.close:
+        fator_adj = y_seg.adj_close / y_seg.close
+    return r_seg, fator_adj
+
+
+def _pregao_da_lacuna(lacuna: LacunaPreco, razao: float, fator_adj: float) -> PriceRow:
+    """Pregao da B3 na escala do Yahoo: preco x razao, volume / razao, adj pelo fator."""
+
+    def escala(valor: float | None) -> float | None:
+        return valor * razao if valor is not None else None
+
+    close = lacuna.close * razao
+    return PriceRow(
+        ticker=lacuna.ticker,
+        date=lacuna.date,
+        open=escala(lacuna.open),
+        high=escala(lacuna.high),
+        low=escala(lacuna.low),
+        close=close,
+        adj_close=close * fator_adj,
+        volume=round(lacuna.volume / razao) if lacuna.volume is not None else None,
+        source=lacuna.fonte,
+    )
+
+
+def completar_lacunas(
+    rows: list[PriceRow],
+    lacunas: dict[str, list[LacunaPreco]],
+    ticker: str | None = None,
+) -> list[PriceRow]:
+    """Acrescenta os pregoes que o Yahoo nao tem, com o preco da B3 na escala do Yahoo.
+
+    Data que ja esta em `rows` fica como esta. Indice (sem pregao de referencia) entra com o
+    preco da B3 como veio. Com vizinhos, a escala e a razao Yahoo/B3 medida antes e depois da
+    lacuna: se as duas nao batem (TOLERANCIA_RAZAO_LACUNA) ou falta vizinho, a lacuna e pulada
+    com aviso. Lacuna fora do periodo coletado (coleta incremental do daily) e ignorada sem
+    aviso. `ticker` segue a regra de aplicar_correcoes.
+    """
+    alvo = ticker or (rows[0].ticker if rows else None)
+    lista = lacunas.get(alvo) if alvo else None
+    if not lista:
+        return rows
+    por_data = {r.date: r for r in rows}
+    periodo = (min(por_data), max(por_data)) if por_data else None
+    completadas: list[PriceRow] = []
+    for lacuna in lista:
+        if lacuna.date in por_data:
+            continue
+        if periodo and not periodo[0] <= lacuna.date <= periodo[1]:
+            continue
+        if lacuna.ref_seguinte is None:
+            completadas.append(_pregao_da_lacuna(lacuna, 1.0, 1.0))
+            continue
+        escala = _escala_da_lacuna(lacuna, por_data, alvo)
+        if escala is not None:
+            completadas.append(_pregao_da_lacuna(lacuna, *escala))
+    if not completadas:
+        return rows
+    return sorted([*rows, *completadas], key=lambda r: r.date)
 
 
 def tickers_padrao() -> list[str]:
@@ -232,10 +417,12 @@ class YahooPriceCollector(Collector):
         }
         url = f"{CHART_ENDPOINT}/{urllib.parse.quote(symbol)}?{urllib.parse.urlencode(params)}"
         rows = parse_chart(self.fetch(url).json(), ticker=ticker)
+        rows = aplicar_fator_cotacao(rows, FATORES_COTACAO_YAHOO, ticker=ticker)
         # Import local: b3_cotahist importa PriceRow daqui, e o import no topo daria ciclo.
-        from tcc_scraper.collectors.b3_cotahist import carregar_correcoes
+        from tcc_scraper.collectors.b3_cotahist import carregar_correcoes, carregar_lacunas
 
         rows = aplicar_correcoes(rows, carregar_correcoes(), ticker=ticker)
+        rows = completar_lacunas(rows, carregar_lacunas(), ticker=ticker)
 
         self._persist(rows)
         return UnitResult(items_found=len(rows))

@@ -455,3 +455,103 @@ def test_process_mantem_jbs_s_a_20575_pelo_universo_de_emissores(
         )
 
     assert {r["cd_cvm"] for r in gravados[0]} == {20575}
+
+
+def test_consolidada_e_individual_da_mesma_conta_viram_duas_linhas() -> None:
+    csvs = {
+        demo.CHAVE_PRINCIPAL: [],
+        demo.CHAVE_DRE: [_linha_sintetica(VL_CONTA="10.0")],
+        demo.CHAVE_DRE_IND: [_linha_sintetica(VL_CONTA="7.0")],
+        demo.CHAVE_BPP: [],
+        demo.CHAVE_COMPOSICAO: [],
+    }
+    balancos, _ = parse_demonstracoes(csvs, "ITR", UNIVERSO)
+    assert {(r["consolidacao"], r["vl_conta"]) for r in balancos} == {("con", 10.0), ("ind", 7.0)}
+
+
+def test_bpp_entra_pl_por_rotulo_e_divida_em_outros_mas_nao_o_resto() -> None:
+    periodo = {
+        "DT_INI_EXERC": "2025-06-30",
+        "DT_FIM_EXERC": "2025-06-30",
+        "DT_REFER": "2025-06-30",
+    }
+    bpp = [
+        _linha_sintetica(**periodo, CD_CONTA="2.07", DS_CONTA="Patrimônio Líquido Consolidado"),
+        _linha_sintetica(
+            **periodo,
+            CD_CONTA="2.02.02.02.07",
+            DS_CONTA="Empréstimos, financiamentos e debêntures",
+        ),
+        _linha_sintetica(**periodo, CD_CONTA="2.03.01", DS_CONTA="Capital Social Realizado"),
+        _linha_sintetica(**periodo, CD_CONTA="2.01.05.02.05", DS_CONTA="Empréstimo compulsório"),
+    ]
+    csvs = {
+        demo.CHAVE_PRINCIPAL: [],
+        demo.CHAVE_DRE: [],
+        demo.CHAVE_BPP: bpp,
+        demo.CHAVE_COMPOSICAO: [],
+    }
+    balancos, _ = parse_demonstracoes(csvs, "ITR", UNIVERSO)
+    assert {r["cd_conta"] for r in balancos} == {"2.07", "2.02.02.02.07"}
+
+
+def test_dre_traz_o_lucro_em_3_13() -> None:
+    csvs = {
+        demo.CHAVE_PRINCIPAL: [],
+        demo.CHAVE_DRE: [
+            _linha_sintetica(CD_CONTA="3.13", DS_CONTA="Lucro/Prejuízo Consolidado do Período"),
+        ],
+        demo.CHAVE_BPP: [],
+        demo.CHAVE_COMPOSICAO: [],
+    }
+    balancos, _ = parse_demonstracoes(csvs, "ITR", UNIVERSO)
+    assert [(r["cd_conta"], r["consolidacao"]) for r in balancos] == [("3.13", "con")]
+
+
+def test_process_le_demonstracoes_individuais_e_marca_consolidacao_ind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cabecalho = (
+        "CNPJ_CIA;DT_REFER;VERSAO;CD_CVM;DT_INI_EXERC;DT_FIM_EXERC;CD_CONTA;DS_CONTA;"
+        "ORDEM_EXERC;VL_CONTA;ESCALA_MOEDA\n"
+    )
+    cnpj = "33.000.167/0001-01"
+    zip_cvm = _zip_cvm({
+        "itr_cia_aberta_2025.csv": (
+            "CNPJ_CIA;DT_REFER;VERSAO;CD_CVM;DT_RECEB\n"
+            f"{cnpj};2025-06-30;1;009512;2025-08-12\n"
+        ),
+        "itr_cia_aberta_DRE_con_2025.csv": cabecalho + (
+            f"{cnpj};2025-06-30;1;009512;2025-01-01;2025-06-30;3.11;Lucro;ULTIMO;10.0;MIL\n"
+        ),
+        "itr_cia_aberta_DRE_ind_2025.csv": cabecalho + (
+            f"{cnpj};2025-06-30;1;009512;2025-01-01;2025-06-30;3.11;Lucro;ULTIMO;7.0;MIL\n"
+            f"{cnpj};2025-06-30;1;009512;2025-01-01;2025-06-30;3.02;Custo;ULTIMO;-4.0;MIL\n"
+        ),
+        "itr_cia_aberta_BPP_ind_2025.csv": cabecalho + (
+            f"{cnpj};2025-06-30;1;009512;2025-06-30;2025-06-30;2.05;Patrimônio Líquido;"
+            "ULTIMO;50.0;MIL\n"
+            f"{cnpj};2025-06-30;1;009512;2025-06-30;2025-06-30;2.03.01;Capital;ULTIMO;3.0;MIL\n"
+        ),
+    })
+    gravados: list[list[dict]] = []
+    with CvmDemonstracoesCollector(anos=[2025]) as coletor:
+        monkeypatch.setattr(coletor, "baixar_zip", lambda url: zip_cvm)
+        monkeypatch.setattr(coletor, "_persist", lambda balancos, acoes: gravados.append(balancos))
+        coletor.process(
+            WorkUnit(
+                key="ITR|2025|teste",
+                payload={"tipo": "ITR", "ano": 2025, "url": "https://exemplo/itr_2025.zip"},
+            )
+        )
+
+    balancos = gravados[0]
+    assert {(r["demonstracao"], r["cd_conta"], r["consolidacao"]) for r in balancos} == {
+        ("DRE", "3.11", "con"),
+        ("DRE", "3.11", "ind"),
+        ("BPP", "2.05", "ind"),
+    }
+    assert {r["consolidacao"]: r["vl_conta"] for r in balancos if r["cd_conta"] == "3.11"} == {
+        "con": 10.0,
+        "ind": 7.0,
+    }

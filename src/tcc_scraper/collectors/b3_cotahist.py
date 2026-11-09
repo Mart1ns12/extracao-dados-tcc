@@ -22,21 +22,41 @@ import io
 import logging
 import unicodedata
 import zipfile
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy import select
 
 from tcc_scraper.collectors.b3_base import USER_AGENT_B3, data_b3, decimal_b3
+from tcc_scraper.collectors.b3_indices import (
+    INDEX_BASE,
+    METODO_DIA,
+    B3IndicesCollector,
+    parse_portfolio_day,
+)
 from tcc_scraper.collectors.base import Collector, UnitResult, WorkUnit
-from tcc_scraper.collectors.prices_yahoo import PriceRow, YahooPriceCollector
+from tcc_scraper.collectors.prices_yahoo import (
+    TOLERANCIA_RAZAO_LACUNA,
+    LacunaPreco,
+    PriceRow,
+    YahooPriceCollector,
+    razao_mediana,
+    tickers_padrao,
+)
 from tcc_scraper.config import (
+    BENCHMARK_TICKER,
+    CODIGOS_ANTERIORES_COTAHIST,
     CORRECOES_PRECO_B3,
+    MACRO_YAHOO,
+    MUDANCAS_TICKER,
     PROJECT_ROOT,
     CorrecaoPrecoB3,
     get_settings,
 )
+from tcc_scraper.db.models import Price
 from tcc_scraper.db.models_fontes import RawB3Proventos, RawB3Suplemento
 from tcc_scraper.db.session import session_scope
 
@@ -47,6 +67,7 @@ BVMF_DOMINIO = "bvmf.bmfbovespa.com.br"
 FONTE = "b3_cotahist"
 PASTA_CORRECOES = PROJECT_ROOT / "data" / "correcoes_precos"
 PASTA_PROVENTOS_YAHOO = PROJECT_ROOT / "data" / "proventos_yahoo"
+PASTA_LACUNAS = PROJECT_ROOT / "data" / "lacunas_precos"
 COLUNAS_CSV = [
     "ticker", "date", "open", "high", "low", "close", "adj_close", "volume",
     "codneg", "fatcot", "fator_grupamento", "fator_troca", "fator_dividendos",
@@ -54,6 +75,11 @@ COLUNAS_CSV = [
 COLUNAS_PROVENTOS_YAHOO = [
     "ticker", "issuing_company", "ticker_negociado", "data_ex", "data_com",
     "valor_por_acao", "fonte",
+]
+COLUNAS_LACUNAS = [
+    "ticker", "date", "codneg", "open", "high", "low", "close", "volume", "fonte",
+    "ref_anterior", "ant_open", "ant_high", "ant_low", "ant_close",
+    "ref_seguinte", "seg_open", "seg_high", "seg_low", "seg_close",
 ]
 # Rotulos da B3 (corporateAction, sem acento, em maiusculas) que pagam dinheiro ao acionista.
 TIPOS_PROVENTO_DINHEIRO = frozenset(
@@ -532,6 +558,322 @@ def carregar_correcoes(pasta: Path = PASTA_CORRECOES) -> dict[str, list[PriceRow
         if linhas:
             correcoes[linhas[0].ticker] = linhas
     return correcoes
+
+
+def _lacuna_csv(registro: dict) -> LacunaPreco:
+    def data(texto: str) -> dt.date | None:
+        return dt.date.fromisoformat(texto) if texto else None
+
+    def ohlc(prefixo: str) -> tuple[float | None, ...]:
+        return tuple(
+            _float_ou_none(registro[f"{prefixo}_{campo}"])
+            for campo in ("open", "high", "low", "close")
+        )
+
+    return LacunaPreco(
+        ticker=registro["ticker"],
+        date=dt.date.fromisoformat(registro["date"]),
+        codneg=registro["codneg"],
+        open=_float_ou_none(registro["open"]),
+        high=_float_ou_none(registro["high"]),
+        low=_float_ou_none(registro["low"]),
+        close=float(registro["close"]),
+        volume=int(registro["volume"]) if registro["volume"] else None,
+        fonte=registro["fonte"],
+        ref_anterior=data(registro["ref_anterior"]),
+        ant=ohlc("ant"),
+        ref_seguinte=data(registro["ref_seguinte"]),
+        seg=ohlc("seg"),
+    )
+
+
+def carregar_lacunas(pasta: Path = PASTA_LACUNAS) -> dict[str, list[LacunaPreco]]:
+    """Le os CSVs de lacunas da pasta, indexados pelo ticker, em ordem de data.
+
+    Pasta ausente devolve vazio.
+    """
+    if not pasta.is_dir():
+        logger.warning("lacunas de precos: pasta %s nao existe", pasta)
+        return {}
+    lacunas: dict[str, list[LacunaPreco]] = {}
+    for caminho in sorted(pasta.glob("*.csv")):
+        with caminho.open(newline="", encoding="utf-8") as arquivo:
+            for registro in csv.DictReader(arquivo):
+                lacunas.setdefault(registro["ticker"], []).append(_lacuna_csv(registro))
+    for lista in lacunas.values():
+        lista.sort(key=lambda lacuna: lacuna.date)
+    return lacunas
+
+
+def _gravar_lacunas(caminho: Path, lacunas: list[LacunaPreco]) -> None:
+    """Grava as lacunas no CSV de COLUNAS_LACUNAS. Campo None vira vazio."""
+    caminho.parent.mkdir(parents=True, exist_ok=True)
+    with caminho.open("w", newline="", encoding="utf-8") as arquivo:
+        escritor = csv.writer(arquivo)
+        escritor.writerow(COLUNAS_LACUNAS)
+        for lacuna in lacunas:
+            escritor.writerow([
+                lacuna.ticker, lacuna.date.isoformat(), lacuna.codneg, lacuna.open,
+                lacuna.high, lacuna.low, lacuna.close, lacuna.volume, lacuna.fonte,
+                lacuna.ref_anterior.isoformat() if lacuna.ref_anterior else None,
+                *lacuna.ant,
+                lacuna.ref_seguinte.isoformat() if lacuna.ref_seguinte else None,
+                *lacuna.seg,
+            ])
+
+
+def _calendario_ibov(anos: Iterable[int]) -> dict[dt.date, float]:
+    """Fechamento do IBOV por pregao, da B3 (GetPortfolioDay), de price_start a fim_coleta.
+
+    Nada e gravado aqui. Se a B3 nao devolver JSON de algum ano, levanta RuntimeError.
+    """
+    settings = get_settings()
+    calendario: dict[dt.date, float] = {}
+    with B3IndicesCollector(anos=[]) as coletor:
+        for ano in anos:
+            inicio = max(dt.date(ano, 1, 1), settings.price_start)
+            fim = min(dt.date(ano, 12, 31), settings.fim_coleta)
+            if inicio > fim:
+                continue
+            corpo = coletor.get_json(
+                METODO_DIA,
+                {"index": "IBOV", "language": "pt-br", "year": str(ano)},
+                base=INDEX_BASE,
+            )
+            if not isinstance(corpo, dict):
+                raise RuntimeError(f"B3 nao devolveu o IBOV de {ano}")
+            linhas = parse_portfolio_day(
+                corpo, ticker=BENCHMARK_TICKER, ano=ano, inicio=inicio, fim=fim
+            )
+            for linha in linhas:
+                calendario[linha["date"]] = linha["close"]
+    return calendario
+
+
+def _precos_do_banco(tickers: Iterable[str]) -> dict[str, dict[dt.date, tuple]]:
+    """Precos ja gravados em raw_prices por ticker: (open, high, low, close, source).
+
+    So leitura. Linhas com close nulo ficam de fora.
+    """
+    lista = list(tickers)
+    precos: dict[str, dict[dt.date, tuple]] = {ticker: {} for ticker in lista}
+    consulta = select(
+        Price.ticker, Price.date, Price.open, Price.high, Price.low, Price.close, Price.source
+    ).where(Price.ticker.in_(lista), Price.close.is_not(None))
+    with session_scope() as session:
+        for ticker, data, abertura, maxima, minima, fechamento, fonte in session.execute(consulta):
+            precos[ticker][data] = (abertura, maxima, minima, fechamento, fonte)
+    return precos
+
+
+def candidatos_codigo(ticker: str) -> list[str]:
+    """Codigos que podem ter negociado `ticker` no COTAHIST, sem repetir.
+
+    Ordem: o proprio ticker, os antigos de MUDANCAS_TICKER que viraram este e os de
+    CODIGOS_ANTERIORES_COTAHIST.
+    """
+    antigos = [antigo for antigo, novo, _ in MUDANCAS_TICKER if novo == ticker]
+    anteriores = CODIGOS_ANTERIORES_COTAHIST.get(ticker, ())
+    return list(dict.fromkeys([ticker, *antigos, *anteriores]))
+
+
+def encontrar_lacunas(
+    calendario: dict[dt.date, float],
+    precos_ticker: dict[dt.date, tuple],
+    janelas_excluidas: Iterable[tuple[dt.date, dt.date]],
+) -> list[dt.date]:
+    """Pregoes do calendario sem linha do Yahoo, entre a 1a e a ultima data do ticker.
+
+    Ficam de fora as janelas de correcao (que ja trazem a serie da B3). Um dia gravado antes
+    como b3_cotahist continua sendo lacuna: gerar de novo nao muda o resultado.
+    """
+    if not precos_ticker:
+        return []
+    primeira, ultima = min(precos_ticker), max(precos_ticker)
+    janelas = list(janelas_excluidas)
+    return [
+        data
+        for data in sorted(calendario)
+        if primeira <= data <= ultima
+        and not (data in precos_ticker and precos_ticker[data][4] == "yahoo")
+        and not any(inicio <= data <= fim for inicio, fim in janelas)
+    ]
+
+
+def _vizinhos(data: dt.date, validos: list[dt.date]) -> tuple[dt.date | None, dt.date | None]:
+    """Data de `validos` (ordenada) logo antes e logo depois de `data`."""
+    i = bisect_left(validos, data)
+    j = bisect_right(validos, data)
+    antes = validos[i - 1] if i > 0 else None
+    depois = validos[j] if j < len(validos) else None
+    return antes, depois
+
+
+def _ohlc_por_acao(registro: dict | None) -> tuple[float, float, float, float] | None:
+    """O/H/L/C por acao (preco do lote / FATCOT). Registro ausente ou preco zero vira None."""
+    if registro is None:
+        return None
+    precos = (registro["preabe"], registro["premax"], registro["premin"], registro["preult"])
+    if any(preco <= 0 for preco in precos):
+        return None
+    fatcot = Decimal(registro["fatcot"])
+    abertura, maxima, minima, fechamento = (
+        _por_acao(preco, fatcot, Decimal(1)) for preco in precos
+    )
+    return abertura, maxima, minima, fechamento
+
+
+@dataclass(frozen=True)
+class _Pendente:
+    """Pregao de um papel sem Yahoo, com os dois vizinhos do Yahoo (O/H/L/C de cada um)."""
+
+    ticker: str
+    data: dt.date
+    ref_anterior: dt.date
+    ref_seguinte: dt.date
+    yahoo_ant: tuple[float | None, ...]
+    yahoo_seg: tuple[float | None, ...]
+
+
+def _lacuna_do_papel(
+    pendente: _Pendente, mapa: dict[tuple[str, dt.date], dict]
+) -> tuple[LacunaPreco | None, float | None]:
+    """Lacuna pelo codigo com a menor diferenca de razao nos vizinhos.
+
+    Devolve (lacuna, diferenca). Lacuna None quando nenhum codigo tem os 3 pregoes ou quando
+    a melhor diferenca passa de TOLERANCIA_RAZAO_LACUNA (diferenca None: sem candidato).
+    """
+    melhor: tuple[float, LacunaPreco] | None = None
+    for codigo in candidatos_codigo(pendente.ticker):
+        registro_dia = mapa.get((codigo, pendente.data))
+        dia = _ohlc_por_acao(registro_dia)
+        ant = _ohlc_por_acao(mapa.get((codigo, pendente.ref_anterior)))
+        seg = _ohlc_por_acao(mapa.get((codigo, pendente.ref_seguinte)))
+        if dia is None or ant is None or seg is None:
+            continue
+        r_ant = razao_mediana(pendente.yahoo_ant, ant)
+        r_seg = razao_mediana(pendente.yahoo_seg, seg)
+        if not r_ant or not r_seg:
+            continue
+        diferenca = abs(r_ant / r_seg - 1)
+        if melhor is not None and diferenca >= melhor[0]:
+            continue
+        lacuna = LacunaPreco(
+            ticker=pendente.ticker,
+            date=pendente.data,
+            codneg=codigo,
+            open=dia[0],
+            high=dia[1],
+            low=dia[2],
+            close=dia[3],
+            volume=int(registro_dia["quatot"]),
+            fonte=FONTE,
+            ref_anterior=pendente.ref_anterior,
+            ant=ant,
+            ref_seguinte=pendente.ref_seguinte,
+            seg=seg,
+        )
+        melhor = (diferenca, lacuna)
+    if melhor is None:
+        return None, None
+    diferenca, lacuna = melhor
+    if diferenca > TOLERANCIA_RAZAO_LACUNA:
+        return None, diferenca
+    return lacuna, diferenca
+
+
+def gerar_lacunas(pasta: Path = PASTA_LACUNAS) -> dict[str, object]:
+    """Grava `pasta/lacunas.csv` com os pregoes que o Yahoo nao tem (ver completar_lacunas).
+
+    Pregao do calendario do IBOV (B3) sem linha do Yahoo e fora das correcoes. ^BVSP usa o
+    proprio IBOV da B3. Papel sai do COTAHIST, pelo codigo com a razao Yahoo/B3 mais estavel
+    nos vizinhos. Nao grava no banco: le raw_prices so para medir a escala.
+    """
+    settings = get_settings()
+    macro = set(MACRO_YAHOO.values())
+    tickers = [ticker for ticker in tickers_padrao() if ticker not in macro]
+    calendario = _calendario_ibov(range(settings.price_start.year, settings.fim_coleta.year + 1))
+    precos = _precos_do_banco(tickers)
+    janelas: dict[str, list[tuple[dt.date, dt.date]]] = {
+        ticker: [(min(r.date for r in rows), max(r.date for r in rows))]
+        for ticker, rows in carregar_correcoes().items()
+    }
+
+    lacunas: list[LacunaPreco] = []
+    pendentes: list[_Pendente] = []
+    encontradas = 0
+    rejeitadas = 0
+    for ticker in tickers:
+        precos_ticker = precos.get(ticker, {})
+        janelas_ticker = janelas.get(ticker, [])
+        dias = encontrar_lacunas(calendario, precos_ticker, janelas_ticker)
+        encontradas += len(dias)
+        if ticker == BENCHMARK_TICKER:
+            lacunas.extend(
+                LacunaPreco(
+                    ticker=ticker, date=dia, codneg="IBOV", open=None, high=None, low=None,
+                    close=calendario[dia], volume=None, fonte="b3",
+                )
+                for dia in dias
+            )
+            continue
+        marcadas = set(dias)
+        validos = sorted(
+            data
+            for data, preco in precos_ticker.items()
+            if preco[4] == "yahoo"
+            and data not in marcadas
+            and not any(inicio <= data <= fim for inicio, fim in janelas_ticker)
+        )
+        for dia in dias:
+            antes, depois = _vizinhos(dia, validos)
+            if antes is None or depois is None:
+                rejeitadas += 1
+                logger.warning("lacuna %s %s: sem vizinho do Yahoo dos dois lados", ticker, dia)
+                continue
+            pendentes.append(
+                _Pendente(
+                    ticker=ticker,
+                    data=dia,
+                    ref_anterior=antes,
+                    ref_seguinte=depois,
+                    yahoo_ant=precos_ticker[antes][:4],
+                    yahoo_seg=precos_ticker[depois][:4],
+                )
+            )
+
+    anos = sorted(
+        {ano for p in pendentes for ano in (p.data.year, p.ref_anterior.year, p.ref_seguinte.year)}
+    )
+    mapa: dict[tuple[str, dt.date], dict] = {}
+    if pendentes:
+        codigos = {codigo for p in pendentes for codigo in candidatos_codigo(p.ticker)}
+        with CotahistCollector() as coletor:
+            for ano in anos:
+                for registro in ler_cotahist(coletor.baixar_ano(ano), codigos):
+                    mapa[(registro["codneg"], registro["data"])] = registro
+
+    for pendente in pendentes:
+        lacuna, diferenca = _lacuna_do_papel(pendente, mapa)
+        if lacuna is None:
+            rejeitadas += 1
+            logger.warning(
+                "lacuna %s %s rejeitada: razao instavel ou sem candidato (diferenca %s)",
+                pendente.ticker, pendente.data, diferenca,
+            )
+            continue
+        lacunas.append(lacuna)
+
+    lacunas.sort(key=lambda lacuna: (lacuna.ticker, lacuna.date))
+    caminho = pasta / "lacunas.csv"
+    _gravar_lacunas(caminho, lacunas)
+    return {
+        "lacunas": encontradas,
+        "gravadas": len(lacunas),
+        "rejeitadas": rejeitadas,
+        "anos baixados": len(anos),
+        "arquivo": str(caminho),
+    }
 
 
 def carregar_proventos_yahoo(pasta: Path = PASTA_PROVENTOS_YAHOO) -> list[dict]:

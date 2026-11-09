@@ -55,15 +55,20 @@ class RawCvmBalanco(Base):
     """Linha de demonstrativo (DFP/ITR) da CVM, com o valor exatamente como veio (sem escala).
 
     BPP nao tem inicio de exercicio: o coletor grava dt_ini_exerc = dt_fim_exerc.
+    consolidacao: con = consolidada, ind = individual (controladora).
     """
 
     __tablename__ = f"{PREFIXO_TABELA}raw_cvm_balancos"
-    __table_args__ = (Index("ix_raw_cvm_balancos_cd_cvm", "cd_cvm"),)
+    __table_args__ = (
+        Index("ix_raw_cvm_balancos_cd_cvm", "cd_cvm"),
+        CheckConstraint("consolidacao IN ('con', 'ind')", name="ck_raw_cvm_balancos_consolidacao"),
+    )
 
     cnpj: Mapped[str] = mapped_column(String(14), primary_key=True)
     tipo_documento: Mapped[str] = mapped_column(String(3), primary_key=True)
     dt_refer: Mapped[dt.date] = mapped_column(Date, primary_key=True)
     versao: Mapped[int] = mapped_column(Integer, primary_key=True)
+    consolidacao: Mapped[str] = mapped_column(String(3), primary_key=True, server_default="con")
     demonstracao: Mapped[str] = mapped_column(String(3), primary_key=True)
     cd_conta: Mapped[str] = mapped_column(String(16), primary_key=True)
     dt_ini_exerc: Mapped[dt.date] = mapped_column(Date, primary_key=True)

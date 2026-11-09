@@ -7,6 +7,7 @@ Fixtures usadas: b3_supplement_PETR.json (desdobramento 2008, bonificacao 1994, 
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import re
@@ -15,6 +16,7 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlalchemy.dialects import mysql
 
 from tcc_scraper.config import MUDANCAS_TICKER, NOMES_EMPRESA, TICKER_CODE_CVM
 from tcc_scraper.db.models_entrega import COLUNAS
@@ -282,6 +284,79 @@ def test_ids_a_apagar_sem_juiza_nao_apaga_julgado_nem_sem_julgamento_fora_do_ipe
 def test_ids_a_apagar_com_juiza_exigida_apaga_julgado_sem_aprovada_e_nao_o_sem_julgamento() -> None:
     poda = B._Poda(janela={2, 3}, julgados={2}, exigir_juiza=True, ipe=set())
     assert B._ids_a_apagar(poda, set()) == {B.id_noticia(2)}
+
+
+# -- republicacao e titulo vazio: o que a montagem nunca gera sai da poda --------------------
+
+def _sessao_falsa(monkeypatch) -> list[str]:
+    """Troca o session_scope por uma sessao que so guarda o SQL executado (sem banco)."""
+    executadas: list[str] = []
+
+    class _Resultado:
+        def all(self):
+            return []
+
+    class _Sessao:
+        def execute(self, stmt):
+            executadas.append(str(stmt.compile(compile_kwargs={"literal_binds": True})))
+            return _Resultado()
+
+    @contextlib.contextmanager
+    def _falso():
+        yield _Sessao()
+
+    monkeypatch.setattr(B, "session_scope", _falso)
+    return executadas
+
+
+def test_republicado_com_linha_gravada_sai_e_o_representante_fica(monkeypatch) -> None:
+    """Artigo 2 republica o 1: so o 1 gera linha. A linha antiga do 2 sai na remontagem, mesmo
+    fora da janela de datas (o 2 ja nao esta em `fontes.artigos`)."""
+    executadas = _sessao_falsa(monkeypatch)
+    poda = B._Poda(janela={1}, julgados={1}, exigir_juiza=True, ipe=set(),
+                   sem_linha=frozenset({2}))
+
+    B._apagar_reprovadas([{"id": B.id_noticia(1), "ticker": "PETR4"}], poda)
+
+    apagados = [sql for sql in executadas if sql.startswith("DELETE")]
+    assert any("n000002" in sql for sql in apagados)
+    assert not any("n000001" in sql for sql in apagados)
+
+
+def test_fora_da_montagem_junta_republicados_e_sem_titulo_e_respeita_somente_ids(
+    monkeypatch,
+) -> None:
+    capturadas = []
+    respostas = iter([[{"article_id": 2}], [{"id": 9}]])
+
+    def falso(stmt):
+        capturadas.append(stmt)
+        return next(respostas)
+
+    monkeypatch.setattr(B, "_consulta", falso)
+    assert B._Fontes(dt.date(2026, 1, 1)).fora_da_montagem == {2, 9}
+    # Titulo vazio ou so espacos: o filtro usa REGEXP no MySQL (ver `_Fontes.fora_da_montagem`).
+    assert "REGEXP" in str(capturadas[1].compile(dialect=mysql.dialect())).upper()
+
+    respostas = iter([[{"article_id": 2}], [{"id": 9}]])
+    assert B._Fontes(dt.date(2026, 1, 1), somente_ids={9, 5}).fora_da_montagem == {9}
+
+
+@pytest.mark.parametrize("titulo", ["", "   ", "\t \n"])
+def test_artigo_sem_titulo_nao_gera_linha(titulo) -> None:
+    artigo = {**_artigo(aid=2), "title": titulo}
+    assert B.montar_noticias([artigo], [{"article_id": 2, "ticker": "PETR4"}], [],
+                             [_jul(article_id=2)], PREGOES, True, MODELOS) == []
+
+
+def test_linha_antiga_de_artigo_sem_titulo_e_apagada(monkeypatch) -> None:
+    executadas = _sessao_falsa(monkeypatch)
+    poda = B._Poda(janela={2}, julgados={2}, exigir_juiza=True, ipe=set(),
+                   sem_linha=frozenset({2}))
+
+    B._apagar_reprovadas([], poda)
+
+    assert any(sql.startswith("DELETE") and "n000002" in sql for sql in executadas)
 
 
 # -- precos e indices ------------------------------------------------------------------------
@@ -1561,6 +1636,265 @@ def test_reapresentacao_usa_comparativo_posterior_que_passa_pelo_filtro() -> Non
     assert linha["data_entrega"] == dt.date(2025, 8, 13)
 
 
+def test_consolidada_zerada_cede_lugar_a_individual_com_valores_tim() -> None:
+    # TIM (2024/2025): a consolidada vem com tudo zerado e a individual traz os valores.
+    balancos = [
+        _bal("3.01", "Receita", 0.0, escala="UNIDADE"),
+        _bal("3.11", "Lucro/Prejuízo Consolidado do Período", 0.0, escala="UNIDADE"),
+        {**_bal("3.01", "Receita", 500.0, escala="UNIDADE"), "consolidacao": "ind"},
+        {**_bal("3.11", "Lucro/Prejuízo do Período", 50.0, escala="UNIDADE"),
+         "consolidacao": "ind"},
+    ]
+    (linha,) = B.montar_balancos(balancos)
+    assert linha["receita_liquida"] == 500.0
+    assert linha["lucro_liquido"] == 50.0
+    assert linha["situacao"] == "individual"
+
+
+def test_consolidada_boa_vence_a_individual_presente() -> None:
+    balancos = [
+        _bal("3.01", "Receita", 1000.0, escala="UNIDADE"),
+        _bal("3.11", "Lucro/Prejuízo Consolidado do Período", 100.0, escala="UNIDADE"),
+        {**_bal("3.01", "Receita", 400.0, escala="UNIDADE"), "consolidacao": "ind"},
+        {**_bal("3.11", "Lucro/Prejuízo do Período", 40.0, escala="UNIDADE"),
+         "consolidacao": "ind"},
+    ]
+    (linha,) = B.montar_balancos(balancos)
+    assert linha["receita_liquida"] == 1000.0
+    assert linha["lucro_liquido"] == 100.0
+    assert linha["situacao"] == "ok"
+
+
+def test_so_individual_sai_com_situacao_individual() -> None:
+    balancos = [
+        {**_bal("3.01", "Receita", 400.0, escala="UNIDADE"), "consolidacao": "ind"},
+        {**_bal("3.11", "Lucro/Prejuízo do Período", 40.0, escala="UNIDADE"),
+         "consolidacao": "ind"},
+    ]
+    (linha,) = B.montar_balancos(balancos)
+    assert linha["receita_liquida"] == 400.0
+    assert linha["lucro_liquido"] == 40.0
+    assert linha["situacao"] == "individual"
+
+
+def test_banco_lucro_no_3_11_com_rotulo_lucro_ou_prejuizo() -> None:
+    balancos = [
+        _bal("3.01", "Receitas da Intermediação Financeira", 900.0, escala="UNIDADE"),
+        _bal("3.11", "Lucro ou Prejuízo Líquido Consolidado do Período", 150.0,
+             escala="UNIDADE"),
+    ]
+    (linha,) = B.montar_balancos(balancos)
+    assert linha["lucro_liquido"] == 150.0
+
+
+def test_seguradora_lucro_vem_do_3_13_e_nao_das_operacoes_continuadas() -> None:
+    # Seguradora: o 3.11 e o resultado das operacoes continuadas; o lucro esta em 3.13 (MIL).
+    balancos = [
+        _bal("3.11", "Resultado Líquido das Operações Continuadas", 900.0),
+        _bal("3.13", "Lucro/Prejuízo Consolidado do Período", 870.0),
+    ]
+    (linha,) = B.montar_balancos(balancos)
+    assert linha["lucro_liquido"] == 870000.0
+
+
+def test_nao_financeira_lucro_vem_do_3_11_e_nao_das_operacoes_continuadas_3_09() -> None:
+    balancos = [
+        _bal("3.09", "Resultado Líquido das Operações Continuadas", 100.0),
+        _bal("3.11", "Lucro/Prejuízo Consolidado do Período", 80.0),
+    ]
+    (linha,) = B.montar_balancos(balancos)
+    assert linha["lucro_liquido"] == 80000.0
+
+
+def test_banco_patrimonio_liquido_vem_da_2_07_e_nao_das_provisoes_2_03() -> None:
+    balancos = [
+        _bal("3.01", "Receitas da Intermediação Financeira", 900.0, escala="UNIDADE"),
+        _bal("2.03", "Provisões", 300.0, demo="BPP", ini=dt.date(2025, 6, 30),
+             fim=dt.date(2025, 6, 30), escala="UNIDADE"),
+        _bal("2.07", "Patrimônio Líquido Consolidado", 1000.0, demo="BPP",
+             ini=dt.date(2025, 6, 30), fim=dt.date(2025, 6, 30), escala="UNIDADE"),
+    ]
+    (linha,) = B.montar_balancos(balancos)
+    assert linha["patrimonio_liquido"] == 1000.0
+
+
+def test_itr_1t_com_periodo_de_1_mes_sai_so_o_trimestre() -> None:
+    # LREN3 e RECV3 (ITR 1T21): alem do trimestre, a remessa traz 03-01..03-31 com receita 0.
+    balancos = [
+        _bal("3.01", "Receita", 1000.0, escala="UNIDADE", ini=dt.date(2025, 1, 1),
+             fim=dt.date(2025, 3, 31), refer=dt.date(2025, 3, 31)),
+        _bal("3.01", "Receita", 0.0, escala="UNIDADE", ini=dt.date(2025, 3, 1),
+             fim=dt.date(2025, 3, 31), refer=dt.date(2025, 3, 31)),
+    ]
+    (linha,) = B.montar_balancos(balancos)
+    assert linha["data_inicio_periodo"] == dt.date(2025, 1, 1)
+    assert linha["receita_liquida"] == 1000.0
+
+
+def test_allos_divida_em_outros_quando_pai_e_subcontas_zeradas() -> None:
+    # Allos: a divida fica em "Outros" (contas de 5 niveis); 2.01.04 e 2.02.01 vem zeradas.
+    (linha,) = B.montar_balancos([
+        _dfp_2024("3.01", "Receita de vendas", 1000.0, demo="DRE"),
+        _dfp_2024("2.01.04", "Empréstimos e Financiamentos", 0.0),
+        _dfp_2024("2.01.05.02.05", "Empréstimos, financiamentos e debêntures", 1123404.0),
+        _dfp_2024("2.02.01", "Empréstimos e Financiamentos", 0.0),
+        _dfp_2024("2.02.02.02.07", "Empréstimos e financiamentos, CCI/CRI's e debêntures",
+                  5521620.0),
+    ])
+    assert linha["emprestimos_curto_prazo"] == 1123404000.0
+    assert linha["emprestimos_longo_prazo"] == 5521620000.0
+
+
+def test_lwsa3_pai_so_com_arrendamento_continua_zero() -> None:
+    # LWSA3: o pai 2.02.01 (63.675) e so arrendamento (.03); sem divida, o valor fica em 0.
+    (linha,) = B.montar_balancos([
+        _dfp_2024("3.01", "Receita de vendas", 1000.0, demo="DRE"),
+        _dfp_2024("2.02.01", "Empréstimos e Financiamentos", 63675.0),
+        _dfp_2024("2.02.01.01", "Empréstimos e Financiamentos", 0.0),
+        _dfp_2024("2.02.01.02", "Debêntures", 0.0),
+        _dfp_2024("2.02.01.03", "Financiamento por Arrendamento", 63675.0),
+    ])
+    assert linha["emprestimos_longo_prazo"] == 0.0
+
+
+JBS_NV = "49115815000105"
+JBS_SA = "02916265000160"
+NATURA_COSMETICOS = "71673990000177"
+
+
+def _receita_doc(cnpj, cd_cvm, receb, refer, ini, fim, valor, *, consolidacao="con"):
+    """Linha 3.01 de um documento ITR, em MIL, com o cnpj e a consolidacao dados."""
+    return {**_bal("3.01", "Receita", valor, ini=ini, fim=fim, refer=refer, cd_cvm=cd_cvm,
+                   receb=receb), "cnpj": cnpj, "consolidacao": consolidacao}
+
+
+def _da_doc(cnpj, cd_cvm, receb, refer, ini, fim, valor, *, consolidacao="con",
+            ordem="ÚLTIMO"):
+    """Linha 6.01.01.02 (depreciacao e amortizacao) da DFC de um documento ITR, em MIL."""
+    return {**_bal("6.01.01.02", "Depreciação e amortização", valor, demo="DFC", ini=ini,
+                   fim=fim, refer=refer, cd_cvm=cd_cvm, receb=receb, ordem=ordem),
+            "cnpj": cnpj, "consolidacao": consolidacao}
+
+
+def test_jbs_nv_2t_usa_o_acumulado_do_1t_da_jbs_sa_entregue_antes() -> None:
+    # JBS N.V. (2T25) continua as contas da JBS S.A.: o 1T25 da S.A., entregue antes, completa
+    # a D&A do trimestre (6M da N.V. menos 1T da S.A.).
+    balancos = [
+        _receita_doc(JBS_SA, 20575, dt.date(2025, 5, 13), dt.date(2025, 3, 31),
+                     dt.date(2025, 1, 1), dt.date(2025, 3, 31), 1000.0),
+        _da_doc(JBS_SA, 20575, dt.date(2025, 5, 13), dt.date(2025, 3, 31),
+                dt.date(2025, 1, 1), dt.date(2025, 3, 31), 3130703.0),
+        _receita_doc(JBS_NV, 80233, dt.date(2025, 8, 13), dt.date(2025, 6, 30),
+                     dt.date(2025, 4, 1), dt.date(2025, 6, 30), 1000.0),
+        _da_doc(JBS_NV, 80233, dt.date(2025, 8, 13), dt.date(2025, 6, 30),
+                dt.date(2025, 1, 1), dt.date(2025, 6, 30), 6333116.0),
+    ]
+    (linha_nv,) = [r for r in B.montar_balancos(balancos) if r["cnpj"] == JBS_NV]
+    assert linha_nv["depreciacao_amortizacao"] == 3202413000.0
+
+
+def test_jbs_antecessor_entregue_depois_da_linha_nao_e_usado() -> None:
+    # A S.A. so foi entregue em 2025-09-01, depois da N.V. (2025-08-13): usar o 1T seria
+    # vazamento temporal, entao o trimestre fica sem D&A.
+    balancos = [
+        _receita_doc(JBS_SA, 20575, dt.date(2025, 9, 1), dt.date(2025, 3, 31),
+                     dt.date(2025, 1, 1), dt.date(2025, 3, 31), 1000.0),
+        _da_doc(JBS_SA, 20575, dt.date(2025, 9, 1), dt.date(2025, 3, 31),
+                dt.date(2025, 1, 1), dt.date(2025, 3, 31), 3130703.0),
+        _receita_doc(JBS_NV, 80233, dt.date(2025, 8, 13), dt.date(2025, 6, 30),
+                     dt.date(2025, 4, 1), dt.date(2025, 6, 30), 1000.0),
+        _da_doc(JBS_NV, 80233, dt.date(2025, 8, 13), dt.date(2025, 6, 30),
+                dt.date(2025, 1, 1), dt.date(2025, 6, 30), 6333116.0),
+    ]
+    (linha_nv,) = [r for r in B.montar_balancos(balancos) if r["cnpj"] == JBS_NV]
+    assert linha_nv["depreciacao_amortizacao"] is None
+
+
+def test_natura_cosmeticos_2t25_usa_o_1t25_entregue_quando_era_a_natu3() -> None:
+    # Natura Cosmeticos (19550): o 1T25 entregue em 2025-05-12 cai fora do periodo do emissor
+    # (sai como linha) mas o acumulado dele serve ao 2T25 entregue em 2025-08-11.
+    balancos = [
+        _receita_doc(NATURA_COSMETICOS, 19550, dt.date(2025, 5, 12), dt.date(2025, 3, 31),
+                     dt.date(2025, 1, 1), dt.date(2025, 3, 31), 900.0),
+        _da_doc(NATURA_COSMETICOS, 19550, dt.date(2025, 5, 12), dt.date(2025, 3, 31),
+                dt.date(2025, 1, 1), dt.date(2025, 3, 31), 170363.0),
+        _receita_doc(NATURA_COSMETICOS, 19550, dt.date(2025, 8, 11), dt.date(2025, 6, 30),
+                     dt.date(2025, 4, 1), dt.date(2025, 6, 30), 950.0),
+        _da_doc(NATURA_COSMETICOS, 19550, dt.date(2025, 8, 11), dt.date(2025, 6, 30),
+                dt.date(2025, 1, 1), dt.date(2025, 6, 30), 334037.0),
+    ]
+    (linha,) = B.montar_balancos(balancos)
+    assert linha["data_inicio_periodo"] == dt.date(2025, 4, 1)
+    assert linha["depreciacao_amortizacao"] == 163674000.0
+
+
+def test_aure3_3t22_da_do_trimestre_e_9m_menos_6m() -> None:
+    # Regressao: 9M 497.651 menos 6M 336.298 (em MIL) = 161.353 no 3T22.
+    balancos = [
+        _receita_doc(PETROBRAS, 9512, dt.date(2022, 8, 10), dt.date(2022, 6, 30),
+                     dt.date(2022, 4, 1), dt.date(2022, 6, 30), 900.0),
+        _da_doc(PETROBRAS, 9512, dt.date(2022, 8, 10), dt.date(2022, 6, 30),
+                dt.date(2022, 1, 1), dt.date(2022, 6, 30), 336298.0),
+        _receita_doc(PETROBRAS, 9512, dt.date(2022, 11, 10), dt.date(2022, 9, 30),
+                     dt.date(2022, 7, 1), dt.date(2022, 9, 30), 950.0),
+        _da_doc(PETROBRAS, 9512, dt.date(2022, 11, 10), dt.date(2022, 9, 30),
+                dt.date(2022, 1, 1), dt.date(2022, 9, 30), 497651.0),
+    ]
+    por = _por_periodo(B.montar_balancos(balancos))
+    assert por[(dt.date(2022, 7, 1), dt.date(2022, 9, 30))]["depreciacao_amortizacao"] == (
+        161353000.0
+    )
+
+
+def test_trimestre_sem_dfc_nao_usa_acumulado_so_do_penultimo_de_documento_posterior() -> None:
+    # O 1T25 nao tem DFC; o acumulado dele so aparece como PENULTIMO do 2T25. Comparativo nao
+    # e fonte de D&A: o trimestre fica None.
+    balancos = [
+        _receita_doc(PETROBRAS, 9512, dt.date(2025, 5, 10), dt.date(2025, 3, 31),
+                     dt.date(2025, 1, 1), dt.date(2025, 3, 31), 500.0),
+        _receita_doc(PETROBRAS, 9512, dt.date(2025, 8, 8), dt.date(2025, 6, 30),
+                     dt.date(2025, 4, 1), dt.date(2025, 6, 30), 600.0),
+        _da_doc(PETROBRAS, 9512, dt.date(2025, 8, 8), dt.date(2025, 6, 30),
+                dt.date(2025, 1, 1), dt.date(2025, 3, 31), 100.0, ordem="PENÚLTIMO"),
+    ]
+    por = _por_periodo(B.montar_balancos(balancos))
+    assert por[(dt.date(2025, 4, 1), dt.date(2025, 6, 30))]["depreciacao_amortizacao"] is None
+
+
+def test_trimestre_nao_mistura_consolidada_com_individual() -> None:
+    # O acumulado do 1T25 existe so na individual; o 2T25 e consolidado. Nao se cruzam.
+    balancos = [
+        _receita_doc(PETROBRAS, 9512, dt.date(2025, 5, 10), dt.date(2025, 3, 31),
+                     dt.date(2025, 1, 1), dt.date(2025, 3, 31), 500.0, consolidacao="ind"),
+        _da_doc(PETROBRAS, 9512, dt.date(2025, 5, 10), dt.date(2025, 3, 31),
+                dt.date(2025, 1, 1), dt.date(2025, 3, 31), 100.0, consolidacao="ind"),
+        _receita_doc(PETROBRAS, 9512, dt.date(2025, 8, 8), dt.date(2025, 6, 30),
+                     dt.date(2025, 4, 1), dt.date(2025, 6, 30), 600.0),
+        _da_doc(PETROBRAS, 9512, dt.date(2025, 8, 8), dt.date(2025, 6, 30),
+                dt.date(2025, 1, 1), dt.date(2025, 6, 30), 300.0),
+    ]
+    por = _por_periodo(B.montar_balancos(balancos))
+    assert por[(dt.date(2025, 1, 1), dt.date(2025, 3, 31))]["depreciacao_amortizacao"] == (
+        100000.0
+    )
+    assert por[(dt.date(2025, 4, 1), dt.date(2025, 6, 30))]["depreciacao_amortizacao"] is None
+
+
+def test_equivalencia_patrimonial_com_amortizacao_no_nome_nao_entra_na_da() -> None:
+    assert B._e_depreciacao(
+        "Resultado de equivalência patrimonial, líquido da amortização do direito de uso"
+    ) is False
+    (linha,) = B.montar_balancos([
+        _bal("3.01", "Receita", 1000.0, ini=dt.date(2025, 1, 1)),
+        _bal("6.01.01.02", "Depreciação e amortização", 100.0, demo="DFC",
+             ini=dt.date(2025, 1, 1)),
+        _bal("6.01.01.05",
+             "Resultado de equivalência patrimonial, líquido da amortização do direito de uso",
+             50.0, demo="DFC", ini=dt.date(2025, 1, 1)),
+    ])
+    assert linha["depreciacao_amortizacao"] == 100000.0
+
+
 def test_acoes_de_emissor_antes_de_valer_saem_e_base_atual_usa_o_fator() -> None:
     # JBS (20575) vale ate 2025-06-08 com fator 0,5 (1 BDR JBSS32 = 2 acoes JBSS3).
     jbs = {"cnpj": JBS_ANTIGA, "tipo_documento": "ITR", "dt_refer": dt.date(2024, 3, 31),
@@ -1597,3 +1931,126 @@ def test_volumes_de_ticker_que_trocou_de_emissor_vao_para_o_cnpj_da_epoca() -> N
         NATURA_HOLDING: {dt.date(2021, 6, 18): 100.0},
         NATURA: {dt.date(2025, 8, 11): 50.0},
     }
+
+
+# -- Copel PNA/PNB (ISIN com classe PA/PB) e base PN de classe extinta ----------------------
+
+COPEL_CNPJ = "76483817000120"
+COPEL_CD = 14311
+COPEL_ON = "BRCPLEACNOR8"
+COPEL_PNA = "BRCPLEACNPA1"
+COPEL_PNB = "BRCPLEACNPB9"
+ELET_CNPJ = "00001180000126"
+ELET_CD = 2437
+
+
+def _cadastro_copel() -> list[dict]:
+    return [{
+        "cd_cvm": COPEL_CD, "cnpj": COPEL_CNPJ, "trading_name": "COPEL", "issuing_company": "CPLE",
+        "payload": {"otherCodes": [{"code": "CPLE3", "isin": COPEL_ON}]},
+    }]
+
+
+def _desdobramento_copel(isin: str) -> dict:
+    """Desdobramento 10:1 de 2021-03-11 (fator 900 = 9 acoes novas por acao)."""
+    return {"issuing_company": "CPLE", "tipo": "stock", "payload": {
+        "assetIssued": isin, "factor": "900,00000000000", "approvedOn": "11/02/2021",
+        "isinCode": isin, "label": "DESDOBRAMENTO", "lastDatePrior": "11/03/2021", "remarks": "",
+    }}
+
+
+def _linha_cd(cnpj: str, cd: int, dt_refer: dt.date, on: int, pn: int,
+              dt_receb: dt.date | None = None) -> dict:
+    return {"cnpj": cnpj, "cd_cvm": cd, "tipo_documento": "ITR", "dt_refer": dt_refer,
+            "versao": 1, "qt_on": on, "qt_pn": pn, "dt_receb": dt_receb}
+
+
+def test_copel_desdobramento_gera_evento_para_on_pna_e_pnb() -> None:
+    suplemento = [_desdobramento_copel(isin) for isin in (COPEL_ON, COPEL_PNA, COPEL_PNB)]
+    linhas = B.montar_eventos_acoes(suplemento, _cadastro_copel())
+    assert sorted(r["ticker"] for r in linhas) == ["CPLE3", "CPLE5", "CPLE6"]
+    assert all(r["fator"] == pytest.approx(10.0) for r in linhas)
+    assert all(r["cnpj"] == COPEL_CNPJ for r in linhas)
+
+
+def test_copel_base_pn_1t20_reflete_o_desdobramento_de_2021() -> None:
+    eventos = B.montar_eventos_acoes(
+        [_desdobramento_copel(isin) for isin in (COPEL_ON, COPEL_PNA, COPEL_PNB)],
+        _cadastro_copel(),
+    )
+    acoes = [
+        _linha_cd(COPEL_CNPJ, COPEL_CD, dt.date(2020, 3, 31), 1_000, 500, dt.date(2020, 5, 15)),
+        _linha_cd(COPEL_CNPJ, COPEL_CD, dt.date(2021, 3, 31), 10_000, 5_000, dt.date(2021, 5, 14)),
+    ]
+    # mudancas=[]: sem a correcao 2 (CPLE6 -> CPLE3 em 2025 zeraria a base PN).
+    por_data = {
+        r["data_referencia"]: r
+        for r in B.montar_acoes_emitidas(acoes, eventos=eventos, anuladas={}, mudancas=[])
+    }
+    antes = por_data[dt.date(2020, 3, 31)]
+    assert antes["qtd_pn"] == 500
+    assert antes["qtd_pn_base_atual"] == 5_000
+    assert antes["qtd_on_base_atual"] == 10_000
+    assert por_data[dt.date(2021, 3, 31)]["qtd_pn_base_atual"] == 5_000
+
+
+def test_troca_pn_para_on_zera_base_pn_so_antes_da_data_da_troca() -> None:
+    acoes = [
+        _linha_cd(AZUL_CNPJ, 24112, dt.date(2025, 12, 31), 100, 50, dt.date(2026, 3, 31)),
+        _linha_cd(AZUL_CNPJ, 24112, dt.date(2026, 3, 31), 100, 50, dt.date(2026, 5, 7)),
+        _linha_cd(AZUL_CNPJ, 24112, dt.date(2026, 6, 30), 200, 10, dt.date(2026, 8, 19)),
+    ]
+    linhas = B.montar_acoes_emitidas(
+        acoes, eventos=[], anuladas={}, mudancas=[("AZUL4", "AZUL3", dt.date(2026, 4, 20))]
+    )
+    por_data = {r["data_referencia"]: r for r in linhas}
+    for data in (dt.date(2025, 12, 31), dt.date(2026, 3, 31)):
+        assert por_data[data]["qtd_pn_base_atual"] is None
+        assert por_data[data]["qtd_on_base_atual"] == 100
+        assert por_data[data]["qtd_pn"] == 50
+    depois = por_data[dt.date(2026, 6, 30)]
+    assert depois["qtd_pn_base_atual"] == 10
+    assert depois["qtd_on_base_atual"] == 200
+
+
+def test_empresa_sem_troca_pn_para_on_mantem_base_pn() -> None:
+    acoes = [
+        _linha_cd(PETROBRAS, 9512, dt.date(2025, 12, 31), 100, 50),
+        _linha_cd(AZUL_CNPJ, 24112, dt.date(2025, 12, 31), 100, 50),
+    ]
+    linhas = B.montar_acoes_emitidas(
+        acoes, eventos=[], anuladas={}, mudancas=[("AZUL4", "AZUL3", dt.date(2026, 4, 20))]
+    )
+    por_cnpj = {r["cnpj"]: r for r in linhas}
+    assert por_cnpj[PETROBRAS]["qtd_pn_base_atual"] == 50
+    assert por_cnpj[AZUL_CNPJ]["qtd_pn_base_atual"] is None
+
+
+def test_troca_on_para_on_nao_zera_base_pn() -> None:
+    # ELET3 -> AXIA3 e renomeacao de ON: a classe PN nao foi extinta.
+    acoes = [
+        _linha_cd(ELET_CNPJ, ELET_CD, dt.date(2025, 9, 30), 100, 50),
+        _linha_cd(ELET_CNPJ, ELET_CD, dt.date(2025, 12, 31), 100, 50),
+    ]
+    linhas = B.montar_acoes_emitidas(
+        acoes, eventos=[], anuladas={}, mudancas=[("ELET3", "AXIA3", dt.date(2025, 11, 10))]
+    )
+    assert [r["qtd_pn_base_atual"] for r in linhas] == [50, 50]
+
+
+@pytest.mark.parametrize(("cnpj", "cd", "antes", "depois"), [
+    (AZUL_CNPJ, 24112, dt.date(2026, 3, 31), dt.date(2026, 6, 30)),
+    (COPEL_CNPJ, COPEL_CD, dt.date(2025, 9, 30), dt.date(2026, 3, 31)),
+    (ELET_CNPJ, ELET_CD, dt.date(2026, 3, 31), dt.date(2026, 6, 30)),
+])
+def test_trocas_reais_pn_para_on_usam_mudancas_ticker(
+    cnpj: str, cd: int, antes: dt.date, depois: dt.date
+) -> None:
+    # Padrao: MUDANCAS_TICKER (AZUL4, CPLE6 e ELET6 -> ON).
+    acoes = [_linha_cd(cnpj, cd, antes, 100, 50), _linha_cd(cnpj, cd, depois, 200, 10)]
+    por_data = {
+        r["data_referencia"]: r
+        for r in B.montar_acoes_emitidas(acoes, eventos=[], anuladas={})
+    }
+    assert por_data[antes]["qtd_pn_base_atual"] is None
+    assert por_data[depois]["qtd_pn_base_atual"] == 10
