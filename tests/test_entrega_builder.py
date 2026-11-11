@@ -427,16 +427,17 @@ def test_abertura_repetida_so_e_anulada_no_ibov() -> None:
     assert aberturas[("PETR4", d2)] == 35.0
 
 
-def test_indices_roteia_cdi_ipca_e_fechamento_das_series_b3() -> None:
+def test_indices_roteia_cdi_ipca_selic_e_fechamento_das_series_b3() -> None:
     macro = [
         {"series": "cdi", "date": dt.date(2026, 6, 18), "value": 0.0551},
         {"series": "ipca", "date": dt.date(2026, 6, 1), "value": 0.26},
         {"series": "selic", "date": dt.date(2026, 6, 18), "value": 14.5},
+        {"series": "ptax", "date": dt.date(2026, 6, 18), "value": 5.4},
     ]
     linhas = B.montar_indices([_preco("IDIV", close=5000.0), _preco("PETR4")], macro)
     assert list(linhas[0]) == COLUNAS["indices"]
     assert {(r["indice"], r["valor"]) for r in linhas} == {
-        ("CDI", 0.0551), ("IPCA", 0.26), ("IDIV", 5000.0),
+        ("CDI", 0.0551), ("IPCA", 0.26), ("SELIC", 14.5), ("IDIV", 5000.0),
     }
     assert all(r["indice"] != "PETR4" for r in linhas)
 

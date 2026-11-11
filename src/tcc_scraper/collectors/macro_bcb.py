@@ -100,9 +100,12 @@ class BcbCollector(Collector):
         settings = get_settings()
         if unit.payload["kind"] == "sgs":
             url = SGS_ENDPOINT.format(code=unit.payload["code"])
+            # Desde 1o de janeiro do ano de DATA_START: a Selic vai para a v1-indices
+            # (SELIC), e a entrega pede o ano inteiro (a 432 tem um valor por dia corrido).
+            inicio = dt.date(settings.data_start.year, 1, 1)
             params = {
                 "formato": "json",
-                "dataInicial": f"{settings.data_start:%d/%m/%Y}",
+                "dataInicial": f"{inicio:%d/%m/%Y}",
                 "dataFinal": f"{settings.fim_coleta:%d/%m/%Y}",
             }
             rows = parse_sgs(self.fetch(url, params=params).json(), series=unit.payload["series"])

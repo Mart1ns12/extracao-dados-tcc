@@ -387,11 +387,13 @@ def montar_precos(raw_prices: list[dict]) -> list[dict]:
     return linhas
 
 
-_NOMES_INDICE_BCB = {"cdi": "CDI", "ipca": "IPCA"}
+# selic = meta Selic do Copom (SGS 432, % ao ano), coletada pelo `collect-macro`; a serie
+# ja vem com um valor por dia corrido, entao nao ha preenchimento aqui.
+_NOMES_INDICE_BCB = {"cdi": "CDI", "ipca": "IPCA", "selic": "SELIC"}
 
 
 def montar_indices(raw_prices: list[dict], raw_macro: list[dict]) -> list[dict]:
-    """CDI e IPCA (BCB, valor como esta) e IDIV/SMLL/IFIX (fechamento do Yahoo)."""
+    """CDI, IPCA e SELIC (BCB, valor como esta) e IDIV/SMLL/IFIX (fechamento do Yahoo)."""
     linhas = [
         {"data": m["date"], "indice": _NOMES_INDICE_BCB[m["series"]], "valor": m["value"]}
         for m in raw_macro

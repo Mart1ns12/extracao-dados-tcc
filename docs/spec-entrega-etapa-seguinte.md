@@ -161,12 +161,12 @@ Arquivo: `indices.csv`. CDI diário e IPCA mensal (Banco Central); IDIV, SMLL e 
 | | valor_por_acao | | Valor por ação, já ajustado por desdobramentos e bonificações | 0.4512 |
 | | data_pagamento | | Quando o dinheiro cai na conta | 2026-08-20 |
 | indices.csv | data | Sim | Dia (no IPCA, o dia 1 do mês) | 2026-06-18 |
-| | indice | Sim | CDI, IPCA, IDIV, SMLL ou IFIX | CDI |
-| | valor | | CDI e IPCA: taxa em % (0.0551 = 0,0551% ao dia); IDIV, SMLL e IFIX: pontos | 0.0551 |
+| | indice | Sim | CDI, IPCA, SELIC, IDIV, SMLL ou IFIX | CDI |
+| | valor | | CDI e IPCA: taxa em % (0.0551 = 0,0551% ao dia); SELIC: meta do Copom em % ao ano (13.75), uma linha por dia corrido; IDIV, SMLL e IFIX: pontos | 0.0551 |
 
 Vocabulários fechados que aparecem na spec: `tipo_documento` ∈ {ITR, DFP};
 `tipo_acao` ∈ {ON, PN, UNIT}; `tipo` (proventos) ∈ {DIVIDENDO, JCP};
-`indice` ∈ {CDI, IPCA, IDIV, SMLL, IFIX}. A spec **não** fixa o delimitador do CSV nem o
+`indice` ∈ {CDI, IPCA, SELIC, IDIV, SMLL, IFIX} (SELIC acrescentada em 2026-11-11, a pedido do dev). A spec **não** fixa o delimitador do CSV nem o
 nome dos arquivos além dos listados.
 
 ---

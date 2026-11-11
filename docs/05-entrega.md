@@ -97,6 +97,8 @@ Chave: (`data`, `ticker`). Fonte: `raw_prices`, do Yahoo. Exceção: a AZUL3 de 
 - `JBSS32`: série `JBSS3` de 2019-12-02 a 2025-06-06. Com `fator_troca` = 0,5 (1 BDR = 2 ações), o preço sai ×2 e o volume ×0,5. Corrige a alta falsa de +100% do JBSS32 em 2025-06-09, que o Yahoo emendava sem ajuste.
 - `NATU3`: série `NTCO3` de 2019-12-18 a 2025-07-01, sem fator. Corrige os 4 dias falsos a R$ 36,86 (placeholder do Yahoo).
 
+**Proventos da RAIZ4 a 40% no Yahoo (2026-11-11).** O daily de 2026-11-10 regravou o histórico da RAIZ4 com o que o Yahoo serve hoje: a mesma série da `RAIZ55.SA`, desde 2021-08-05. A `RAIZ4.SA` passou a ter dados só a partir de 2026-07-17. Nessa série, os 11 proventos de 2021 a 2024 vêm multiplicados por exatamente 0,4 (ex.: 0,08907 → 0,035604 na data-com de 2023-03-16), e o `adj_close` ajusta só 40% de cada um (retorno de 2023-03-17: −8,33% em vez de −6,47%). `CORRECOES_PRECO_B3` ganhou a entrada `RAIZ4`: série `RAIZ4` (ISIN `BRRAIZACNPR6`) de 2021-08-05 a 2026-11-02, véspera da cotação por lote, sem fator. Preço e ajuste da janela vêm do COTAHIST, com os proventos oficiais da B3. O CSV tem 1.308 pregões e devolve o −6,47%.
+
 O CSV ganha as colunas `fator_troca` e `fator_dividendos`. O `adj_close` da correção é ajustado por proventos em dinheiro da B3 (fator = 1 − provento ÷ fechamento na data-com) e emendado na base do Yahoo pelo primeiro pregão depois da janela.
 
 **Dividendos do Yahoo na correção do JBSS32 (2026-11-03).** A B3 não devolve os proventos da JBS S.A. depois de 2019-04-30, mas a JBS pagou dividendos de 2020 a 2025. A correção usa `proventos_yahoo="JBSS32.SA"`: os eventos de dividendo do Yahoo na janela entram no fator de dividendos, com data-com = pregão anterior à data ex. Os que a B3 já tem na mesma data-com ficam de fora. O resultado vai para `data/proventos_yahoo/JBSS32.csv` (gerado por `gerar-correcao-precos`, sem DDL) e para `v1-proventos`, na seção 8.
@@ -283,6 +285,7 @@ Chave: (`data`, `indice`).
 |---|---|---|
 | `CDI` | BCB SGS série 12 | Como vem: percentual ao dia |
 | `IPCA` | BCB SGS série 433 | Como vem: percentual no mês. A data é a gravada em `raw_macro` |
+| `SELIC` | BCB SGS série 432 (meta do Copom), coletada pelo `collect-macro` | Como vem: % ao ano. A série tem uma linha por dia corrido (o valor só muda nas reuniões do Copom). Começa em 1º de janeiro do ano de `DATA_START`. Pedido do dev de 2026-11-10 |
 | `IDIV`, `SMLL`, `IFIX` | B3 (`GetPortfolioDay`), gravados em `raw_prices` com `source='b3'` | Fechamento (`close`), sem ajuste |
 
 O IBOV não entra aqui. Vai para `v1-precos`, como `IBOV`, e a regra da coluna `abertura` dele está na seção 3.
