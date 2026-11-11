@@ -596,13 +596,15 @@ CORRECOES_PRECO_B3: dict[str, CorrecaoPrecoB3] = {
     # RAIZ4: o historico do Yahoo (servido como RAIZ55.SA desde a troca para o lote, e
     # regravado no daily de 2026-11-10) traz os 11 proventos de 2021 a 2024 multiplicados
     # por exatamente 0,4 (ex.: 0,08907 -> 0,035604 em 2023-03-16), e o adjclose ajusta so
-    # 40% de cada um (medido em 2026-11-11). Ate a vespera da cotacao por lote (ver
-    # FATORES_COTACAO_YAHOO), preco e ajuste vem da B3, com os proventos oficiais.
+    # 40% de cada um (medido em 2026-11-11). O mesmo 0,4 esta no preco do lote de 2026-11-03
+    # a 2026-11-06 (Yahoo 10,83 x B3 27,10); de 2026-11-09 em diante o Yahoo bate com a B3.
+    # Ate 2026-11-06, preco e ajuste vem da B3 (RAIZ4 e depois RAIZ55, por acao pelo FATCOT),
+    # com os proventos oficiais.
     "RAIZ4": CorrecaoPrecoB3(
-        codigos=("RAIZ4",),
+        codigos=("RAIZ4", "RAIZ55"),
         isin="BRRAIZACNPR6",
         inicio=date(2021, 8, 5),
-        fim=date(2026, 11, 2),
+        fim=date(2026, 11, 6),
     ),
 }
 
